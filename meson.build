@@ -493,21 +493,6 @@ if with_egl and not _platforms.contains(egl_native_platform)
 endif
 
 # Android uses emutls for versions <= P/28. For USE_ELF_TLS we need ELF TLS.
-use_elf_tls = false
-if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
-    (not with_platform_android or get_option('platform-sdk-version') >= 29) and
-    (not with_platform_windows or not with_shared_glapi))
-  pre_args += '-DUSE_ELF_TLS'
-  use_elf_tls = true
-
-  if with_platform_android
-    # By default the NDK compiler, at least, emits emutls references instead of
-    # ELF TLS, even when building targeting newer API levels.  Make it actually do
-    # ELF TLS instead.
-    c_args += '-fno-emulated-tls'
-    cpp_args += '-fno-emulated-tls'
-  endif
-endif
 
 if with_glx != 'disabled'
   if not (with_platform_x11 and with_any_opengl)
@@ -1973,7 +1958,7 @@ endif
 # TODO: symbol mangling
 
 if with_platform_wayland
-  dep_wl_scanner = dependency('wayland-scanner', native: true)
+  dep_wl_scanner = dependency('wayland-scanner')
   prog_wl_scanner = find_program(dep_wl_scanner.get_pkgconfig_variable('wayland_scanner'))
   if dep_wl_scanner.version().version_compare('>= 1.15')
     wl_scanner_arg = 'private-code'
