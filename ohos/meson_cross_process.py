@@ -91,6 +91,8 @@ def generate_cross_file(project_stub, sysroot_stub):
 
 def generate_pc_file(file_raw, project_dir, product_name):
     print(file_raw)
+    if not os.path.exists('pkgconfig'):
+        os.makedirs('pkgconfig')
     filename = 'pkgconfig/'+ ntpath.basename(file_raw)
     with open(file_raw, 'r+') as file_raw:
         with open(filename, "w+") as file:
@@ -101,10 +103,11 @@ def generate_pc_file(file_raw, project_dir, product_name):
     print("generate_pc_file")
 
 def process_pkgconfig(project_dir, product_name):
-    files = os.listdir(os.path.split(os.path.abspath( __file__))[0] + r"/pkgconfig_template")
+    template_dir = os.path.split(os.path.abspath( __file__))[0] + r"/pkgconfig_template"
+    files = os.listdir(template_dir)
     for file in files:
         if not os.path.isdir(file):
-            generate_pc_file(r"pkgconfig_template/" + file, project_dir, product_name)
+            generate_pc_file(template_dir + '/' + file, project_dir, product_name)
     print("process_pkgconfig")
 
 if __name__ == '__main__':
