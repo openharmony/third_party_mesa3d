@@ -1,9 +1,0 @@
-ohos_project_dir=/home/andrew/OpenHarmony
-libdir=${ohos_project_dir}/out/rk3568/graphic/graphic_standard/
-includedir=${ohos_project_dir}/third_party/libdrm
-
-Name: libdrm
-Description: Userspace interface to kernel DRM services
-Version: 2.4.102
-Libs: -L${libdir} -ldrm
-Cflags: -I${includedir} -I${includedir}/include/drm/
