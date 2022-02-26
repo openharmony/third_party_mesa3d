@@ -53,6 +53,7 @@ enum _egl_platform_type {
    _EGL_PLATFORM_SURFACELESS,
    _EGL_PLATFORM_DEVICE,
    _EGL_PLATFORM_WINDOWS,
+   _EGL_PLATFORM_OHOS,
 
    _EGL_NUM_PLATFORMS,
    _EGL_INVALID_PLATFORM = -1
@@ -326,6 +327,12 @@ _eglGetSurfacelessDisplay(void *native_display,
 #ifdef HAVE_ANDROID_PLATFORM
 _EGLDisplay*
 _eglGetAndroidDisplay(void *native_display,
+                         const EGLAttrib *attrib_list);
+#endif
+
+#ifdef HAVE_OHOS_PLATFORM
+_EGLDisplay*
+_eglGetOHOSDisplay(void *native_display,
                          const EGLAttrib *attrib_list);
 #endif
 

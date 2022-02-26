@@ -95,6 +95,7 @@ _eglDefaultLogger(EGLint level, const char *msg)
 #else
    fprintf(stderr, "libEGL %s: %s\n", level_strings[level], msg);
 #endif /* HAVE_ANDROID_PLATFORM */
+   DISPLAY_LOGE("libEGL %{public}s: %{public}s\n", level_strings[level], msg);
 }
 
 
@@ -146,11 +147,12 @@ _eglLog(EGLint level, const char *fmtStr, ...)
    int ret;
 
    /* one-time initialization; a little race here is fine */
+   /*
    if (!logging.initialized)
       _eglInitLogger();
    if (level > logging.level || level < 0)
       return;
-
+   */
    mtx_lock(&logging.mutex);
 
    va_start(args, fmtStr);

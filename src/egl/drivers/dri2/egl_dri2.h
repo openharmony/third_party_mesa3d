@@ -73,6 +73,10 @@ struct zwp_linux_dmabuf_v1;
 #include <system/window.h>
 #endif
 
+#ifdef HAVE_OHOS_PLATFORM
+#include "window.h"
+#endif
+
 #endif /* HAVE_ANDROID_PLATFORM */
 
 #include "eglconfig.h"
@@ -332,9 +336,9 @@ struct dri2_egl_surface
    } color_buffers[4], *back, *current;
 #endif
 
-#ifdef HAVE_ANDROID_PLATFORM
-   struct ANativeWindow *window;
-   struct ANativeWindowBuffer *buffer;
+#if defined(HAVE_ANDROID_PLATFORM) || defined (HAVE_OHOS_PLATFORM)
+   struct NativeWindow *window;
+   struct NativeWindowBuffer *buffer;
    __DRIimage *dri_image_back;
    __DRIimage *dri_image_front;
 
@@ -344,7 +348,7 @@ struct dri2_egl_surface
     */
    int color_buffers_count;
    struct {
-      struct ANativeWindowBuffer *buffer;
+      struct NativeWindowBuffer *buffer;
       int age;
    } *color_buffers, *back;
    uint32_t gralloc_usage;
@@ -526,6 +530,17 @@ static inline EGLBoolean
 dri2_initialize_android(_EGLDisplay *disp)
 {
    return _eglError(EGL_NOT_INITIALIZED, "Android platform not built");
+}
+#endif
+
+#ifdef HAVE_OHOS_PLATFORM
+EGLBoolean
+dri2_initialize_ohos(_EGLDisplay *disp);
+#else
+static inline EGLBoolean
+dri2_initialize_ohos(_EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "ohos platform not built");
 }
 #endif
 

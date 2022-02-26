@@ -32,6 +32,7 @@
 
 
 #include "egltypedefs.h"
+#include "hilog_common.h"
 
 
 #ifdef __cplusplus

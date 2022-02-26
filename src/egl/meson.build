@@ -106,7 +106,7 @@ if with_dri2
     endif
     deps_for_egl += [dep_x11_xcb, dep_xcb_dri2, dep_xcb_xfixes]
   endif
-  if with_gbm and not with_platform_android
+  if with_gbm and not with_platform_android and not with_platform_ohos
     files_egl += files('drivers/dri2/platform_drm.c')
     link_for_egl += libgbm
     incs_for_egl += [inc_gbm, include_directories('../gbm/main')]
@@ -132,6 +132,12 @@ if with_dri2
       cpp_args_for_egl += ['-std=c++17', '-DUSE_IMAPPER4_METADATA_API']
     endif
   endif
+
+  if with_platform_ohos
+    deps_for_egl += dep_ohos
+    files_egl += files('drivers/dri2/platform_ohos.c')
+  endif
+
 elif with_platform_haiku
   incs_for_egl += inc_haikugl
   c_args_for_egl += [

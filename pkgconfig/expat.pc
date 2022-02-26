@@ -1,0 +1,10 @@
+ohos_project_dir=/home/andrew/OpenHarmony
+libdir=${ohos_project_dir}/out/rk3568/obj/third_party/expat
+includedir=${ohos_project_dir}/third_party/expat/lib
+
+Name: expat
+Version: 2.4.1
+Description: expat XML parser
+URL: http://www.libexpat.org
+Libs: -L${libdir} -lexpat
+Cflags: -I${includedir}

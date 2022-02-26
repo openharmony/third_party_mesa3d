@@ -67,7 +67,7 @@
 #ifdef HAVE_WINDOWS_PLATFORM
 #include <windows.h>
 #endif
-
+#include "hilog_common.h"
 
 /**
  * Map build-system platform names to platform types.
@@ -85,6 +85,7 @@ static const struct {
    { _EGL_PLATFORM_SURFACELESS, "surfaceless" },
    { _EGL_PLATFORM_DEVICE, "device" },
    { _EGL_PLATFORM_WINDOWS, "windows" },
+   { _EGL_PLATFORM_OHOS, "openharmony" },
 };
 
 
@@ -607,6 +608,23 @@ _eglGetAndroidDisplay(void *native_display,
                           attrib_list);
 }
 #endif /* HAVE_ANDROID_PLATFORM */
+
+#ifdef HAVE_OHOS_PLATFORM
+_EGLDisplay*
+_eglGetOHOSDisplay(void *native_display,
+                          const EGLAttrib *attrib_list)
+{
+   DISPLAY_LOGD();
+   /* This platform recognizes no display attributes. */
+   if (attrib_list != NULL && attrib_list[0] != EGL_NONE) {
+      _eglError(EGL_BAD_ATTRIBUTE, "eglGetPlatformDisplay");
+      return NULL;
+   }
+
+   return _eglFindDisplay(_EGL_PLATFORM_OHOS, native_display,
+                          attrib_list);
+}
+#endif /* HAVE_OHOS_PLATFORM */
 
 _EGLDisplay*
 _eglGetDeviceDisplay(void *native_display,
