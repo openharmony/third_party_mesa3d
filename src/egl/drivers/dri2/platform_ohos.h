@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2021 Huawei Device Co., Ltd.
+ * 
+ * Based on platform_android, which has
+ * 
  * Copyright © 2021, Google Inc.
  * Copyright (C) 2021, GlobalLogic Ukraine
  *

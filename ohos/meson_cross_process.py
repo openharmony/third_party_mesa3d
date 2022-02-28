@@ -1,18 +1,26 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2021 Huawei Device Co., Ltd.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright (c) 2022 Huawei Device Co., Ltd.
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import sys
 import ntpath
 import os
@@ -82,10 +90,10 @@ cpu = 'armv7'
 endian = 'little'
 '''
 
-def generate_cross_file(project_stub, sysroot_stub):
+def generate_cross_file(project_stub_in, sysroot_stub_in):
     with open("cross_file", 'w+') as file:
-        result = corss_file_content.replace("project_stub", project_stub)
-        result = result.replace("sysroot_stub", sysroot_stub)
+        result = corss_file_content.replace("project_stub", project_stub_in)
+        result = result.replace("sysroot_stub", sysroot_stub_in)
         file.write(result)
     print("generate_cross_file")
 
@@ -95,19 +103,19 @@ def generate_pc_file(file_raw, project_dir, product_name):
         os.makedirs('pkgconfig')
     filename = 'pkgconfig/'+ ntpath.basename(file_raw)
     with open(file_raw, 'r+') as file_raw:
-        with open(filename, "w+") as file:
+        with open(filename, "w+") as pc_file:
             raw_content = file_raw.read()
             raw_content = raw_content.replace("ohos_project_directory_stub", project_dir)
             raw_content = raw_content.replace("ohos-arm-release", product_name)
-            file.write(raw_content)
+            pc_file.write(raw_content)
     print("generate_pc_file")
 
 def process_pkgconfig(project_dir, product_name):
     template_dir = os.path.split(os.path.abspath( __file__))[0] + r"/pkgconfig_template"
-    files = os.listdir(template_dir)
-    for file in files:
-        if not os.path.isdir(file):
-            generate_pc_file(template_dir + '/' + file, project_dir, product_name)
+    templates = os.listdir(template_dir)
+    for template in templates:
+        if not os.path.isdir(template):
+            generate_pc_file(template_dir + '/' + template, project_dir, product_name)
     print("process_pkgconfig")
 
 if __name__ == '__main__':
