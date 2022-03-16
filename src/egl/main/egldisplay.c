@@ -67,7 +67,6 @@
 #ifdef HAVE_WINDOWS_PLATFORM
 #include <windows.h>
 #endif
-#include "hilog_common.h"
 
 /**
  * Map build-system platform names to platform types.
@@ -614,7 +613,6 @@ _EGLDisplay*
 _eglGetOHOSDisplay(void *native_display,
                           const EGLAttrib *attrib_list)
 {
-   DISPLAY_LOGD();
    /* This platform recognizes no display attributes. */
    if (attrib_list != NULL && attrib_list[0] != EGL_NONE) {
       _eglError(EGL_BAD_ATTRIBUTE, "eglGetPlatformDisplay");

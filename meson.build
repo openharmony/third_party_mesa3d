@@ -964,7 +964,6 @@ if with_platform_ohos
   pre_args += '-DHAVE_OHOS_PLATFORM'
   dep_ohos = [
     dependency('libsurface'),
-    dependency('libhilog')
   ]
   c_args += '-I../ohos'
 endif
