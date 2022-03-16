@@ -1,0 +1,8 @@
+ohos_project_dir=ohos_project_directory_stub
+libdir=${ohos_project_dir}/out/ohos-arm-release/hiviewdfx/hilog_native
+includedir=${ohos_project_dir}/foundation/graphic/standard/rosen/include/backstore/nativewindow
+
+Name: libhilog
+Version: 2.4.1
+Description: libhilog
+Libs: -L${libdir} -lhilog
