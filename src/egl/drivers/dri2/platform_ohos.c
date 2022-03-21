@@ -1,7 +1,7 @@
 /*
  * Mesa 3-D graphics library
  *
- * Copyright (c) 2021 Huawei Device Co., Ltd.
+ * Copyright (c) 2021 Huawei Device Co., Ltd. *
  * 
  * Based on platform_android, which has
  * 
@@ -10,7 +10,7 @@
  *
  * Based on platform_x11, which has
  *
- * Copyright (c) 2021 Huawei Device Co., Ltd.
+ * Copyright © 2011 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
