@@ -83,10 +83,11 @@ static unsigned
 get_native_buffer_fds(struct ANativeWindowBuffer *buf, int fds[3])
 {
    BufferHandle* handle = GetBufferHandleFromNative(buf);
-   if (!handle) {
-      fds[0] = handle->fd;
+   if (handle == NULL) {
       return 0;
    }
+
+   fds[0] = handle->fd;
    return 1;
 }
 
