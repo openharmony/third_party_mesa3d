@@ -413,6 +413,11 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
       disp = _eglGetAndroidDisplay(native_display, attrib_list);
       break;
 #endif
+#ifdef HAVE_OHOS_PLATFORM
+   case EGL_PLATFORM_OHOS_KHR:
+      disp = _eglGetOHOSDisplay(native_display, attrib_list);
+      break;
+#endif
    case EGL_PLATFORM_DEVICE_EXT:
       disp = _eglGetDeviceDisplay(native_display, attrib_list);
       break;

@@ -1,4 +1,6 @@
 *.pyc
 *.pyo
 *.out
-build
+build-ohos
+cross_file
+pkgconfig/

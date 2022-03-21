@@ -1,0 +1,60 @@
+
+[properties]
+needs_exe_wrapper = true
+
+c_args = [
+    '-march=armv7-a',
+    '-mfloat-abi=softfp',
+    '-mtune=generic-armv7-a',
+    '-mfpu=neon',
+    '-mthumb',
+    '--target=arm-linux-ohosmusl',
+    '--sysroot=2/out/3/obj/third_party/musl',
+    '-fPIC']
+
+cpp_args = [
+    '-march=armv7-a',
+    '--target=arm-linux-ohosmusl',
+    '--sysroot=2/out/3/obj/third_party/musl',
+    '-fPIC']
+    
+c_link_args = [
+    '-march=armv7-a',
+    '--target=arm-linux-ohosmusl',
+    '-fPIC',
+    '--sysroot=2/out/3/obj/third_party/musl',
+    '-L2/out/3/obj/third_party/musl/usr/lib/arm-linux-ohos',
+    '-L2/prebuilts/clang/ohos/linux-x86_64/llvm/lib/clang/10.0.1/lib/arm-linux-ohos',
+    '-L2/prebuilts/clang/ohos/linux-x87_64/llvm/lib/arm-linux-ohos/c++',
+    '--rtlib=compiler-rt',
+    ]
+
+cpp_link_args = [
+    '-march=armv7-a',
+    '--target=arm-linux-ohosmusl',
+    '--sysroot=2/out/3/obj/third_party/musl',
+    '-L2/out/3/obj/third_party/musl/usr/lib/arm-linux-ohos',
+    '-L2/prebuilts/clang/ohos/linux-x86_64/llvm/lib/clang/10.0.1/lib/arm-linux-ohos',
+    '-L2/prebuilts/clang/ohos/linux-x87_64/llvm/lib/arm-linux-ohos/c++',
+    '-fPIC',
+    '-Wl,--exclude-libs=libunwind_llvm.a',
+    '-Wl,--exclude-libs=libc++_static.a',
+    '-Wl,--exclude-libs=libvpx_assembly_arm.a',
+    '-Wl,--warn-shared-textrel',
+    '--rtlib=compiler-rt',
+    ]
+	
+[binaries]
+ar = '2/prebuilts/clang/ohos/linux-x86_64/llvm/bin/llvm-ar'
+c = ['ccache', '2/prebuilts/clang/ohos/linux-x86_64/llvm/bin/clang']
+cpp = ['ccache', '2/prebuilts/clang/ohos/linux-x86_64/llvm/bin/clang++']
+c_ld= 'lld'
+cpp_ld = 'lld'
+strip = '2/prebuilts/clang/ohos/linux-x86_64/llvm/bin/llvm-strip'
+pkgconfig = '/usr/bin/pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'arm'
+cpu = 'armv7'
+endian = 'little'

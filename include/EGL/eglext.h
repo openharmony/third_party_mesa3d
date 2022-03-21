@@ -276,6 +276,11 @@ EGLAPI EGLBoolean EGLAPIENTRY eglSetDamageRegionKHR (EGLDisplay dpy, EGLSurface 
 #define EGL_PLATFORM_GBM_KHR              0x31D7
 #endif /* EGL_KHR_platform_gbm */
 
+#ifndef EGL_KHR_platform_ohos
+#define EGL_KHR_platform_ohos 1
+#define EGL_PLATFORM_OHOS_KHR             0x34E0
+#endif /* EGL_KHR_platform_ohos */
+
 #ifndef EGL_KHR_platform_wayland
 #define EGL_KHR_platform_wayland 1
 #define EGL_PLATFORM_WAYLAND_KHR          0x31D8
@@ -1401,6 +1406,11 @@ EGLAPI EGLuint64NV EGLAPIENTRY eglGetSystemTimeNV (void);
 #define EGL_NV_triple_buffer 1
 #define EGL_TRIPLE_BUFFER_NV              0x3230
 #endif /* EGL_NV_triple_buffer */
+
+#ifndef EGL_OHOS_image_native_buffer
+#define EGL_OHOS_image_native_buffer 1
+#define EGL_NATIVE_BUFFER_OHOS            0x34E1
+#endif /* EGL_OHOS_image_native_buffer */
 
 #ifndef EGL_TIZEN_image_native_buffer
 #define EGL_TIZEN_image_native_buffer 1

@@ -347,10 +347,11 @@ with_platform_x11 = _platforms.contains('x11')
 with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
+with_platform_ohos = _platforms.contains('ohos')
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
-  if with_platform_android
+  if with_platform_android or with_platform_ohos
     with_glx = 'disabled'
   elif with_dri
     with_glx = 'dri'
@@ -474,7 +475,7 @@ endif
 
 if with_egl
   _platforms += 'surfaceless'
-  if with_gbm and not with_platform_android
+  if with_gbm and not with_platform_android and not with_platform_ohos
     _platforms += 'drm'
   endif
 endif
@@ -921,7 +922,7 @@ else
   pre_args += '-DEGL_NO_X11'
   gl_pkgconfig_c_flags += '-DEGL_NO_X11'
 endif
-if with_gbm and not with_platform_android
+if with_gbm and not with_platform_android and not with_platform_ohos
   pre_args += '-DHAVE_DRM_PLATFORM'
 endif
 if with_platform_windows
@@ -957,6 +958,14 @@ if with_platform_android
 endif
 if with_platform_haiku
   pre_args += '-DHAVE_HAIKU_PLATFORM'
+endif
+
+if with_platform_ohos
+  pre_args += '-DHAVE_OHOS_PLATFORM'
+  dep_ohos = [
+    dependency('libsurface'),
+  ]
+  c_args += '-I../ohos'
 endif
 
 prog_python = import('python').find_installation('python3')
@@ -1958,7 +1967,7 @@ endif
 # TODO: symbol mangling
 
 if with_platform_wayland
-  dep_wl_scanner = dependency('wayland-scanner')
+  dep_wl_scanner = dependency('wayland-scanner', native: true)
   prog_wl_scanner = find_program(dep_wl_scanner.get_pkgconfig_variable('wayland_scanner'))
   if dep_wl_scanner.version().version_compare('>= 1.15')
     wl_scanner_arg = 'private-code'
