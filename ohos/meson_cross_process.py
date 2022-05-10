@@ -118,11 +118,17 @@ def process_pkgconfig(project_dir, product_name):
             generate_pc_file(template_dir + '/' + template, project_dir, product_name)
     print("process_pkgconfig")
 
+def prepare_environment(project_path, product):
+    global project_stub
+    global sysroot_stub
+    product = product.lower()
+    project_stub = project_path
+    sysroot_stub = os.path.join(project_stub, "out", product, "obj", "third_party", "musl")
+    generate_cross_file(project_path, sysroot_stub)
+    process_pkgconfig(project_path, product)
+
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         print("must input the OpenHarmony directory and the product name")
         exit(-1)
-    project_stub = sys.argv[1]
-    sysroot_stub = sys.argv[1] + r"/out/" + sys.argv[2].lower() + r"/obj/third_party/musl"
-    generate_cross_file(sys.argv[1], sysroot_stub)
-    process_pkgconfig(sys.argv[1], sys.argv[2].lower())
+    prepare_environment(sys.argv[1], sys.argv[2])

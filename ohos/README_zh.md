@@ -36,6 +36,6 @@ sudo apt-get install pkg-config
 
 ```
 cd ~/mesa3d
-python ohos/build_wayland_and_gbm.py ~/openharmony rk3568 ~/mesa3d
+python ohos/build_ohos.py ~/openharmony rk3568 ~/mesa3d
 
 ```
