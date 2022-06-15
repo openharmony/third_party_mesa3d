@@ -968,7 +968,9 @@ if with_platform_ohos
   c_args += '-I../ohos'
 endif
 
-prog_python = import('python').find_installation('python3')
+#prog_python = import('python').find_installation('python3')
+prog_python = '/usr/bin/python3'
+
 has_mako = run_command(
   prog_python, '-c',
   '''
