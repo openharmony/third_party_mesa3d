@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2022 Huawei Device Co., Ltd.
+# Copyright (c) 2022 Institute of Software, CAS
+# Author: xiaofan@iscas.ac.cn
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
