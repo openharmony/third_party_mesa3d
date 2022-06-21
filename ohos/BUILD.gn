@@ -19,12 +19,10 @@
 # SOFTWARE.
 import("//build/ohos.gni")
 import("//build/config/clang/clang.gni")
+import("dependency_inputs.gni")
 mesa3d_libs_dir = "$root_build_dir/packages/phone/mesa3d"
 
-mesa3d_gallium_symlinks = []
-if (defined(product_build_config.mesa3d_gallium_symlinks)) {
-    mesa3d_gallium_symlinks = product_build_config.mesa3d_gallium_symlinks
-}
+mesa3d_gallium_symlinks = ["panfrost_dri.so"]
 
 mesa3d_all_lib_items = [
     ["libEGL.so.1.0.0",         ["libEGL.so",       "libEGL.so.1"]],
@@ -36,14 +34,11 @@ mesa3d_all_lib_items = [
 ]
 
 action("mesa3d_build") {
+    inputs = deps_inputs
     script = "build_mesa3d.py"
     deps = [
-        "//foundation/graphic/standard/frameworks/surface:surface",
+        "//foundation/graphic/graphic_2d:libsurface",
         "//third_party/expat:expat",
-        "//third_party/wayland_standard:libwayland_client",
-        "//third_party/wayland_standard:libwayland_server",
-        "//third_party/wayland_standard:libwayland_client.0",
-        "//third_party/wayland_standard:libwayland_server.0",
     ]
     outputs = []
     foreach(item, mesa3d_all_lib_items) {
