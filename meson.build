@@ -964,6 +964,7 @@ if with_platform_ohos
   pre_args += '-DHAVE_OHOS_PLATFORM'
   dep_ohos = [
     dependency('libsurface'),
+    dependency('libhilog'),
   ]
   c_args += '-I../ohos'
 endif
@@ -1606,6 +1607,10 @@ foreach d : _libdrm_checks
     )
   endif
 endforeach
+
+dep_hilog = dependency(
+  'libhilog'
+)
 
 with_gallium_drisw_kms = false
 dep_libdrm = dependency(
