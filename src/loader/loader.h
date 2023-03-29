@@ -38,7 +38,7 @@ struct __DRIextensionRec;
 /* Helpers to figure out driver and device name, eg. from pci-id, etc. */
 
 int
-loader_open_device(const char *);
+loader_open_device(const char *device_name);
 
 int
 loader_open_render_node(const char *name);
