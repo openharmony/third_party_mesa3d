@@ -121,6 +121,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_SAMPLE_SHADING:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+        case PIPE_CAP_NATIVE_FENCE_FD:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -742,6 +743,16 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
         *ptr = fence;
 }
 
+static int
+panfrost_fence_get_fd(struct pipe_screen *_screen,
+                       struct pipe_fence_handle *fence)
+{
+        struct panfrost_device *dev = pan_device(_screen);
+        int fd = -1;
+        drmSyncobjExportSyncFile(dev->fd, fence->syncobj, &fd);
+        return fd;
+}
+
 static bool
 panfrost_fence_finish(struct pipe_screen *pscreen,
                       struct pipe_context *ctx,
@@ -879,6 +890,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.context_create = panfrost_create_context;
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
         screen->base.fence_reference = panfrost_fence_reference;
+        screen->base.fence_get_fd = panfrost_fence_get_fd;
         screen->base.fence_finish = panfrost_fence_finish;
         screen->base.set_damage_region = panfrost_resource_set_damage_region;
 
