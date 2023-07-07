@@ -1,5 +1,5 @@
 ohos_project_dir=ohos_project_directory_stub
-libdir=${ohos_project_dir}/out//ohos-arm-release/common/graphic_standard/
+libdir=${ohos_project_dir}/out//ohos-arm-release/common/graphic_2d/
 includedir=${ohos_project_dir}/third_party/libpng
 
 Name: png
