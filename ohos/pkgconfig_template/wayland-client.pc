@@ -1,7 +1,7 @@
 prefix=ohos_project_directory_stub
 datarootdir=${prefix}/share
 pkgdatadir=${datarootdir}/wayland
-libdir=${prefix}/out/ohos-arm-release/graphic/graphic_standard
+libdir=${prefix}/out/ohos-arm-release/graphic/graphic_2d
 includedir=${prefix}/third_party/wayland_standard/src
 
 Name: Wayland Client

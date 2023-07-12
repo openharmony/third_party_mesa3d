@@ -1,6 +1,6 @@
 prefix=ohos_project_directory_stub
 exec_prefix=${prefix}
-libdir=${prefix}/out/ohos-arm-release/graphic/graphic_standard/
+libdir=${prefix}/out/ohos-arm-release/graphic/graphic_2d/
 includedir=${prefix}/third_party/wayland_standard/egl
 
 Name: wayland-egl
