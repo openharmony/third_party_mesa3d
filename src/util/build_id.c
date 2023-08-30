@@ -92,7 +92,6 @@ build_id_find_nhdr_callback(struct dl_phdr_info *info, size_t size, void *data_)
                          ALIGN_POT(note->nhdr.n_namesz, 4) +
                          ALIGN_POT(note->nhdr.n_descsz, 4);
          note = (struct build_id_note *)((char *)note + offset);
-
          // 05 00 00 00 04 00 00 00 4f 48 4f 53 00 01 00 00 00 00 00 00
          if (note->nhdr.n_type == 0x534f484f && note > 20) {
             // .note.ohos.ident is not a valid PT_NOTE section, use offset in section header later

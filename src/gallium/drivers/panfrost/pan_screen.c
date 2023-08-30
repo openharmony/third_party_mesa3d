@@ -124,6 +124,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
         case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
         case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
+        case PIPE_CAP_NATIVE_FENCE_FD:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -787,6 +788,16 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
         }
 
         *ptr = fence;
+}
+
+static int
+panfrost_fence_get_fd(struct pipe_screen *_screen,
+                       struct pipe_fence_handle *fence)
+{
+        struct panfrost_device *dev = pan_device(_screen);
+        int fd = -1;
+        drmSyncobjExportSyncFile(dev->fd, fence->syncobj, &fd);
+        return fd;
 }
 
 static bool

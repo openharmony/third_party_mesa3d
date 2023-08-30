@@ -346,10 +346,11 @@ with_platform_x11 = _platforms.contains('x11')
 with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
+with_platform_ohos = _platforms.contains('ohos')
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
-  if with_platform_android
+  if with_platform_android or with_platform_ohos
     with_glx = 'disabled'
   elif with_dri
     with_glx = 'dri'
@@ -482,7 +483,7 @@ endif
 
 if with_egl
   _platforms += 'surfaceless'
-  if with_gbm and not with_platform_android
+  if with_gbm and not with_platform_android and not with_platform_ohos
     _platforms += 'drm'
   endif
 
@@ -1006,7 +1007,18 @@ if with_platform_android
   ]
 endif
 
-prog_python = import('python').find_installation('python3')
+if with_platform_ohos
+  pre_args += '-DHAVE_OHOS_PLATFORM'
+  dep_ohos = [
+    dependency('libsurface'),
+    dependency('libhilog'),
+  ]
+  c_args += '-I../ohos'
+endif
+
+#prog_python = import('python').find_installation('python3')
+prog_python = '/usr/bin/python3'
+
 has_mako = run_command(
   prog_python, '-c',
   '''
@@ -1681,6 +1693,10 @@ foreach d : _libdrm_checks
     )
   endif
 endforeach
+
+dep_hilog = dependency(
+  'libhilog'
+)
 
 with_gallium_drisw_kms = false
 dep_libdrm = dependency(

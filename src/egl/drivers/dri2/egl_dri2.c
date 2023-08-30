@@ -71,6 +71,8 @@
 #include "util/driconf.h"
 #include "util/u_math.h"
 
+#include "ohos_log.h"
+
 #define NUM_ATTRIBS 12
 
 static const struct dri2_pbuffer_visual {
@@ -1928,6 +1930,7 @@ dri2_surface_get_dri_drawable(_EGLSurface *surf)
 static _EGLProc
 dri2_get_proc_address(const char *procname)
 {
+   DISPLAY_LOGI("procname = %{public}s", procname);
    return _glapi_get_proc_address(procname);
 }
 

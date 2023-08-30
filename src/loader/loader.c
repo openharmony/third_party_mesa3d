@@ -68,26 +68,59 @@
 #define PATH_MAX 4096
 #endif
 
+#include "ohos_log.h"
+
 static void default_logger(int level, const char *fmt, ...)
 {
+   const int MAX_BUFFER_LEN = 1024;
+   char log_string[MAX_BUFFER_LEN];
    if (level <= _LOADER_WARNING) {
       va_list args;
       va_start(args, fmt);
       vfprintf(stderr, fmt, args);
       va_end(args);
    }
+   DISPLAY_LOGI();
 }
 
-static loader_logger *log_ = default_logger;
+static void ohos_logger(int level, const char *fmt, ...)
+{
+    const int MAX_BUFFER_LEN = 1024;
+    char log_string[MAX_BUFFER_LEN];
+    va_list args;
+    va_start(args, fmt);
+    (void)snprintf(log_string, MAX_BUFFER_LEN, fmt, args);
+    va_end(args);
+    switch (level) {
+        case _LOADER_WARNING:
+            DISPLAY_LOGW("%{public}s", log_string);
+            break;
+        case _LOADER_DEBUG:
+            DISPLAY_LOGD("%{public}s", log_string);
+            break;
+        case _LOADER_FATAL:
+            DISPLAY_LOGE("%{public}s", log_string);
+            break;
+        case _LOADER_INFO:
+            DISPLAY_LOGI("%{public}s", log_string);
+            break;
+        default:
+            break;
+    }
+    DISPLAY_LOGI();
+}
+
+static loader_logger *log_ = ohos_logger;
 
 int
 loader_open_device(const char *device_name)
 {
+   log_(_LOADER_WARNING, "loader_open_device %s", device_name);
    int fd;
 #ifdef O_CLOEXEC
    fd = open(device_name, O_RDWR | O_CLOEXEC);
-   if (fd == -1 && errno == EINVAL)
 #endif
+   if (fd == -1 && errno == EINVAL)
    {
       fd = open(device_name, O_RDWR);
       if (fd != -1)
@@ -326,11 +359,14 @@ int loader_get_user_preferred_fd(int default_fd, bool *different_device)
    drmDevicePtr devices[MAX_DRM_DEVICES];
    int i, num_devices, fd = -1;
 
+#ifdef USE_DRICONF
    if (dri_prime)
       prime = strdup(dri_prime);
-#ifdef USE_DRICONF
    else
       prime = loader_get_dri_config_device_id();
+#else
+   if (dri_prime)
+      prime = strdup(dri_prime);
 #endif
 
    if (prime == NULL) {
