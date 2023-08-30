@@ -88,7 +88,7 @@ driwindows_bind_context(struct glx_context *context, struct glx_context *old,
    pdraw = (struct driwindows_drawable *) driFetchDrawable(context, draw);
    pread = (struct driwindows_drawable *) driFetchDrawable(context, read);
 
-   driReleaseDrawables(&pcp->base);
+   driReleaseDrawables(old);
 
    if (pdraw == NULL || pread == NULL)
       return GLXBadDrawable;
@@ -258,7 +258,8 @@ driwindowsDestroyDrawable(__GLXDRIdrawable * pdraw)
 
 static __GLXDRIdrawable *
 driwindowsCreateDrawable(struct glx_screen *base, XID xDrawable,
-                         GLXDrawable drawable, struct glx_config *modes)
+                         GLXDrawable drawable, int type,
+                         struct glx_config *modes)
 {
    struct driwindows_drawable *pdp;
    struct driwindows_screen *psc = (struct driwindows_screen *) base;

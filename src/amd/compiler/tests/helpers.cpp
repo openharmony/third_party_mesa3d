@@ -38,7 +38,7 @@ PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(
 }
 
 ac_shader_config config;
-radv_shader_info info;
+aco_shader_info info;
 std::unique_ptr<Program> program;
 Builder bld(NULL);
 Temp inputs[16];
@@ -72,13 +72,13 @@ static std::mutex create_device_mutex;
 FUNCTION_LIST
 #undef ITEM
 
-void create_program(enum chip_class chip_class, Stage stage, unsigned wave_size, enum radeon_family family)
+void create_program(enum amd_gfx_level gfx_level, Stage stage, unsigned wave_size, enum radeon_family family)
 {
    memset(&config, 0, sizeof(config));
    info.wave_size = wave_size;
 
    program.reset(new Program);
-   aco::init_program(program.get(), stage, &info, chip_class, family, false, &config);
+   aco::init_program(program.get(), stage, &info, gfx_level, family, false, &config);
    program->workgroup_size = UINT_MAX;
    calc_min_waves(program.get());
 
@@ -98,26 +98,32 @@ void create_program(enum chip_class chip_class, Stage stage, unsigned wave_size,
    config.float_mode = program->blocks[0].fp_mode.val;
 }
 
-bool setup_cs(const char *input_spec, enum chip_class chip_class,
+bool setup_cs(const char *input_spec, enum amd_gfx_level gfx_level,
               enum radeon_family family, const char* subvariant,
               unsigned wave_size)
 {
-   if (!set_variant(chip_class, subvariant))
+   if (!set_variant(gfx_level, subvariant))
       return false;
 
    memset(&info, 0, sizeof(info));
-   info.cs.block_size[0] = 1;
-   info.cs.block_size[1] = 1;
-   info.cs.block_size[2] = 1;
-
-   create_program(chip_class, compute_cs, wave_size, family);
+   create_program(gfx_level, compute_cs, wave_size, family);
 
    if (input_spec) {
-      unsigned num_inputs = DIV_ROUND_UP(strlen(input_spec), 3u);
-      aco_ptr<Instruction> startpgm{create_instruction<Pseudo_instruction>(aco_opcode::p_startpgm, Format::PSEUDO, 0, num_inputs)};
-      for (unsigned i = 0; i < num_inputs; i++) {
-         RegClass cls(input_spec[i * 3] == 'v' ? RegType::vgpr : RegType::sgpr, input_spec[i * 3 + 1] - '0');
-         inputs[i] = bld.tmp(cls);
+      std::vector<RegClass> input_classes;
+      while (input_spec[0]) {
+         RegType type = input_spec[0] == 'v' ? RegType::vgpr : RegType::sgpr;
+         unsigned size = input_spec[1] - '0';
+         bool in_bytes = input_spec[2] == 'b';
+         input_classes.push_back(RegClass::get(type, size * (in_bytes ? 1 : 4)));
+
+         input_spec += 2 + in_bytes;
+         while (input_spec[0] == ' ') input_spec++;
+      }
+
+      aco_ptr<Instruction> startpgm{create_instruction<Pseudo_instruction>(
+         aco_opcode::p_startpgm, Format::PSEUDO, 0, input_classes.size())};
+      for (unsigned i = 0; i < input_classes.size(); i++) {
+         inputs[i] = bld.tmp(input_classes[i]);
          startpgm->definitions[i] = Definition(inputs[i]);
       }
       bld.insert(std::move(startpgm));
@@ -230,7 +236,7 @@ void finish_assembler_test()
 
    /* we could use CLRX for disassembly but that would require it to be
     * installed */
-   if (program->chip_class >= GFX8) {
+   if (program->gfx_level >= GFX8) {
       print_asm(program.get(), binary, exec_size / 4u, output);
    } else {
       //TODO: maybe we should use CLRX and skip this test if it's not available?
@@ -262,23 +268,92 @@ void writeout(unsigned i, Operand op0, Operand op1)
    bld.pseudo(aco_opcode::p_unit_test, Operand::c32(i), op0, op1);
 }
 
-Temp fneg(Temp src)
+Temp fneg(Temp src, Builder b)
 {
-   return bld.vop2(aco_opcode::v_mul_f32, bld.def(v1), Operand::c32(0xbf800000u), src);
+   if (src.bytes() == 2)
+      return b.vop2(aco_opcode::v_mul_f16, b.def(v2b), Operand::c16(0xbc00u), src);
+   else
+      return b.vop2(aco_opcode::v_mul_f32, b.def(v1), Operand::c32(0xbf800000u), src);
 }
 
-Temp fabs(Temp src)
+Temp fabs(Temp src, Builder b)
 {
-   Builder::Result res =
-      bld.vop2_e64(aco_opcode::v_mul_f32, bld.def(v1), Operand::c32(0x3f800000u), src);
-   res.instr->vop3().abs[1] = true;
-   return res;
+   if (src.bytes() == 2) {
+      Builder::Result res = b.vop2_e64(aco_opcode::v_mul_f16, b.def(v2b), Operand::c16(0x3c00), src);
+      res.instr->vop3().abs[1] = true;
+      return res;
+   } else {
+      Builder::Result res = b.vop2_e64(aco_opcode::v_mul_f32, b.def(v1), Operand::c32(0x3f800000u), src);
+      res.instr->vop3().abs[1] = true;
+      return res;
+   }
 }
 
-VkDevice get_vk_device(enum chip_class chip_class)
+Temp f2f32(Temp src, Builder b)
+{
+   return b.vop1(aco_opcode::v_cvt_f32_f16, b.def(v1), src);
+}
+
+Temp f2f16(Temp src, Builder b)
+{
+   return b.vop1(aco_opcode::v_cvt_f16_f32, b.def(v2b), src);
+}
+
+Temp u2u16(Temp src, Builder b)
+{
+   return b.pseudo(aco_opcode::p_extract_vector, b.def(v2b), src, Operand::zero());
+}
+
+Temp fadd(Temp src0, Temp src1, Builder b)
+{
+   if (src0.bytes() == 2)
+      return b.vop2(aco_opcode::v_add_f16, b.def(v2b), src0, src1);
+   else
+      return b.vop2(aco_opcode::v_add_f32, b.def(v1), src0, src1);
+}
+
+Temp fmul(Temp src0, Temp src1, Builder b)
+{
+   if (src0.bytes() == 2)
+      return b.vop2(aco_opcode::v_mul_f16, b.def(v2b), src0, src1);
+   else
+      return b.vop2(aco_opcode::v_mul_f32, b.def(v1), src0, src1);
+}
+
+Temp fma(Temp src0, Temp src1, Temp src2, Builder b)
+{
+   if (src0.bytes() == 2)
+      return b.vop3(aco_opcode::v_fma_f16, b.def(v2b), src0, src1, src2);
+   else
+      return b.vop3(aco_opcode::v_fma_f32, b.def(v1), src0, src1, src2);
+}
+
+Temp fsat(Temp src, Builder b)
+{
+   if (src.bytes() == 2)
+      return b.vop3(aco_opcode::v_med3_f16, b.def(v2b), Operand::c16(0u),
+                    Operand::c16(0x3c00u), src);
+   else
+      return b.vop3(aco_opcode::v_med3_f32, b.def(v1), Operand::zero(),
+                    Operand::c32(0x3f800000u), src);
+}
+
+Temp ext_ushort(Temp src, unsigned idx, Builder b)
+{
+   return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), src, Operand::c32(idx),
+                   Operand::c32(16u), Operand::c32(false));
+}
+
+Temp ext_ubyte(Temp src, unsigned idx, Builder b)
+{
+   return b.pseudo(aco_opcode::p_extract, b.def(src.regClass()), src, Operand::c32(idx),
+                   Operand::c32(8u), Operand::c32(false));
+}
+
+VkDevice get_vk_device(enum amd_gfx_level gfx_level)
 {
    enum radeon_family family;
-   switch (chip_class) {
+   switch (gfx_level) {
    case GFX6:
       family = CHIP_TAHITI;
       break;
@@ -295,7 +370,10 @@ VkDevice get_vk_device(enum chip_class chip_class)
       family = CHIP_NAVI10;
       break;
    case GFX10_3:
-      family = CHIP_SIENNA_CICHLID;
+      family = CHIP_NAVI21;
+      break;
+   case GFX11:
+      family = CHIP_GFX1100;
       break;
    default:
       family = CHIP_UNKNOWN;

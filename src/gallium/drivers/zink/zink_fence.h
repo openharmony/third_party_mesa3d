@@ -46,11 +46,11 @@ struct zink_tc_fence {
    struct tc_unflushed_batch_token *tc_token;
    struct pipe_context *deferred_ctx;
    struct zink_fence *fence;
+   VkSemaphore sem;
 };
 
 struct zink_fence {
-   VkFence fence;
-   uint32_t batch_id;
+   uint64_t batch_id;
    bool submitted;
    bool completed;
 };
@@ -79,13 +79,18 @@ zink_fence_reference(struct zink_screen *screen,
                      struct zink_tc_fence *fence);
 
 void
+zink_create_fence_fd(struct pipe_context *pctx, struct pipe_fence_handle **pfence, int fd, enum pipe_fd_type type);
+#if defined(_WIN32)
+void
+zink_create_fence_win32(struct pipe_screen *screen, struct pipe_fence_handle **pfence, void *handle, const void *name, enum pipe_fd_type type);
+#endif
+void
+zink_fence_server_signal(struct pipe_context *pctx, struct pipe_fence_handle *pfence);
+void
 zink_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *pfence);
 
 void
 zink_screen_fence_init(struct pipe_screen *pscreen);
-
-bool
-zink_vkfence_wait(struct zink_screen *screen, struct zink_fence *fence, uint64_t timeout_ns);
 
 void
 zink_fence_clear_resources(struct zink_screen *screen, struct zink_fence *fence);

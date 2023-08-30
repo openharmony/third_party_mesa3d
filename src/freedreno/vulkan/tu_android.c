@@ -1,27 +1,9 @@
 /*
  * Copyright © 2017, Google Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
-#include "tu_private.h"
+#include "tu_android.h"
 
 #include <hardware/gralloc.h>
 
@@ -32,13 +14,13 @@
 #include <hardware/hardware.h>
 #include <hardware/hwvulkan.h>
 
-#include <vulkan/vk_android_native_buffer.h>
-#include <vulkan/vk_icd.h>
-
 #include "drm-uapi/drm_fourcc.h"
 
 #include "util/libsync.h"
 #include "util/os_file.h"
+
+#include "tu_device.h"
+#include "tu_image.h"
 
 static int
 tu_hal_open(const struct hw_module_t *mod,
@@ -471,43 +453,3 @@ tu_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h,
    return VK_SUCCESS;
 }
 #endif
-
-VKAPI_ATTR VkResult VKAPI_CALL
-tu_AcquireImageANDROID(VkDevice device,
-                       VkImage image_h,
-                       int nativeFenceFd,
-                       VkSemaphore semaphore,
-                       VkFence fence)
-{
-   VkResult semaphore_result = VK_SUCCESS, fence_result = VK_SUCCESS;
-
-   if (semaphore != VK_NULL_HANDLE) {
-      int semaphore_fd =
-         nativeFenceFd >= 0 ? os_dupfd_cloexec(nativeFenceFd) : nativeFenceFd;
-      semaphore_result = tu_ImportSemaphoreFdKHR(
-         device, &(VkImportSemaphoreFdInfoKHR) {
-                    .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
-                    .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
-                    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-                    .fd = semaphore_fd,
-                    .semaphore = semaphore,
-                 });
-   }
-
-   if (fence != VK_NULL_HANDLE) {
-      int fence_fd = nativeFenceFd >= 0 ? os_dupfd_cloexec(nativeFenceFd) : nativeFenceFd;
-      fence_result = tu_ImportFenceFdKHR(
-         device, &(VkImportFenceFdInfoKHR) {
-                    .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
-                    .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
-                    .fd = fence_fd,
-                    .fence = fence,
-                 });
-   }
-
-   close(nativeFenceFd);
-
-   if (semaphore_result != VK_SUCCESS)
-      return semaphore_result;
-   return fence_result;
-}

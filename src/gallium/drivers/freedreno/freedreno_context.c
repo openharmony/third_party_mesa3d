@@ -38,6 +38,7 @@
 #include "freedreno_state.h"
 #include "freedreno_texture.h"
 #include "freedreno_util.h"
+#include "freedreno_tracepoints.h"
 #include "util/u_trace_gallium.h"
 
 static void
@@ -402,9 +403,12 @@ fd_context_destroy(struct pipe_context *pctx)
 
 static void
 fd_set_debug_callback(struct pipe_context *pctx,
-                      const struct pipe_debug_callback *cb)
+                      const struct util_debug_callback *cb)
 {
    struct fd_context *ctx = fd_context(pctx);
+   struct fd_screen *screen = ctx->screen;
+
+   util_queue_finish(&screen->compile_queue);
 
    if (cb)
       ctx->debug = *cb;
@@ -418,7 +422,7 @@ fd_get_reset_count(struct fd_context *ctx, bool per_context)
    uint64_t val;
    enum fd_param_id param = per_context ? FD_CTX_FAULTS : FD_GLOBAL_FAULTS;
    int ret = fd_pipe_get_param(ctx->pipe, param, &val);
-   debug_assert(!ret);
+   assert(!ret);
    return val;
 }
 
@@ -446,7 +450,7 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 
 static void
 fd_trace_record_ts(struct u_trace *ut, void *cs, void *timestamps,
-                   unsigned idx)
+                   unsigned idx, bool end_of_pipe)
 {
    struct fd_batch *batch = container_of(ut, struct fd_batch, trace);
    struct fd_ringbuffer *ring = cs;
@@ -508,7 +512,7 @@ static struct pipe_resource *
 create_solid_vertexbuf(struct pipe_context *pctx)
 {
    static const float init_shader_const[] = {
-      -1.000000, +1.000000, +1.000000, +1.000000, -1.000000, +1.000000,
+      -1.000000f, +1.000000f, +1.000000f, +1.000000f, -1.000000f, +1.000000f,
    };
    struct pipe_resource *prsc =
       pipe_buffer_create(pctx->screen, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
@@ -603,6 +607,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
    if (FD_DBG(BSTAT) || FD_DBG(MSGS))
       ctx->stats_users++;
 
+   ctx->flags = flags;
    ctx->screen = screen;
    ctx->pipe = fd_pipe_new2(screen->dev, FD_PIPE_3D, prio);
 
@@ -662,6 +667,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
    ctx->current_scissor = &ctx->disabled_scissor;
 
+   fd_gpu_tracepoint_config_variable();
    u_trace_pipe_context_init(&ctx->trace_context, pctx,
                              fd_trace_record_ts,
                              fd_trace_read_ts,

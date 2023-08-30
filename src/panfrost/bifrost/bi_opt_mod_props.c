@@ -25,6 +25,18 @@
 #include "compiler.h"
 #include "bi_builder.h"
 
+/*
+ * Due to a Bifrost encoding restriction, some instructions cannot have an abs
+ * modifier on both sources. Check if adding a fabs modifier to a given source
+ * of a binary instruction would cause this restriction to be hit.
+ */
+static bool
+bi_would_impact_abs(unsigned arch, bi_instr *I, bi_index repl, unsigned s)
+{
+        return (arch <= 8) && I->src[1 - s].abs &&
+               bi_is_word_equiv(I->src[1 - s], repl);
+}
+
 static bool
 bi_takes_fabs(unsigned arch, bi_instr *I, bi_index repl, unsigned s)
 {
@@ -32,9 +44,15 @@ bi_takes_fabs(unsigned arch, bi_instr *I, bi_index repl, unsigned s)
         case BI_OPCODE_FCMP_V2F16:
         case BI_OPCODE_FMAX_V2F16:
         case BI_OPCODE_FMIN_V2F16:
-                /* Bifrost encoding restriction: can't have both abs if equal sources */
-                return !(arch <= 8 && I->src[1 - s].abs
-                                   && bi_is_word_equiv(I->src[1 - s], repl));
+                return !bi_would_impact_abs(arch, I, repl, s);
+        case BI_OPCODE_FADD_V2F16:
+                /*
+                 * For FADD.v2f16, the FMA pipe has the abs encoding hazard,
+                 * while the FADD pipe cannot encode a clamp. Either case in
+                 * isolation can be worked around in the scheduler, but both
+                 * together is impossible to encode. Avoid the hazard.
+                 */
+                return !(I->clamp && bi_would_impact_abs(arch, I, repl, s));
         case BI_OPCODE_V2F32_TO_V2F16:
                 /* TODO: Needs both match or lower */
                 return false;
@@ -137,17 +155,17 @@ bi_fuse_discard_fcmp(bi_instr *I, bi_instr *mod, unsigned arch)
 void
 bi_opt_mod_prop_forward(bi_context *ctx)
 {
-        bi_instr **lut = calloc(sizeof(bi_instr *), ((ctx->ssa_alloc + 1) << 2));
+        bi_instr **lut = calloc(sizeof(bi_instr *), ctx->ssa_alloc);
 
         bi_foreach_instr_global_safe(ctx, I) {
                 if (bi_is_ssa(I->dest[0]))
-                        lut[bi_word_node(I->dest[0])] = I;
+                        lut[I->dest[0].value] = I;
 
                 bi_foreach_src(I, s) {
                         if (!bi_is_ssa(I->src[s]))
                                 continue;
 
-                        bi_instr *mod = lut[bi_word_node(I->src[s])];
+                        bi_instr *mod = lut[I->src[s].value];
 
                         if (!mod)
                                 continue;
@@ -182,6 +200,10 @@ bi_takes_clamp(bi_instr *I)
         case BI_OPCODE_FMA_RSCALE_V2F16:
         case BI_OPCODE_FADD_RSCALE_F32:
                 return false;
+        case BI_OPCODE_FADD_V2F16:
+                /* Encoding restriction */
+                return !(I->src[0].abs && I->src[1].abs &&
+                         bi_is_word_equiv(I->src[0], I->src[1]));
         default:
                 return bi_opcode_props[I->op].clamp;
         }
@@ -203,6 +225,83 @@ bi_optimizer_clamp(bi_instr *I, bi_instr *use)
         /* Clamps are bitfields (clamp_m1_1/clamp_0_inf) so composition is OR */
         I->clamp |= use->clamp;
         I->dest[0] = use->dest[0];
+        return true;
+}
+
+static enum bi_opcode
+bi_sized_mux_op(unsigned size)
+{
+        switch (size) {
+        case  8: return BI_OPCODE_MUX_V4I8;
+        case 16: return BI_OPCODE_MUX_V2I16;
+        case 32: return BI_OPCODE_MUX_I32;
+        default: unreachable("invalid size");
+        }
+}
+
+static bool
+bi_is_fixed_mux(bi_instr *I, unsigned size, bi_index v1)
+{
+        return I->op == bi_sized_mux_op(size) &&
+               bi_is_value_equiv(I->src[0], bi_zero()) &&
+               bi_is_value_equiv(I->src[1], v1);
+}
+
+static bool
+bi_takes_int_result_type(enum bi_opcode op)
+{
+        switch (op) {
+        case BI_OPCODE_ICMP_I32:
+        case BI_OPCODE_ICMP_S32:
+        case BI_OPCODE_ICMP_U32:
+        case BI_OPCODE_ICMP_V2I16:
+        case BI_OPCODE_ICMP_V2S16:
+        case BI_OPCODE_ICMP_V2U16:
+        case BI_OPCODE_ICMP_V4I8:
+        case BI_OPCODE_ICMP_V4S8:
+        case BI_OPCODE_ICMP_V4U8:
+        case BI_OPCODE_FCMP_F32:
+        case BI_OPCODE_FCMP_V2F16:
+                return true;
+        default:
+                return false;
+        }
+}
+
+static bool
+bi_takes_float_result_type(enum bi_opcode op)
+{
+        return (op == BI_OPCODE_FCMP_F32) ||
+               (op == BI_OPCODE_FCMP_V2F16);
+}
+
+/* CMP+MUX -> CMP with result type */
+static bool
+bi_optimizer_result_type(bi_instr *I, bi_instr *mux)
+{
+        if (bi_opcode_props[I->op].size != bi_opcode_props[mux->op].size)
+                return false;
+
+        if (bi_is_fixed_mux(mux, 32, bi_imm_f32(1.0)) ||
+            bi_is_fixed_mux(mux, 16, bi_imm_f16(1.0))) {
+
+                if (!bi_takes_float_result_type(I->op))
+                        return false;
+
+                I->result_type = BI_RESULT_TYPE_F1;
+        } else if (bi_is_fixed_mux(mux, 32, bi_imm_u32(1)) ||
+                   bi_is_fixed_mux(mux, 16, bi_imm_u16(1)) ||
+                   bi_is_fixed_mux(mux,  8, bi_imm_u8(1))) {
+
+                if (!bi_takes_int_result_type(I->op))
+                        return false;
+
+                I->result_type = BI_RESULT_TYPE_I1;
+        } else {
+                return false;
+        }
+
+        I->dest[0] = mux->dest[0];
         return true;
 }
 
@@ -241,14 +340,14 @@ bi_optimizer_var_tex(bi_context *ctx, bi_instr *var, bi_instr *tex)
 void
 bi_opt_mod_prop_backward(bi_context *ctx)
 {
-        unsigned count = ((ctx->ssa_alloc + 1) << 2);
+        unsigned count = ctx->ssa_alloc;
         bi_instr **uses = calloc(count, sizeof(*uses));
         BITSET_WORD *multiple = calloc(BITSET_WORDS(count), sizeof(*multiple));
 
         bi_foreach_instr_global_rev(ctx, I) {
                 bi_foreach_src(I, s) {
                         if (bi_is_ssa(I->src[s])) {
-                                unsigned v = bi_word_node(I->src[s]);
+                                unsigned v = I->src[s].value;
 
                                 if (uses[v] && uses[v] != I)
                                         BITSET_SET(multiple, v);
@@ -260,15 +359,29 @@ bi_opt_mod_prop_backward(bi_context *ctx)
                 if (!bi_is_ssa(I->dest[0]))
                         continue;
 
-                bi_instr *use = uses[bi_word_node(I->dest[0])];
+                bi_instr *use = uses[I->dest[0].value];
 
-                if (!use || BITSET_TEST(multiple, bi_word_node(I->dest[0])))
+                if (!use || BITSET_TEST(multiple, I->dest[0].value))
                         continue;
 
                 /* Destination has a single use, try to propagate */
                 bool propagated =
                         bi_optimizer_clamp(I, use) ||
-                        bi_optimizer_var_tex(ctx, I, use);
+                        bi_optimizer_result_type(I, use);
+
+                if (!propagated && I->op == BI_OPCODE_LD_VAR_IMM && use->op == BI_OPCODE_SPLIT_I32) {
+                        /* Need to see through the split in a
+                         * ld_var_imm/split/var_tex  sequence
+                         */
+                        assert(bi_is_ssa(use->dest[0]));
+                        bi_instr *tex = uses[use->dest[0].value];
+
+                        if (!tex || BITSET_TEST(multiple, use->dest[0].value))
+                                continue;
+
+                        use = tex;
+                        propagated = bi_optimizer_var_tex(ctx, I, use);
+                }
 
                 if (propagated) {
                         bi_remove_instruction(use);
@@ -299,7 +412,7 @@ bi_lower_opt_instruction(bi_instr *I)
 
         case BI_OPCODE_DISCARD_B32:
                 I->op = BI_OPCODE_DISCARD_F32;
-                I->src[1] = bi_imm_u16(0);
+                I->src[1] = bi_imm_u32(0);
                 I->cmpf = BI_CMPF_NE;
                 break;
 

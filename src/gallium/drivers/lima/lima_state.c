@@ -212,10 +212,14 @@ lima_set_viewport_states(struct pipe_context *pctx,
    struct lima_context *ctx = lima_context(pctx);
 
    /* reverse calculate the parameter of glViewport */
-   ctx->viewport.left = viewport->translate[0] - fabsf(viewport->scale[0]);
-   ctx->viewport.right = viewport->translate[0] + fabsf(viewport->scale[0]);
-   ctx->viewport.bottom = viewport->translate[1] - fabsf(viewport->scale[1]);
-   ctx->viewport.top = viewport->translate[1] + fabsf(viewport->scale[1]);
+   ctx->viewport.left = ctx->ext_viewport.left =
+      viewport->translate[0] - fabsf(viewport->scale[0]);
+   ctx->viewport.right = ctx->ext_viewport.right =
+      viewport->translate[0] + fabsf(viewport->scale[0]);
+   ctx->viewport.bottom = ctx->ext_viewport.bottom =
+      viewport->translate[1] - fabsf(viewport->scale[1]);
+   ctx->viewport.top = ctx->ext_viewport.top =
+      viewport->translate[1] + fabsf(viewport->scale[1]);
 
    /* reverse calculate the parameter of glDepthRange */
    float near, far;
@@ -416,6 +420,9 @@ static void
 lima_set_sample_mask(struct pipe_context *pctx,
                      unsigned sample_mask)
 {
+   struct lima_context *ctx = lima_context(pctx);
+   ctx->sample_mask = sample_mask & ((1 << LIMA_MAX_SAMPLES) - 1);
+   ctx->dirty |= LIMA_CONTEXT_DIRTY_SAMPLE_MASK;
 }
 
 void

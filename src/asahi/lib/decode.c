@@ -115,7 +115,7 @@ agxdecode_mark_mapped(unsigned handle)
 }
 
 static void
-agxdecode_validate_map(void *map)
+agxdecode_decode_segment_list(void *segment_list)
 {
    unsigned nr_handles = 0;
 
@@ -124,44 +124,80 @@ agxdecode_validate_map(void *map)
       mmap_array[i].mapped = false;
 
    /* Check the header */
-   struct agx_map_header *hdr = map;
-   if (hdr->nr_entries == 0) {
-      fprintf(stderr, "ERROR - empty map\n");
+   struct agx_map_header *hdr = segment_list;
+   if (hdr->resource_group_count == 0) {
+      fprintf(agxdecode_dump_stream, "ERROR - empty map\n");
       return;
    }
 
-   for (unsigned i = 0; i < 6; ++i) {
-      unsigned handle = hdr->indices[i];
-      if (handle) {
-         agxdecode_mark_mapped(handle);
-         nr_handles++;
-      }
+   if (hdr->segment_count != 1) {
+      fprintf(agxdecode_dump_stream, "ERROR - can't handle segment count %u\n",
+            hdr->segment_count);
    }
+
+   fprintf(agxdecode_dump_stream, "Segment list:\n");
+   fprintf(agxdecode_dump_stream, "  Command buffer shmem ID: %" PRIx64 "\n", hdr->cmdbuf_id);
+   fprintf(agxdecode_dump_stream, "  Encoder ID: %" PRIx64 "\n", hdr->encoder_id);
+   fprintf(agxdecode_dump_stream, "  Kernel commands start offset: %u\n",
+         hdr->kernel_commands_start_offset);
+   fprintf(agxdecode_dump_stream, "  Kernel commands end offset: %u\n",
+         hdr->kernel_commands_end_offset);
+   fprintf(agxdecode_dump_stream, "  Unknown: 0x%X\n", hdr->unk);
+
+   /* Expected structure: header followed by resource groups */
+   size_t length = sizeof(struct agx_map_header);
+   length += sizeof(struct agx_map_entry) * hdr->resource_group_count;
+
+   if (length != hdr->length) {
+      fprintf(agxdecode_dump_stream, "ERROR: expected length %zu, got %u\n",
+              length, hdr->length);
+   }
+
+   if (hdr->padding[0] || hdr->padding[1])
+      fprintf(agxdecode_dump_stream, "ERROR - padding tripped\n");
 
    /* Check the entries */
-   struct agx_map_entry *entries = (struct agx_map_entry *) (&hdr[1]);
-   for (unsigned i = 0; i < hdr->nr_entries - 1; ++i) {
-      struct agx_map_entry entry = entries[i];
-      
-      for (unsigned j = 0; j < 6; ++j) {
-         unsigned handle = entry.indices[j];
-         if (handle) {
-            agxdecode_mark_mapped(handle);
-            nr_handles++;
-         }
-      }
-   }
+   struct agx_map_entry *groups = ((void *) hdr) + sizeof(*hdr);
+   for (unsigned i = 0; i < hdr->resource_group_count; ++i) {
+      struct agx_map_entry group = groups[i];
+      unsigned count = group.resource_count;
 
-   /* Check the sentinel */
-   if (entries[hdr->nr_entries - 1].indices[0]) {
-      fprintf(stderr, "ERROR - last entry nonzero %u\n", entries[hdr->nr_entries - 1].indices[0]);
-      return;
+      STATIC_ASSERT(ARRAY_SIZE(group.resource_id) == 6);
+      STATIC_ASSERT(ARRAY_SIZE(group.resource_unk) == 6);
+      STATIC_ASSERT(ARRAY_SIZE(group.resource_flags) == 6);
+
+      if ((count < 1) || (count > 6)) {
+         fprintf(agxdecode_dump_stream, "ERROR - invalid count %u\n", count);
+         continue;
+      }
+      
+      for (unsigned j = 0; j < count; ++j) {
+         unsigned handle = group.resource_id[j];
+         unsigned unk = group.resource_unk[j];
+         unsigned flags = group.resource_flags[j];
+
+         if (!handle) {
+            fprintf(agxdecode_dump_stream, "ERROR - invalid handle %u\n", handle);
+            continue;
+         }
+
+         agxdecode_mark_mapped(handle);
+         nr_handles++;
+
+         fprintf(agxdecode_dump_stream, "%u (0x%X, 0x%X)\n", handle, unk, flags);
+      }
+
+      if (group.unka)
+         fprintf(agxdecode_dump_stream, "ERROR - unknown 0x%X\n", group.unka);
+
+      /* Visual separator for resource groups */
+      fprintf(agxdecode_dump_stream, "\n");
    }
 
    /* Check the handle count */
-   if (nr_handles != hdr->nr_handles) {
-      fprintf(stderr, "ERROR - wrong handle count, got %u, expected %u\n",
-            nr_handles, hdr->nr_handles);
+   if (nr_handles != hdr->total_resources) {
+      fprintf(agxdecode_dump_stream, "ERROR - wrong handle count, got %u, expected %u (%u entries)\n",
+            nr_handles, hdr->total_resources, hdr->resource_group_count);
    }
 }
 
@@ -324,8 +360,11 @@ agxdecode_pipeline(const uint8_t *map, UNUSED bool verbose)
       DUMP_UNPACKED(BIND_TEXTURE, temp, "Bind texture\n");
 
       uint8_t *tex = agxdecode_fetch_gpu_mem(temp.buffer, 64);
+      /* Texture length seen to be <= 0x18 bytes, samplers only need 8 byte
+       * alignment */
+      agx_unpack(agxdecode_dump_stream, tex, TEXTURE, t);
       DUMP_CL(TEXTURE, tex, "Texture");
-      hexdump(agxdecode_dump_stream, tex + AGX_TEXTURE_LENGTH, 64 - AGX_TEXTURE_LENGTH, false);
+      DUMP_CL(RENDER_TARGET, tex, "Render target");
 
       return AGX_BIND_TEXTURE_LENGTH;
    } else if (map[0] == 0x9D) {
@@ -361,14 +400,20 @@ agxdecode_record(uint64_t va, size_t size, bool verbose)
    } else if (tag == 0x0C020000) {
       assert(size == AGX_LINKAGE_LENGTH);
       DUMP_CL(LINKAGE, map, "Linkage");
+   } else if (tag == 0x200004a) {
+      assert(size == AGX_UNKNOWN_4A_LENGTH);
+      DUMP_CL(UNKNOWN_4A, map, "Unknown 4a");
    } else if (tag == 0x10000b5) {
       assert(size == AGX_RASTERIZER_LENGTH);
       DUMP_CL(RASTERIZER, map, "Rasterizer");
    } else if (tag == 0x200000) {
       assert(size == AGX_CULL_LENGTH);
       DUMP_CL(CULL, map, "Cull");
+   } else if (tag == 0x000100) {
+      assert(size == AGX_SET_INDEX_LENGTH);
+      DUMP_CL(SET_INDEX, map, "Set index");
    } else if (tag == 0x800000) {
-      assert(size == (AGX_BIND_PIPELINE_LENGTH + 4));
+      assert(size == (AGX_BIND_PIPELINE_LENGTH - 4));
 
       agx_unpack(agxdecode_dump_stream, map, BIND_PIPELINE, cmd);
       agxdecode_stateful(cmd.pipeline, "Pipeline", agxdecode_pipeline, verbose);
@@ -408,35 +453,24 @@ agxdecode_cmd(const uint8_t *map, bool verbose)
       agx_unpack(agxdecode_dump_stream, map, BIND_PIPELINE, cmd);
       agxdecode_stateful(cmd.pipeline, "Pipeline", agxdecode_pipeline, verbose);
       DUMP_UNPACKED(BIND_PIPELINE, cmd, "Bind vertex pipeline\n");
-
-      /* Random unaligned null byte, it's pretty awful.. */
-      if (map[AGX_BIND_PIPELINE_LENGTH]) {
-         fprintf(agxdecode_dump_stream, "Unk unaligned %X\n",
-               map[AGX_BIND_PIPELINE_LENGTH]);
-      }
-
-      return AGX_BIND_PIPELINE_LENGTH + 1;
-   } else if (map[1] == 0xc0 && map[2] == 0x61) {
-      DUMP_CL(DRAW, map - 1, "Draw");
+      return AGX_BIND_PIPELINE_LENGTH;
+   } else if (map[3] == 0x61) {
+      DUMP_CL(DRAW, map, "Draw");
       return AGX_DRAW_LENGTH;
-   } else if (map[1] == 0x00 && map[2] == 0x00) {
+   } else if (map[2] == 0x00 && map[3] == 0x00) {
       /* No need to explicitly dump the record */
       agx_unpack(agxdecode_dump_stream, map, RECORD, cmd);
 
-      /* XXX: Why? */
-      if (pipeline_base && ((cmd.data >> 32) == 0)) {
-         cmd.data |= pipeline_base & 0xFF00000000ull;
-      }
-
-      struct agx_bo *mem = agxdecode_find_mapped_gpu_mem_containing(cmd.data);
+      uint64_t address = (((uint64_t) cmd.pointer_hi) << 32) | cmd.pointer_lo;
+      struct agx_bo *mem = agxdecode_find_mapped_gpu_mem_containing(address);
 
       if (mem)
-         agxdecode_record(cmd.data, cmd.size_words * 4, verbose);
+         agxdecode_record(address, cmd.size_words * 4, verbose);
       else
          DUMP_UNPACKED(RECORD, cmd, "Non-existant record (XXX)\n");
 
       return AGX_RECORD_LENGTH;
-   } else if (map[0] == 0 && map[1] == 0 && map[2] == 0xC0 && map[3] == 0x00) {
+   } else if (map[1] == 0 && map[2] == 0 && map[3] == 0xC0 && map[4] == 0x00) {
       ASSERTED unsigned zero[4] = { 0 };
       assert(memcmp(map + 4, zero, sizeof(zero)) == 0);
       return STATE_DONE;
@@ -455,42 +489,67 @@ agxdecode_cmdstream(unsigned cmdbuf_handle, unsigned map_handle, bool verbose)
    assert(cmdbuf != NULL && "nonexistant command buffer");
    assert(map != NULL && "nonexistant mapping");
 
-   if (verbose) {
-      agxdecode_dump_bo(cmdbuf, "Command buffer");
-      agxdecode_dump_bo(map, "Mapping");
-   }
-
    /* Before decoding anything, validate the map. Set bo->mapped fields */
-   agxdecode_validate_map(map->ptr.cpu);
+   agxdecode_decode_segment_list(map->ptr.cpu);
 
    /* Print the IOGPU stuff */
    agx_unpack(agxdecode_dump_stream, cmdbuf->ptr.cpu, IOGPU_HEADER, cmd);
    DUMP_UNPACKED(IOGPU_HEADER, cmd, "IOGPU Header\n");
-   assert(cmd.attachment_offset_1 == cmd.attachment_offset_2);
+   agx_unpack(agxdecode_dump_stream, ((uint32_t *) cmdbuf->ptr.cpu) + 160,
+              IOGPU_INTERNAL_PIPELINES, pip);
 
-   uint32_t *attachments = (uint32_t *) ((uint8_t *) cmdbuf->ptr.cpu + cmd.attachment_offset_1);
+   DUMP_CL(IOGPU_INTERNAL_PIPELINES, ((uint32_t *) cmdbuf->ptr.cpu) + 160, "Internal pipelines");
+   DUMP_CL(IOGPU_AUX_FRAMEBUFFER, ((uint32_t *) cmdbuf->ptr.cpu) + 228, "Aux Framebuffer");
+
+   agx_unpack(agxdecode_dump_stream, ((uint32_t *) cmdbuf->ptr.cpu) + 292,
+         IOGPU_CLEAR_Z_S, clearzs);
+   DUMP_UNPACKED(IOGPU_CLEAR_Z_S, clearzs, "Clear Z/S");
+
+   /* Guard against changes */
+   uint32_t zeroes[356 - 344] = { 0 };
+   assert(memcmp(((uint32_t *) cmdbuf->ptr.cpu) + 344, zeroes, 4 * (356 - 344)) == 0);
+
+   DUMP_CL(IOGPU_MISC, ((uint32_t *) cmdbuf->ptr.cpu) + 356, "Misc");
+
+   /* Should be unused, we think */
+   for (unsigned i = (0x6B0 / 4); i < (cmd.attachment_offset / 4); ++i) {
+      assert(((uint32_t *) cmdbuf->ptr.cpu)[i] == 0);
+   }
+
+   DUMP_CL(IOGPU_ATTACHMENT_COUNT, ((uint8_t *) cmdbuf->ptr.cpu +
+            cmd.attachment_offset), "Attachment count");
+
+   uint32_t *attachments = (uint32_t *) ((uint8_t *) cmdbuf->ptr.cpu + cmd.attachment_offset);
    unsigned attachment_count = attachments[3];
    for (unsigned i = 0; i < attachment_count; ++i) {
       uint32_t *ptr = attachments + 4 + (i * AGX_IOGPU_ATTACHMENT_LENGTH / 4);
       DUMP_CL(IOGPU_ATTACHMENT, ptr, "Attachment");
    }
 
-   /* TODO: What else is in here? */
    uint64_t *encoder = ((uint64_t *) cmdbuf->ptr.cpu) + 7;
    agxdecode_stateful(*encoder, "Encoder", agxdecode_cmd, verbose);
 
-   uint64_t *clear_pipeline = ((uint64_t *) cmdbuf->ptr.cpu) + 79;
-   if (*clear_pipeline) {
-      assert(((*clear_pipeline) & 0xF) == 0x4);
-      agxdecode_stateful((*clear_pipeline) & ~0xF, "Clear pipeline",
+   if (pip.clear_pipeline_unk) {
+      assert(pip.clear_pipeline_unk == 0x4);
+      agxdecode_stateful(pip.clear_pipeline, "Clear pipeline",
             agxdecode_pipeline, verbose);
    }
 
-   uint64_t *store_pipeline = ((uint64_t *) cmdbuf->ptr.cpu) + 82;
-   if (*store_pipeline) {
-      assert(((*store_pipeline) & 0xF) == 0x4);
-      agxdecode_stateful((*store_pipeline) & ~0xF, "Store pipeline",
+   if (pip.store_pipeline_unk) {
+      assert(pip.store_pipeline_unk == 0x4);
+      agxdecode_stateful(pip.store_pipeline, "Store pipeline",
             agxdecode_pipeline, verbose);
+   }
+
+   assert((clearzs.partial_reload_pipeline_unk & 0xF) == 0x4);
+   if (clearzs.partial_reload_pipeline) {
+      agxdecode_stateful(clearzs.partial_reload_pipeline,
+            "Partial reload pipeline", agxdecode_pipeline, verbose);
+   }
+
+   if (clearzs.partial_store_pipeline) {
+      agxdecode_stateful(clearzs.partial_store_pipeline,
+            "Partial store pipeline", agxdecode_pipeline, verbose);
    }
 
    agxdecode_map_read_write();
@@ -503,7 +562,7 @@ agxdecode_dump_mappings(unsigned map_handle)
 
    struct agx_bo *map = agxdecode_find_handle(map_handle, AGX_ALLOC_MEMMAP);
    assert(map != NULL && "nonexistant mapping");
-   agxdecode_validate_map(map->ptr.cpu);
+   agxdecode_decode_segment_list(map->ptr.cpu);
 
    for (unsigned i = 0; i < mmap_count; ++i) {
       if (!mmap_array[i].ptr.cpu || !mmap_array[i].size || !mmap_array[i].mapped)
@@ -562,7 +621,7 @@ agxdecode_dump_file_open(void)
    /* This does a getenv every frame, so it is possible to use
     * setenv to change the base at runtime.
     */
-   const char *dump_file_base = getenv("PANDECODE_DUMP_FILE") ?: "agxdecode.dump";
+   const char *dump_file_base = getenv("AGXDECODE_DUMP_FILE") ?: "agxdecode.dump";
    if (!strcmp(dump_file_base, "stderr"))
       agxdecode_dump_stream = stderr;
    else {

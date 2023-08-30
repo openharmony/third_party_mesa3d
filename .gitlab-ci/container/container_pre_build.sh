@@ -10,7 +10,7 @@ fi
 
 export CCACHE_COMPILERCHECK=content
 export CCACHE_COMPRESS=true
-export CCACHE_DIR=/cache/mesa/ccache
+export CCACHE_DIR=/cache/$CI_PROJECT_NAME/ccache
 export PATH=$CCACHE_PATH:$PATH
 
 # CMake ignores $PATH, so we have to force CC/GCC to the ccache versions.
@@ -34,3 +34,9 @@ chmod +x /usr/local/bin/ninja
 # Set MAKEFLAGS so that all make invocations in container builds include the
 # flags (doesn't apply to non-container builds, but we don't run make there)
 export MAKEFLAGS="-j${FDO_CI_CONCURRENT:-4}"
+
+# make wget to try more than once, when download fails or timeout
+echo -e "retry_connrefused = on\n" \
+        "read_timeout = 300\n" \
+        "tries = 4\n" \
+        "wait_retry = 32" >> /etc/wgetrc

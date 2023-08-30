@@ -34,6 +34,9 @@ namespace aco {
 namespace {
 
 constexpr const size_t max_reg_cnt = 512;
+constexpr const size_t max_sgpr_cnt = 128;
+constexpr const size_t min_vgpr = 256;
+constexpr const size_t max_vgpr_cnt = 256;
 
 struct Idx {
    bool operator==(const Idx& other) const { return block == other.block && instr == other.instr; }
@@ -66,17 +69,46 @@ struct pr_opt_ctx {
          std::fill(instr_idx_by_regs[block->index].begin(), instr_idx_by_regs[block->index].end(),
                    not_written_in_block);
       } else {
-         unsigned first_pred = block->linear_preds[0];
-         for (unsigned i = 0; i < max_reg_cnt; i++) {
-            bool all_same = std::all_of(
-               std::next(block->linear_preds.begin()), block->linear_preds.end(),
-               [&](unsigned pred)
-               { return instr_idx_by_regs[pred][i] == instr_idx_by_regs[first_pred][i]; });
+         const uint32_t first_linear_pred = block->linear_preds[0];
+         const std::vector<uint32_t>& linear_preds = block->linear_preds;
+
+         for (unsigned i = 0; i < max_sgpr_cnt; i++) {
+            const bool all_same = std::all_of(
+               std::next(linear_preds.begin()), linear_preds.end(),
+               [=](unsigned pred)
+               { return instr_idx_by_regs[pred][i] == instr_idx_by_regs[first_linear_pred][i]; });
 
             if (all_same)
-               instr_idx_by_regs[block->index][i] = instr_idx_by_regs[first_pred][i];
+               instr_idx_by_regs[block->index][i] = instr_idx_by_regs[first_linear_pred][i];
             else
-               instr_idx_by_regs[block->index][i] = not_written_in_block;
+               instr_idx_by_regs[block->index][i] = written_by_multiple_instrs;
+         }
+
+         if (!block->logical_preds.empty()) {
+            /* We assume that VGPRs are only read by blocks which have a logical predecessor,
+             * ie. any block that reads any VGPR has at least 1 logical predecessor.
+             */
+            const unsigned first_logical_pred = block->logical_preds[0];
+            const std::vector<uint32_t>& logical_preds = block->logical_preds;
+
+            for (unsigned i = min_vgpr; i < (min_vgpr + max_vgpr_cnt); i++) {
+               const bool all_same = std::all_of(
+                  std::next(logical_preds.begin()), logical_preds.end(),
+                  [=](unsigned pred) {
+                     return instr_idx_by_regs[pred][i] == instr_idx_by_regs[first_logical_pred][i];
+                  });
+
+               if (all_same)
+                  instr_idx_by_regs[block->index][i] = instr_idx_by_regs[first_logical_pred][i];
+               else
+                  instr_idx_by_regs[block->index][i] = written_by_multiple_instrs;
+            }
+         } else {
+            /* If a block has no logical predecessors, it is not part of the
+             * logical CFG and therefore it also won't have any logical successors.
+             * Such a block does not write any VGPRs ever.
+             */
+            assert(block->logical_succs.empty());
          }
       }
    }
@@ -127,16 +159,7 @@ last_writer_idx(pr_opt_ctx& ctx, const Operand& op)
    if (op.isConstant() || op.isUndefined())
       return const_or_undef;
 
-   assert(op.physReg().reg() < max_reg_cnt);
-   Idx instr_idx = ctx.instr_idx_by_regs[ctx.current_block->index][op.physReg().reg()];
-
-#ifndef NDEBUG
-   /* Debug mode:  */
-   instr_idx = last_writer_idx(ctx, op.physReg(), op.regClass());
-   assert(instr_idx != written_by_multiple_instrs);
-#endif
-
-   return instr_idx;
+   return last_writer_idx(ctx, op.physReg(), op.regClass());
 }
 
 bool
@@ -194,7 +217,7 @@ try_apply_branch_vcc(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
     */
 
    /* Don't try to optimize this on GFX6-7 because SMEM may corrupt the vccz bit. */
-   if (ctx.program->chip_class < GFX8)
+   if (ctx.program->gfx_level < GFX8)
       return;
 
    if (instr->format != Format::PSEUDO_BRANCH || instr->operands.size() == 0 ||
@@ -386,7 +409,7 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
     *
     */
 
-   if (!instr->isVALU() || instr->isDPP() || !can_use_DPP(instr, false))
+   if (!instr->isVALU() || instr->isDPP())
       return;
 
    for (unsigned i = 0; i < MIN2(2, instr->operands.size()); i++) {
@@ -394,9 +417,12 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (!op_instr_idx.found())
          continue;
 
-      Instruction* mov = ctx.get(op_instr_idx);
+      const Instruction* mov = ctx.get(op_instr_idx);
       if (mov->opcode != aco_opcode::v_mov_b32 || !mov->isDPP())
          continue;
+      bool dpp8 = mov->isDPP8();
+      if (!can_use_DPP(instr, false, dpp8))
+         return;
 
       /* If we aren't going to remove the v_mov_b32, we have to ensure that it doesn't overwrite
        * it's own operand before we use it.
@@ -412,25 +438,34 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (i && !can_swap_operands(instr, &instr->opcode))
          continue;
 
-      /* anything else doesn't make sense in SSA */
-      assert(mov->dpp().row_mask == 0xf && mov->dpp().bank_mask == 0xf);
+      if (!dpp8) /* anything else doesn't make sense in SSA */
+         assert(mov->dpp16().row_mask == 0xf && mov->dpp16().bank_mask == 0xf);
 
       if (--ctx.uses[mov->definitions[0].tempId()])
          ctx.uses[mov->operands[0].tempId()]++;
 
-      convert_to_DPP(instr);
+      convert_to_DPP(instr, dpp8);
 
-      DPP_instruction* dpp = &instr->dpp();
-      if (i) {
-         std::swap(dpp->operands[0], dpp->operands[1]);
-         std::swap(dpp->neg[0], dpp->neg[1]);
-         std::swap(dpp->abs[0], dpp->abs[1]);
+      if (dpp8) {
+         DPP8_instruction* dpp = &instr->dpp8();
+         if (i) {
+            std::swap(dpp->operands[0], dpp->operands[1]);
+         }
+         dpp->operands[0] = mov->operands[0];
+         memcpy(dpp->lane_sel, mov->dpp8().lane_sel, sizeof(dpp->lane_sel));
+      } else {
+         DPP16_instruction* dpp = &instr->dpp16();
+         if (i) {
+            std::swap(dpp->operands[0], dpp->operands[1]);
+            std::swap(dpp->neg[0], dpp->neg[1]);
+            std::swap(dpp->abs[0], dpp->abs[1]);
+         }
+         dpp->operands[0] = mov->operands[0];
+         dpp->dpp_ctrl = mov->dpp16().dpp_ctrl;
+         dpp->bound_ctrl = true;
+         dpp->neg[0] ^= mov->dpp16().neg[0] && !dpp->abs[0];
+         dpp->abs[0] |= mov->dpp16().abs[0];
       }
-      dpp->operands[0] = mov->operands[0];
-      dpp->dpp_ctrl = mov->dpp().dpp_ctrl;
-      dpp->bound_ctrl = true;
-      dpp->neg[0] ^= mov->dpp().neg[0] && !dpp->abs[0];
-      dpp->abs[0] |= mov->dpp().abs[0];
       return;
    }
 }

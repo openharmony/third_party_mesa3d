@@ -60,11 +60,17 @@ struct fd_dev_info {
 
          uint32_t reg_size_vec4;
 
+         /* The size (in instrlen units (128 bytes)) of instruction cache where
+          * we preload a shader. Loading more than this could trigger a hang
+          * on gen3 and later.
+          */
+         uint32_t instr_cache_size;
+
          /* Whether the PC_MULTIVIEW_MASK register exists. */
          bool supports_multiview_mask;
 
          /* info for setting RB_CCU_CNTL */
-         bool ccu_cntl_gmem_unk2;
+         bool concurrent_resolve;
          bool has_z24uint_s8uint;
 
          bool tess_use_shared;
@@ -121,6 +127,23 @@ struct fd_dev_info {
          bool has_ccu_flush_bug;
 
          bool has_lpac;
+
+         bool has_getfiberid;
+
+         bool has_dp2acc;
+         bool has_dp4acc;
+
+         /* LRZ fast-clear works on all gens, however blob disables it on
+          * gen1 and gen2. We also elect to disable fast-clear on these gens
+          * because for close to none gains it adds complexity and seem to work
+          * a bit differently from gen3+. Which creates at least one edge case:
+          * if first draw which uses LRZ fast-clear doesn't lock LRZ direction
+          * the fast-clear value is undefined. For details see
+          * https://gitlab.freedesktop.org/mesa/mesa/-/issues/6829
+          */
+         bool enable_lrz_fast_clear;
+         bool has_lrz_dir_tracking;
+         bool lrz_track_quirk;
 
          struct {
             uint32_t RB_UNKNOWN_8E04_blit;

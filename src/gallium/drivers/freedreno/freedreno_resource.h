@@ -244,7 +244,7 @@ fd_resource_set_usage(struct pipe_resource *prsc, enum fd_dirty_3d_state usage)
    if (likely(rsc->dirty & usage))
       return;
    fd_resource_lock(rsc);
-   rsc->dirty |= usage;
+   or_mask(rsc->dirty, usage);
    fd_resource_unlock(rsc);
 }
 
@@ -295,7 +295,7 @@ static inline uint32_t
 fd_resource_offset(struct fd_resource *rsc, unsigned level, unsigned layer)
 {
    uint32_t offset = fdl_surface_offset(&rsc->layout, level, layer);
-   debug_assert(offset < fd_bo_size(rsc->bo));
+   assert(offset < fd_bo_size(rsc->bo));
    return offset;
 }
 
@@ -303,7 +303,7 @@ static inline uint32_t
 fd_resource_ubwc_offset(struct fd_resource *rsc, unsigned level, unsigned layer)
 {
    uint32_t offset = fdl_ubwc_offset(&rsc->layout, level, layer);
-   debug_assert(offset < fd_bo_size(rsc->bo));
+   assert(offset < fd_bo_size(rsc->bo));
    return offset;
 }
 
@@ -312,7 +312,7 @@ static inline bool
 fd_resource_level_linear(const struct pipe_resource *prsc, int level)
 {
    struct fd_screen *screen = fd_screen(prsc->screen);
-   debug_assert(!is_a3xx(screen));
+   assert(!is_a3xx(screen));
 
    return fdl_level_linear(&fd_resource_const(prsc)->layout, level);
 }
@@ -390,6 +390,27 @@ fd_batch_resource_read(struct fd_batch *batch,
     */
    if (unlikely(!fd_batch_references_resource(batch, rsc)))
       fd_batch_resource_read_slowpath(batch, rsc);
+}
+
+static inline enum fdl_view_type
+fdl_type_from_pipe_target(enum pipe_texture_target target) {
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_1D_ARRAY:
+      return FDL_VIEW_TYPE_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_2D_ARRAY:
+      return FDL_VIEW_TYPE_2D;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
+      return FDL_VIEW_TYPE_CUBE;
+   case PIPE_TEXTURE_3D:
+      return FDL_VIEW_TYPE_3D;
+   case PIPE_MAX_TEXTURE_TYPES:
+   default:
+      unreachable("bad texture type");
+   }
 }
 
 #endif /* FREEDRENO_RESOURCE_H_ */

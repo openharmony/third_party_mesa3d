@@ -287,16 +287,10 @@ glx_context_init(struct glx_context *gc,
 static Bool
 __glXIsDirect(Display * dpy, GLXContextID contextID, Bool *error)
 {
-   CARD8 opcode;
    xcb_connection_t *c;
    xcb_generic_error_t *err;
    xcb_glx_is_direct_reply_t *reply;
    Bool is_direct;
-
-   opcode = __glXSetupForCommand(dpy);
-   if (!opcode) {
-      return False;
-   }
 
    c = XGetXCBConnection(dpy);
    reply = xcb_glx_is_direct_reply(c, xcb_glx_is_direct(c, contextID), &err);
@@ -324,7 +318,7 @@ __glXIsDirect(Display * dpy, GLXContextID contextID, Bool *error)
 static GLXContext
 CreateContext(Display *dpy, int generic_id, struct glx_config *config,
               GLXContext shareList_user, Bool allowDirect,
-	      unsigned code, int renderType, int screen)
+	      unsigned code, int renderType)
 {
    struct glx_context *gc;
    struct glx_screen *psc;
@@ -332,12 +326,20 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
    if (dpy == NULL)
       return NULL;
 
-   psc = GetGLXScreenConfigs(dpy, screen);
+   psc = GetGLXScreenConfigs(dpy, config->screen);
    if (psc == NULL)
       return NULL;
 
    if (generic_id == None)
       return NULL;
+
+   /* Some application may request an indirect context but we may want to force a direct
+    * one because Xorg only allows indirect contexts if they were enabled.
+    */
+   if (!allowDirect &&
+       psc->force_direct_context) {
+      allowDirect = 1;
+   }
 
    gc = NULL;
 #ifdef GLX_USE_APPLEGL
@@ -362,7 +364,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->glxCode = X_GLXCreateContext;
       req->context = gc->xid = XAllocID(dpy);
       req->visual = generic_id;
-      req->screen = screen;
+      req->screen = config->screen;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
       break;
@@ -377,7 +379,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->glxCode = X_GLXCreateNewContext;
       req->context = gc->xid = XAllocID(dpy);
       req->fbconfig = generic_id;
-      req->screen = screen;
+      req->screen = config->screen;
       req->renderType = renderType;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
@@ -398,7 +400,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->vendorCode = X_GLXvop_CreateContextWithConfigSGIX;
       req->context = gc->xid = XAllocID(dpy);
       req->fbconfig = generic_id;
-      req->screen = screen;
+      req->screen = config->screen;
       req->renderType = renderType;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
@@ -470,7 +472,7 @@ glXCreateContext(Display * dpy, XVisualInfo * vis,
 #endif
 
    return CreateContext(dpy, vis->visualid, config, shareList, allowDirect,
-                        X_GLXCreateContext, renderType, vis->screen);
+                        X_GLXCreateContext, renderType);
 }
 
 static void
@@ -754,7 +756,7 @@ glXCreateGLXPixmap(Display * dpy, XVisualInfo * vis, Pixmap pixmap)
          return xid;
 
       config = glx_config_find_visual(psc->visuals, vis->visualid);
-      pdraw = psc->driScreen->createDrawable(psc, pixmap, xid, config);
+      pdraw = psc->driScreen->createDrawable(psc, pixmap, xid, GLX_PIXMAP_BIT, config);
       if (pdraw == NULL) {
          fprintf(stderr, "failed to create pixmap\n");
          xid = None;
@@ -852,7 +854,8 @@ glXSwapBuffers(Display * dpy, GLXDrawable drawable)
       if (pdraw != NULL) {
          Bool flush = gc != &dummyContext && drawable == gc->currentDrawable;
 
-         pdraw->psc->driScreen->swapBuffers(pdraw, 0, 0, 0, flush);
+         if (pdraw->psc->driScreen->swapBuffers(pdraw, 0, 0, 0, flush) == -1)
+             __glXSendError(dpy, GLXBadCurrentWindow, 0, X_GLXSwapBuffers, false);
          return;
       }
    }
@@ -1027,6 +1030,7 @@ fbconfigs_compatible(const struct glx_config * const a,
    MATCH_MASK(drawableType);
    MATCH_MASK(renderType);
    MATCH_DONT_CARE(sRGBCapable);
+   MATCH_DONT_CARE(floatComponentsNV);
 
    /* There is a bug in a few of the XFree86 DDX drivers.  They contain
     * visuals with a "transparent type" of 0 when they really mean GLX_NONE.
@@ -1641,8 +1645,7 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
    }
 
    return CreateContext(dpy, config->fbconfigID, config, shareList,
-			allowDirect, X_GLXCreateNewContext, renderType,
-			config->screen);
+			allowDirect, X_GLXCreateNewContext, renderType);
 }
 
 
@@ -2041,8 +2044,7 @@ glXCreateContextWithConfigSGIX(Display * dpy,
        && __glXExtensionBitIsEnabled(psc, SGIX_fbconfig_bit)) {
       gc = CreateContext(dpy, config->fbconfigID, config, shareList,
                          allowDirect,
-			 X_GLXvop_CreateContextWithConfigSGIX, renderType,
-			 config->screen);
+			 X_GLXvop_CreateContextWithConfigSGIX, renderType);
    }
 
    return gc;

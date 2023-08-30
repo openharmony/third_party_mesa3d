@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Raspberry Pi
+ * Copyright © 2021 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -138,6 +138,7 @@ v3dX(pack_sampler_state)(struct v3dv_sampler *sampler,
 
 void
 v3dX(framebuffer_compute_internal_bpp_msaa)(const struct v3dv_framebuffer *framebuffer,
+                                            const struct v3dv_cmd_buffer_attachment_state *attachments,
                                             const struct v3dv_subpass *subpass,
                                             uint8_t *max_bpp, bool *msaa);
 
@@ -189,14 +190,14 @@ v3dX(meta_emit_copy_image_to_buffer_rcl)(struct v3dv_job *job,
                                          struct v3dv_buffer *buffer,
                                          struct v3dv_image *image,
                                          struct v3dv_meta_framebuffer *framebuffer,
-                                         const VkBufferImageCopy2KHR *region);
+                                         const VkBufferImageCopy2 *region);
 
 void
 v3dX(meta_emit_resolve_image_rcl)(struct v3dv_job *job,
                                   struct v3dv_image *dst,
                                   struct v3dv_image *src,
                                   struct v3dv_meta_framebuffer *framebuffer,
-                                  const VkImageResolve2KHR *region);
+                                  const VkImageResolve2 *region);
 
 void
 v3dX(meta_emit_copy_buffer)(struct v3dv_job *job,
@@ -223,16 +224,20 @@ v3dX(meta_emit_copy_image_rcl)(struct v3dv_job *job,
                                struct v3dv_image *dst,
                                struct v3dv_image *src,
                                struct v3dv_meta_framebuffer *framebuffer,
-                               const VkImageCopy2KHR *region);
+                               const VkImageCopy2 *region);
 
 void
 v3dX(meta_emit_tfu_job)(struct v3dv_cmd_buffer *cmd_buffer,
-                        struct v3dv_image *dst,
-                        uint32_t dst_mip_level,
-                        uint32_t dst_layer,
-                        struct v3dv_image *src,
-                        uint32_t src_mip_level,
-                        uint32_t src_layer,
+                        uint32_t dst_bo_handle,
+                        uint32_t dst_offset,
+                        enum v3d_tiling_mode dst_tiling,
+                        uint32_t dst_padded_height_or_stride,
+                        uint32_t dst_cpp,
+                        uint32_t src_bo_handle,
+                        uint32_t src_offset,
+                        enum v3d_tiling_mode src_tiling,
+                        uint32_t src_padded_height_or_stride,
+                        uint32_t src_cpp,
                         uint32_t width,
                         uint32_t height,
                         const struct v3dv_format *format);
@@ -259,7 +264,7 @@ v3dX(meta_emit_copy_buffer_to_image_rcl)(struct v3dv_job *job,
                                          struct v3dv_image *image,
                                          struct v3dv_buffer *buffer,
                                          struct v3dv_meta_framebuffer *framebuffer,
-                                         const VkBufferImageCopy2KHR *region);
+                                         const VkBufferImageCopy2 *region);
 
 void
 v3dX(get_internal_type_bpp_for_image_aspects)(VkFormat vk_format,
@@ -273,7 +278,7 @@ v3dX(meta_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
                        uint32_t dst_offset,
                        struct v3dv_bo *src,
                        uint32_t src_offset,
-                       const VkBufferCopy2KHR *region);
+                       const VkBufferCopy2 *region);
 
 void
 v3dX(meta_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
@@ -295,6 +300,7 @@ v3dX(pipeline_pack_state)(struct v3dv_pipeline *pipeline,
                           const VkPipelineDepthStencilStateCreateInfo *ds_info,
                           const VkPipelineRasterizationStateCreateInfo *rs_info,
                           const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *pv_info,
+                          const VkPipelineRasterizationLineStateCreateInfoEXT *ls_info,
                           const VkPipelineMultisampleStateCreateInfo *ms_info);
 void
 v3dX(pipeline_pack_compile_state)(struct v3dv_pipeline *pipeline,

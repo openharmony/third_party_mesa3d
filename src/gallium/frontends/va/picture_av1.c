@@ -25,7 +25,7 @@
  *
  **************************************************************************/
 
-#include "vl/vl_vlc.h"
+#include "util/vl_vlc.h"
 #include "va_private.h"
 
 #define AV1_REFS_PER_FRAME 7
@@ -192,9 +192,12 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
    context->desc.av1.picture_parameter.u_ac_delta_q = av1->u_ac_delta_q;
    context->desc.av1.picture_parameter.v_dc_delta_q = av1->v_dc_delta_q;
    context->desc.av1.picture_parameter.v_ac_delta_q = av1->v_ac_delta_q;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_y = av1->qmatrix_fields.bits.qm_y | 0xf;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_u = av1->qmatrix_fields.bits.qm_u | 0xf;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_v = av1->qmatrix_fields.bits.qm_v | 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_y = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_y : 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_u = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_u : 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_v = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_v : 0xf;
 
    /* Segmentation Params */
    context->desc.av1.picture_parameter.seg_info.segment_info_fields.enabled =
@@ -351,6 +354,6 @@ void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, un
 {
    VASliceParameterBufferAV1 *av1 = buf->data;
 
-   context->desc.av1.slice_parameter.slice_data_size[num >> 1] = av1->slice_data_size;
-   context->desc.av1.slice_parameter.slice_data_offset[num >> 1] = av1->slice_data_offset;
+   context->desc.av1.slice_parameter.slice_data_size[num] = av1->slice_data_size;
+   context->desc.av1.slice_parameter.slice_data_offset[num] = av1->slice_data_offset;
 }

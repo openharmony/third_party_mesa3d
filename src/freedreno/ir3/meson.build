@@ -27,7 +27,7 @@ ir3_nir_trig_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 ir3_nir_imul_c = custom_target(
@@ -39,7 +39,7 @@ ir3_nir_imul_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 ir3_parser = custom_target(
@@ -76,7 +76,6 @@ libfreedreno_ir3_files = files(
   'ir3_context.h',
   'ir3_cf.c',
   'ir3_cp.c',
-  'ir3_cp_postsched.c',
   'ir3_cse.c',
   'ir3_dce.c',
   'ir3_delay.c',
@@ -86,6 +85,7 @@ libfreedreno_ir3_files = files(
   'ir3_image.h',
   'ir3.h',
   'ir3_legalize.c',
+  'ir3_legalize_relative.c',
   'ir3_liveness.c',
   'ir3_lower_parallelcopy.c',
   'ir3_lower_spill.c',
@@ -94,13 +94,15 @@ libfreedreno_ir3_files = files(
   'ir3_nir.c',
   'ir3_nir.h',
   'ir3_nir_analyze_ubo_ranges.c',
+  'ir3_nir_lower_64b.c',
   'ir3_nir_lower_load_barycentric_at_sample.c',
   'ir3_nir_lower_load_barycentric_at_offset.c',
   'ir3_nir_lower_io_offsets.c',
   'ir3_nir_lower_tess.c',
   'ir3_nir_lower_tex_prefetch.c',
-  'ir3_nir_lower_tg4_to_tex.c',
+  'ir3_nir_lower_wide_load_store.c',
   'ir3_nir_move_varying_inputs.c',
+  'ir3_nir_opt_preamble.c',
   'ir3_postsched.c',
   'ir3_print.c',
   'ir3_ra.c',

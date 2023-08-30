@@ -33,7 +33,15 @@
 #include "macros.h"
 #include "points.h"
 #include "mtypes.h"
+#include "api_exec_decl.h"
 
+
+static void
+update_point_size_set(struct gl_context *ctx)
+{
+   float size = CLAMP(ctx->Point.Size, ctx->Point.MinSize, ctx->Point.MaxSize);
+   ctx->PointSizeIsSet = (size == 1.0 && ctx->Point.Size == 1.0) || ctx->Point._Attenuated;
+}
 
 /**
  * Set current point size.
@@ -53,9 +61,7 @@ point_size(struct gl_context *ctx, GLfloat size, bool no_error)
 
    FLUSH_VERTICES(ctx, _NEW_POINT, GL_POINT_BIT);
    ctx->Point.Size = size;
-
-   if (ctx->Driver.PointSize)
-      ctx->Driver.PointSize(ctx, size);
+   update_point_size_set(ctx);
 }
 
 
@@ -113,19 +119,6 @@ _mesa_PointParameterfv( GLenum pname, const GLfloat *params)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   /* Drivers that support point sprites must also support point parameters.
-    * If point parameters aren't supported, then this function shouldn't even
-    * exist.
-    */
-   assert(!ctx->Extensions.ARB_point_sprite ||
-          ctx->Extensions.EXT_point_parameters);
-
-   if (!ctx->Extensions.EXT_point_parameters) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "unsupported function called (unsupported extension)");
-      return;
-   }
-
    switch (pname) {
       case GL_DISTANCE_ATTENUATION_EXT:
          if (TEST_EQ_3V(ctx->Point.Params, params))
@@ -136,6 +129,7 @@ _mesa_PointParameterfv( GLenum pname, const GLfloat *params)
          ctx->Point._Attenuated = (ctx->Point.Params[0] != 1.0F ||
                                    ctx->Point.Params[1] != 0.0F ||
                                    ctx->Point.Params[2] != 0.0F);
+         update_point_size_set(ctx);
          break;
       case GL_POINT_SIZE_MIN_EXT:
          if (params[0] < 0.0F) {
@@ -198,9 +192,6 @@ _mesa_PointParameterfv( GLenum pname, const GLfloat *params)
                       "glPointParameterf[v]{EXT,ARB}(pname)" );
          return;
    }
-
-   if (ctx->Driver.PointParameterfv)
-      ctx->Driver.PointParameterfv(ctx, pname, params);
 }
 
 

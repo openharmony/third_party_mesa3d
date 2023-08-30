@@ -199,16 +199,17 @@ struct crocus_screen {
       bool dual_color_blend_by_location;
       bool disable_throttling;
       bool always_flush_cache;
+      bool limit_trig_input_range;
    } driconf;
 
    uint64_t aperture_bytes;
+   uint64_t aperture_threshold;
 
    struct intel_device_info devinfo;
    struct isl_device isl_dev;
    struct crocus_bufmgr *bufmgr;
    struct brw_compiler *compiler;
    struct crocus_monitor_config *monitor_cfg;
-   bool has_swizzling;
 
    const struct intel_l3_config *l3_config_3d;
    const struct intel_l3_config *l3_config_cs;

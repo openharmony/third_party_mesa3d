@@ -146,7 +146,8 @@ radv_image_from_gralloc(VkDevice device_h, const VkImageCreateInfo *base_info,
    for (int i = 0; i < device->physical_device->memory_properties.memoryTypeCount; ++i) {
       bool is_local = !!(device->physical_device->memory_properties.memoryTypes[i].propertyFlags &
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-      if (is_local) {
+      bool is_32bit = !!(device->physical_device->memory_types_32bit & (1u << i));
+      if (is_local && !is_32bit) {
          memory_type_index = i;
          break;
       }
@@ -376,131 +377,6 @@ radv_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h, VkFormat format,
    return VK_ERROR_FORMAT_NOT_SUPPORTED;
 #endif
 }
-
-VkResult
-radv_AcquireImageANDROID(VkDevice device_h, VkImage image_h, int nativeFenceFd, VkSemaphore semaphore,
-                         VkFence fence)
-{
-   RADV_FROM_HANDLE(radv_device, device, device_h);
-   VkResult result = VK_SUCCESS;
-
-   /* From https://source.android.com/devices/graphics/implement-vulkan :
-    *
-    *    "The driver takes ownership of the fence file descriptor and closes
-    *    the fence file descriptor when no longer needed. The driver must do
-    *    so even if neither a semaphore or fence object is provided, or even
-    *    if vkAcquireImageANDROID fails and returns an error."
-    *
-    * The Vulkan spec for VkImportFence/SemaphoreFdKHR(), however, requires
-    * the file descriptor to be left alone on failure.
-    */
-   int semaphore_fd = -1, fence_fd = -1;
-   if (nativeFenceFd >= 0) {
-      if (semaphore != VK_NULL_HANDLE && fence != VK_NULL_HANDLE) {
-         /* We have both so we have to import the sync file twice. One of
-          * them needs to be a dup.
-          */
-         semaphore_fd = nativeFenceFd;
-         fence_fd = dup(nativeFenceFd);
-         if (fence_fd < 0) {
-            VkResult err = (errno == EMFILE) ? VK_ERROR_TOO_MANY_OBJECTS :
-                                               VK_ERROR_OUT_OF_HOST_MEMORY;
-            close(nativeFenceFd);
-            return vk_error(device, err);
-         }
-      } else if (semaphore != VK_NULL_HANDLE) {
-         semaphore_fd = nativeFenceFd;
-      } else if (fence != VK_NULL_HANDLE) {
-         fence_fd = nativeFenceFd;
-      } else {
-         /* Nothing to import into so we have to close the file */
-         close(nativeFenceFd);
-      }
-   }
-
-   if (semaphore != VK_NULL_HANDLE) {
-      const VkImportSemaphoreFdInfoKHR info = {
-         .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
-         .semaphore = semaphore,
-         .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
-         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-         .fd = semaphore_fd,
-      };
-      result = radv_ImportSemaphoreFdKHR(device_h, &info);
-      if (result == VK_SUCCESS)
-         semaphore_fd = -1; /* RADV took ownership */
-   }
-
-   if (result == VK_SUCCESS && fence != VK_NULL_HANDLE) {
-      const VkImportFenceFdInfoKHR info = {
-         .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
-         .fence = fence,
-         .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
-         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
-         .fd = fence_fd,
-      };
-      result = radv_ImportFenceFdKHR(device_h, &info);
-      if (result == VK_SUCCESS)
-         fence_fd = -1; /* RADV took ownership */
-   }
-
-   if (semaphore_fd >= 0)
-      close(semaphore_fd);
-   if (fence_fd >= 0)
-      close(fence_fd);
-
-   return result;
-}
-
-VkResult
-radv_QueueSignalReleaseImageANDROID(VkQueue _queue, uint32_t waitSemaphoreCount,
-                                    const VkSemaphore *pWaitSemaphores, VkImage image,
-                                    int *pNativeFenceFd)
-{
-   RADV_FROM_HANDLE(radv_queue, queue, _queue);
-   VkResult result = VK_SUCCESS;
-
-   if (waitSemaphoreCount == 0) {
-      if (pNativeFenceFd)
-         *pNativeFenceFd = -1;
-      return VK_SUCCESS;
-   }
-
-   int fd = -1;
-
-   for (uint32_t i = 0; i < waitSemaphoreCount; ++i) {
-      int tmp_fd;
-      result =
-         radv_GetSemaphoreFdKHR(radv_device_to_handle(queue->device),
-                                &(VkSemaphoreGetFdInfoKHR){
-                                   .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
-                                   .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-                                   .semaphore = pWaitSemaphores[i],
-                                },
-                                &tmp_fd);
-      if (result != VK_SUCCESS) {
-         if (fd >= 0)
-            close(fd);
-         return result;
-      }
-
-      if (fd < 0)
-         fd = tmp_fd;
-      else if (tmp_fd >= 0) {
-         sync_accumulate("radv", &fd, tmp_fd);
-         close(tmp_fd);
-      }
-   }
-
-   if (pNativeFenceFd) {
-      *pNativeFenceFd = fd;
-   } else if (fd >= 0) {
-      close(fd);
-      /* We still need to do the exports, to reset the semaphores, but
-       * otherwise we don't wait on them. */
-   }
-   return VK_SUCCESS;
-}
 #endif
 
 #if RADV_SUPPORT_ANDROID_HARDWARE_BUFFER
@@ -707,13 +583,13 @@ get_ahb_buffer_format_properties2(VkDevice device_h, const struct AHardwareBuffe
     *  the Android hardware buffer’s format has a Vulkan equivalent."
     *
     * "The formatFeatures member *must* include
-    *  VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT_KHR and at least one of
-    *  VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT_KHR or
-    *  VK_FORMAT_FEATURE_2_COSITED_CHROMA_SAMPLES_BIT_KHR"
+    *  VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT and at least one of
+    *  VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT or
+    *  VK_FORMAT_FEATURE_2_COSITED_CHROMA_SAMPLES_BIT"
     */
-   assert(p->formatFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT_KHR);
+   assert(p->formatFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT);
 
-   p->formatFeatures |= VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT_KHR;
+   p->formatFeatures |= VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT;
 
    /* "Implementations may not always be able to determine the color model,
     *  numerical range, or chroma offsets of the image contents, so the values
@@ -770,7 +646,7 @@ radv_GetAndroidHardwareBufferPropertiesANDROID(VkDevice device_h,
    uint32_t memory_types = (1u << pdevice->memory_properties.memoryTypeCount) - 1;
 
    pProperties->allocationSize = lseek(dma_buf, 0, SEEK_END);
-   pProperties->memoryTypeBits = memory_types;
+   pProperties->memoryTypeBits = memory_types & ~pdevice->memory_types_32bit;
 
    return VK_SUCCESS;
 }
@@ -849,7 +725,7 @@ radv_import_ahb_memory(struct radv_device *device, struct radv_device_memory *me
       struct radv_image_create_info create_info = {.no_metadata_planes = true,
                                                    .bo_metadata = &metadata};
 
-      VkResult result = radv_image_create_layout(device, create_info, NULL, mem->image);
+      result = radv_image_create_layout(device, create_info, NULL, mem->image);
       if (result != VK_SUCCESS) {
          device->ws->buffer_destroy(device->ws, mem->bo);
          mem->bo = NULL;
@@ -862,7 +738,7 @@ radv_import_ahb_memory(struct radv_device *device, struct radv_device_memory *me
          return VK_ERROR_INVALID_EXTERNAL_HANDLE;
       }
    } else if (mem->buffer) {
-      if (alloc_size < mem->buffer->size) {
+      if (alloc_size < mem->buffer->vk.size) {
          device->ws->buffer_destroy(device->ws, mem->bo);
          mem->bo = NULL;
          return VK_ERROR_INVALID_EXTERNAL_HANDLE;
@@ -903,11 +779,11 @@ radv_create_ahb_memory(struct radv_device *device, struct radv_device_memory *me
       w = image->info.width;
       h = image->info.height;
       layers = image->info.array_size;
-      format = android_format_from_vk(image->vk_format);
-      usage = radv_ahb_usage_from_vk_usage(image->flags, image->usage);
+      format = android_format_from_vk(image->vk.format);
+      usage = radv_ahb_usage_from_vk_usage(image->vk.create_flags, image->vk.usage);
    } else if (dedicated_info && dedicated_info->buffer) {
       RADV_FROM_HANDLE(radv_buffer, buffer, dedicated_info->buffer);
-      w = buffer->size;
+      w = buffer->vk.size;
       format = AHARDWAREBUFFER_FORMAT_BLOB;
       usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
    } else {

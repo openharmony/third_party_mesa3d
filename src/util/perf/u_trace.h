@@ -30,7 +30,7 @@
 
 #include "util/u_queue.h"
 
-#ifdef  __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -69,6 +69,7 @@ extern "C" {
 struct u_trace_context;
 struct u_trace;
 struct u_trace_chunk;
+struct u_trace_printer;
 
 /**
  * Special reserved value to indicate that no timestamp was captured,
@@ -99,7 +100,8 @@ typedef void (*u_trace_delete_ts_buffer)(struct u_trace_context *utctx,
  * GL_TIMESTAMP queries should be appropriate.
  */
 typedef void (*u_trace_record_ts)(struct u_trace *ut, void *cs,
-      void *timestamps, unsigned idx);
+                                  void *timestamps, unsigned idx,
+                                  bool end_of_pipe);
 
 /**
  * Driver provided callback to read back a previously recorded timestamp.
@@ -142,6 +144,7 @@ struct u_trace_context {
    u_trace_delete_flush_data delete_flush_data;
 
    FILE *out;
+   struct u_trace_printer *out_printer;
 
    /* Once u_trace_flush() is called u_trace_chunk's are queued up to
     * render tracepoints on a queue.  The per-chunk queue jobs block until
@@ -161,6 +164,9 @@ struct u_trace_context {
    uint64_t first_time_ns;
 
    uint32_t frame_nr;
+   uint32_t batch_nr;
+   uint32_t event_nr;
+   bool start_of_frame;
 
    /* list of unprocessed trace chunks in fifo order: */
    struct list_head flushed_trace_chunks;
@@ -266,6 +272,12 @@ void u_trace_disable_event_range(struct u_trace_iterator begin_it,
  */
 void u_trace_flush(struct u_trace *ut, void *flush_data, bool free_data);
 
+/**
+ * Whether command buffers should be instrumented even if not collecting
+ * traces.
+ */
+extern bool ut_trace_instrument;
+
 #ifdef HAVE_PERFETTO
 extern int ut_perfetto_enabled;
 
@@ -276,12 +288,18 @@ void u_trace_perfetto_stop(void);
 #endif
 
 static inline bool
-u_trace_context_tracing(struct u_trace_context *utctx)
+u_trace_context_actively_tracing(struct u_trace_context *utctx)
 {
    return !!utctx->out || (ut_perfetto_enabled > 0);
 }
 
-#ifdef  __cplusplus
+static inline bool
+u_trace_context_instrumenting(struct u_trace_context *utctx)
+{
+   return !!utctx->out || ut_trace_instrument || (ut_perfetto_enabled > 0);
+}
+
+#ifdef __cplusplus
 }
 #endif
 

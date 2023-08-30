@@ -30,7 +30,6 @@
 #include "util/u_string.h"
 
 #include "fd6_context.h"
-#include "fd6_format.h"
 #include "fd6_pack.h"
 #include "fd6_rasterizer.h"
 
@@ -59,7 +58,7 @@ __fd6_setup_rasterizer_stateobj(struct fd_context *ctx,
                                    .zero_gb_scale_z = cso->clip_halfz));
 
    OUT_REG(ring,
-           A6XX_GRAS_SU_CNTL(.linehalfwidth = cso->line_width / 2.0,
+           A6XX_GRAS_SU_CNTL(.linehalfwidth = cso->line_width / 2.0f,
                              .poly_offset = cso->offset_tri,
                              .line_mode = cso->multisample ? RECTANGULAR : BRESENHAM,
                              .cull_front = cso->cull_face & PIPE_FACE_FRONT,

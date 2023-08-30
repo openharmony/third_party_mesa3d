@@ -427,6 +427,19 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
       yoff += bh;
    }
 
+   /* Swap the order of alternating rows to form an 'S' pattern, to improve
+    * cache access patterns (ie. adjacent bins are likely to access adjacent
+    * portions of textures)
+    */
+   if (!FD_DBG(NOSBIN)) {
+      for (i = 0; i < gmem->nbins_y; i+=2) {
+         unsigned col0 = gmem->nbins_x * i;
+         for (j = 0; j < gmem->nbins_x/2; j++) {
+            swap(gmem->tile[col0 + j], gmem->tile[col0 + gmem->nbins_x - j - 1]);
+         }
+      }
+   }
+
    if (BIN_DEBUG) {
       t = 0;
       for (i = 0; i < gmem->nbins_y; i++) {
@@ -688,7 +701,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
    }
 
    if (ctx->emit_sysmem_prep && !batch->nondraw) {
-      if (fd_autotune_use_bypass(&ctx->autotune, batch) && !FD_DBG(NOBYPASS)) {
+      if (fd_autotune_use_bypass(&ctx->autotune, batch) && !FD_DBG(GMEM)) {
          sysmem = true;
       }
 
@@ -698,7 +711,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
       }
    }
 
-   if (FD_DBG(NOGMEM))
+   if (FD_DBG(SYSMEM))
       sysmem = true;
 
    /* Layered rendering always needs bypass. */
@@ -709,12 +722,14 @@ fd_gmem_render_tiles(struct fd_batch *batch)
       if (psurf->u.tex.first_layer < psurf->u.tex.last_layer)
          sysmem = true;
    }
+   if (pfb->zsbuf && pfb->zsbuf->u.tex.first_layer < pfb->zsbuf->u.tex.last_layer)
+      sysmem = true;
 
    /* Tessellation doesn't seem to support tiled rendering so fall back to
     * bypass.
     */
    if (batch->tessellation) {
-      debug_assert(ctx->emit_sysmem_prep);
+      assert(ctx->emit_sysmem_prep);
       sysmem = true;
    }
 

@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include "c99_compat.h"
 #include "dev/intel_device_info.h"
 #include "drm-uapi/i915_drm.h"
 #include "genxml/gen_macros.h"
@@ -194,7 +195,8 @@ mi_builder_test::SetUp()
                             (void *)&getparam), 0) << strerror(errno);
 
          ASSERT_TRUE(intel_get_device_info_from_pci_id(device_id, &devinfo));
-         if (devinfo.ver != GFX_VER || devinfo.is_haswell != (GFX_VERx10 == 75)) {
+         if (devinfo.ver != GFX_VER ||
+             (devinfo.platform == INTEL_PLATFORM_HSW) != (GFX_VERx10 == 75)) {
             close(fd);
             fd = -1;
             continue;
@@ -601,7 +603,7 @@ TEST_F(mi_builder_test, add_imm)
    mi_store(&b, out_mem64(88),
                 mi_iadd(&b, mi_inot(&b, mi_imm(add)), in_mem64(0)));
 
-   // And som add_imm just for good measure
+   // And some add_imm just for good measure
    mi_store(&b, out_mem64(96), mi_iadd_imm(&b, in_mem64(0), 0));
    mi_store(&b, out_mem64(104), mi_iadd_imm(&b, in_mem64(0), add));
 

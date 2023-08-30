@@ -104,7 +104,7 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit, int nr,
    int constmode;
    int i, j;
 
-   debug_assert(nr <= ARRAY_SIZE(color_regid));
+   assert(nr <= ARRAY_SIZE(color_regid));
 
    vp = fd3_emit_get_vp(emit);
    fp = fd3_emit_get_fp(emit);
@@ -454,7 +454,7 @@ fd3_program_create(void *data, struct ir3_shader_variant *bs,
                    struct ir3_shader_variant *vs, struct ir3_shader_variant *hs,
                    struct ir3_shader_variant *ds, struct ir3_shader_variant *gs,
                    struct ir3_shader_variant *fs,
-                   const struct ir3_shader_key *key) in_dt
+                   const struct ir3_cache_key *key) in_dt
 {
    struct fd_context *ctx = fd_context(data);
    struct fd3_program_state *state = CALLOC_STRUCT(fd3_program_state);

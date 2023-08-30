@@ -58,6 +58,9 @@ bi_fold_constant(bi_instr *I, bool *unsupported)
         case BI_OPCODE_MKVEC_V4I8:
                 return (d << 24) | ((c & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF);
 
+        case BI_OPCODE_MKVEC_V2I8:
+                return (c << 16) | ((b & 0xFF) << 8) | (a & 0xFF);
+
         case BI_OPCODE_LSHIFT_OR_I32:
                 if (I->not_result || I->src[0].neg || I->src[1].neg)
                         break;
@@ -81,9 +84,11 @@ bi_fold_constant(bi_instr *I, bool *unsupported)
         return 0;
 }
 
-void
+bool
 bi_opt_constant_fold(bi_context *ctx)
 {
+        bool progress = false;
+
         bi_foreach_instr_global_safe(ctx, ins) {
                 bool unsupported = false;
                 uint32_t replace = bi_fold_constant(ins, &unsupported);
@@ -93,5 +98,8 @@ bi_opt_constant_fold(bi_context *ctx)
                 bi_builder b = bi_init_builder(ctx, bi_after_instr(ins));
                 bi_mov_i32_to(&b, ins->dest[0], bi_imm_u32(replace));
                 bi_remove_instruction(ins);
+                progress = true;
         }
+
+        return progress;
 }

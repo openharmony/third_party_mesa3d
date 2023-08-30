@@ -455,7 +455,7 @@ lower_mul_high64(nir_builder *b, nir_ssa_def *x, nir_ssa_def *y,
    for (unsigned i = 0; i < 4; i++) {
       nir_ssa_def *carry = NULL;
       for (unsigned j = 0; j < 4; j++) {
-         /* The maximum values of x32[i] and y32[i] are UINT32_MAX so the
+         /* The maximum values of x32[i] and y32[j] are UINT32_MAX so the
           * maximum value of tmp is UINT32_MAX * UINT32_MAX.  The maximum
           * value that will fit in tmp is
           *
@@ -466,7 +466,7 @@ lower_mul_high64(nir_builder *b, nir_ssa_def *x, nir_ssa_def *y,
           * so we're guaranteed that we can add in two more 32-bit values
           * without overflowing tmp.
           */
-         nir_ssa_def *tmp = nir_umul_2x32_64(b, x32[i], y32[i]);
+         nir_ssa_def *tmp = nir_umul_2x32_64(b, x32[i], y32[j]);
 
          if (res[i + j])
             tmp = nir_iadd(b, tmp, nir_u2u64(b, res[i + j]));
@@ -759,21 +759,21 @@ lower_f2(nir_builder *b, nir_ssa_def *x, bool dst_is_signed)
 
    if (dst_is_signed)
       x_sign = nir_fsign(b, x);
-   else
-      x = nir_fmin(b, x, nir_imm_floatN_t(b, UINT64_MAX, x->bit_size));
 
    x = nir_ftrunc(b, x);
 
-   if (dst_is_signed) {
-      x = nir_fmin(b, x, nir_imm_floatN_t(b, INT64_MAX, x->bit_size));
-      x = nir_fmax(b, x, nir_imm_floatN_t(b, INT64_MIN, x->bit_size));
+   if (dst_is_signed)
       x = nir_fabs(b, x);
-   }
 
-   nir_ssa_def *div = nir_imm_floatN_t(b, 1ULL << 32, x->bit_size);
-   nir_ssa_def *res_hi = nir_f2u32(b, nir_fdiv(b, x, div));
-   nir_ssa_def *res_lo = nir_f2u32(b, nir_frem(b, x, div));
-   nir_ssa_def *res = nir_pack_64_2x32_split(b, res_lo, res_hi);
+   nir_ssa_def *res;
+   if (x->bit_size < 32) {
+      res = nir_pack_64_2x32_split(b, nir_f2u32(b, x), nir_imm_int(b, 0));
+   } else {
+      nir_ssa_def *div = nir_imm_floatN_t(b, 1ULL << 32, x->bit_size);
+      nir_ssa_def *res_hi = nir_f2u32(b, nir_fdiv(b, x, div));
+      nir_ssa_def *res_lo = nir_f2u32(b, nir_frem(b, x, div));
+      res = nir_pack_64_2x32_split(b, res_lo, res_hi);
+   }
 
    if (dst_is_signed)
       res = nir_bcsel(b, nir_flt(b, x_sign, nir_imm_floatN_t(b, 0, x->bit_size)),

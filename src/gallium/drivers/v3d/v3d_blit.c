@@ -27,9 +27,17 @@
 #include "compiler/nir/nir_builder.h"
 #include "v3d_context.h"
 #include "broadcom/common/v3d_tiling.h"
+#include "broadcom/common/v3d_tfu.h"
+
+/**
+ * The param @op_blit is used to tell if we are saving state for blitter_blit
+ * (if true) or blitter_clear (if false). If other blitter functions are used
+ * that require different state we may need something more elaborated than
+ * this.
+ */
 
 void
-v3d_blitter_save(struct v3d_context *v3d)
+v3d_blitter_save(struct v3d_context *v3d, bool op_blit)
 {
         util_blitter_save_fragment_constant_buffer_slot(v3d->blitter,
                                                         v3d->constbuf[PIPE_SHADER_FRAGMENT].cb);
@@ -41,21 +49,24 @@ v3d_blitter_save(struct v3d_context *v3d)
                                      v3d->streamout.targets);
         util_blitter_save_rasterizer(v3d->blitter, v3d->rasterizer);
         util_blitter_save_viewport(v3d->blitter, &v3d->viewport);
-        util_blitter_save_scissor(v3d->blitter, &v3d->scissor);
         util_blitter_save_fragment_shader(v3d->blitter, v3d->prog.bind_fs);
         util_blitter_save_blend(v3d->blitter, v3d->blend);
         util_blitter_save_depth_stencil_alpha(v3d->blitter, v3d->zsa);
         util_blitter_save_stencil_ref(v3d->blitter, &v3d->stencil_ref);
-        util_blitter_save_sample_mask(v3d->blitter, v3d->sample_mask);
-        util_blitter_save_framebuffer(v3d->blitter, &v3d->framebuffer);
-        util_blitter_save_fragment_sampler_states(v3d->blitter,
-                        v3d->tex[PIPE_SHADER_FRAGMENT].num_samplers,
-                        (void **)v3d->tex[PIPE_SHADER_FRAGMENT].samplers);
-        util_blitter_save_fragment_sampler_views(v3d->blitter,
-                        v3d->tex[PIPE_SHADER_FRAGMENT].num_textures,
-                        v3d->tex[PIPE_SHADER_FRAGMENT].textures);
+        util_blitter_save_sample_mask(v3d->blitter, v3d->sample_mask, 0);
         util_blitter_save_so_targets(v3d->blitter, v3d->streamout.num_targets,
                                      v3d->streamout.targets);
+
+        if (op_blit) {
+                util_blitter_save_scissor(v3d->blitter, &v3d->scissor);
+                util_blitter_save_framebuffer(v3d->blitter, &v3d->framebuffer);
+                util_blitter_save_fragment_sampler_states(v3d->blitter,
+                                                          v3d->tex[PIPE_SHADER_FRAGMENT].num_samplers,
+                                                          (void **)v3d->tex[PIPE_SHADER_FRAGMENT].samplers);
+                util_blitter_save_fragment_sampler_views(v3d->blitter,
+                                                         v3d->tex[PIPE_SHADER_FRAGMENT].num_textures,
+                                                         v3d->tex[PIPE_SHADER_FRAGMENT].textures);
+        }
 }
 
 static void
@@ -68,7 +79,9 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
         if (!info->mask)
                 return;
 
-        if (!src->tiled) {
+        if (!src->tiled &&
+            info->src.resource->target != PIPE_TEXTURE_1D &&
+            info->src.resource->target != PIPE_TEXTURE_1D_ARRAY) {
                 struct pipe_box box = {
                         .x = 0,
                         .y = 0,
@@ -102,12 +115,12 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
 
         if (!util_blitter_is_blit_supported(v3d->blitter, info)) {
                 fprintf(stderr, "blit unsupported %s -> %s\n",
-                    util_format_short_name(info->src.resource->format),
-                    util_format_short_name(info->dst.resource->format));
+                    util_format_short_name(info->src.format),
+                    util_format_short_name(info->dst.format));
                 return;
         }
 
-        v3d_blitter_save(v3d);
+        v3d_blitter_save(v3d, true);
         util_blitter_blit(v3d->blitter, info);
 
         pipe_resource_reference(&tiled, NULL);
@@ -175,44 +188,20 @@ v3d_stencil_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
         struct pipe_sampler_view *src_view =
                 ctx->create_sampler_view(ctx, &src->base, &src_tmpl);
 
-        v3d_blitter_save(v3d);
+        v3d_blitter_save(v3d, true);
         util_blitter_blit_generic(v3d->blitter, dst_surf, &info->dst.box,
                                   src_view, &info->src.box,
                                   src->base.width0, src->base.height0,
                                   PIPE_MASK_R,
                                   PIPE_TEX_FILTER_NEAREST,
                                   info->scissor_enable ? &info->scissor : NULL,
-                                  info->alpha_blend, false);
+                                  info->alpha_blend, false, 0);
 
         pipe_surface_reference(&dst_surf, NULL);
         pipe_sampler_view_reference(&src_view, NULL);
 
         info->mask &= ~PIPE_MASK_S;
 }
-
-/* Disable level 0 write, just write following mipmaps */
-#define V3D_TFU_IOA_DIMTW (1 << 0)
-#define V3D_TFU_IOA_FORMAT_SHIFT 3
-#define V3D_TFU_IOA_FORMAT_LINEARTILE 3
-#define V3D_TFU_IOA_FORMAT_UBLINEAR_1_COLUMN 4
-#define V3D_TFU_IOA_FORMAT_UBLINEAR_2_COLUMN 5
-#define V3D_TFU_IOA_FORMAT_UIF_NO_XOR 6
-#define V3D_TFU_IOA_FORMAT_UIF_XOR 7
-
-#define V3D_TFU_ICFG_NUMMM_SHIFT 5
-#define V3D_TFU_ICFG_TTYPE_SHIFT 9
-
-#define V3D_TFU_ICFG_OPAD_SHIFT 22
-
-#define V3D_TFU_ICFG_FORMAT_SHIFT 18
-#define V3D_TFU_ICFG_FORMAT_RASTER 0
-#define V3D_TFU_ICFG_FORMAT_SAND_128 1
-#define V3D_TFU_ICFG_FORMAT_SAND_256 2
-#define V3D_TFU_ICFG_FORMAT_LINEARTILE 11
-#define V3D_TFU_ICFG_FORMAT_UBLINEAR_1_COLUMN 12
-#define V3D_TFU_ICFG_FORMAT_UBLINEAR_2_COLUMN 13
-#define V3D_TFU_ICFG_FORMAT_UIF_NO_XOR 14
-#define V3D_TFU_ICFG_FORMAT_UIF_XOR 15
 
 static bool
 v3d_tfu(struct pipe_context *pctx,
@@ -239,9 +228,6 @@ v3d_tfu(struct pipe_context *pctx,
         if (psrc->format != pdst->format)
                 return false;
         if (psrc->nr_samples != pdst->nr_samples)
-                return false;
-
-        if (pdst->target != PIPE_TEXTURE_2D || psrc->target != PIPE_TEXTURE_2D)
                 return false;
 
         /* Can't write to raster. */
@@ -289,25 +275,25 @@ v3d_tfu(struct pipe_context *pctx,
                                v3d_layer_offset(psrc, src_level, src_layer));
         tfu.iia |= src_offset;
         if (src_base_slice->tiling == V3D_TILING_RASTER) {
-                tfu.icfg |= (V3D_TFU_ICFG_FORMAT_RASTER <<
-                             V3D_TFU_ICFG_FORMAT_SHIFT);
+                tfu.icfg |= (V3D33_TFU_ICFG_FORMAT_RASTER <<
+                             V3D33_TFU_ICFG_FORMAT_SHIFT);
         } else {
-                tfu.icfg |= ((V3D_TFU_ICFG_FORMAT_LINEARTILE +
+                tfu.icfg |= ((V3D33_TFU_ICFG_FORMAT_LINEARTILE +
                               (src_base_slice->tiling - V3D_TILING_LINEARTILE)) <<
-                             V3D_TFU_ICFG_FORMAT_SHIFT);
+                             V3D33_TFU_ICFG_FORMAT_SHIFT);
         }
 
         uint32_t dst_offset = (dst->bo->offset +
                                v3d_layer_offset(pdst, base_level, dst_layer));
         tfu.ioa |= dst_offset;
         if (last_level != base_level)
-                tfu.ioa |= V3D_TFU_IOA_DIMTW;
-        tfu.ioa |= ((V3D_TFU_IOA_FORMAT_LINEARTILE +
+                tfu.ioa |= V3D33_TFU_IOA_DIMTW;
+        tfu.ioa |= ((V3D33_TFU_IOA_FORMAT_LINEARTILE +
                      (dst_base_slice->tiling - V3D_TILING_LINEARTILE)) <<
-                    V3D_TFU_IOA_FORMAT_SHIFT);
+                    V3D33_TFU_IOA_FORMAT_SHIFT);
 
-        tfu.icfg |= tex_format << V3D_TFU_ICFG_TTYPE_SHIFT;
-        tfu.icfg |= (last_level - base_level) << V3D_TFU_ICFG_NUMMM_SHIFT;
+        tfu.icfg |= tex_format << V3D33_TFU_ICFG_TTYPE_SHIFT;
+        tfu.icfg |= (last_level - base_level) << V3D33_TFU_ICFG_NUMMM_SHIFT;
 
         switch (src_base_slice->tiling) {
         case V3D_TILING_UIF_NO_XOR:
@@ -336,7 +322,7 @@ v3d_tfu(struct pipe_context *pctx,
 
                 tfu.icfg |= (((dst_base_slice->padded_height -
                                implicit_padded_height) / uif_block_h) <<
-                             V3D_TFU_ICFG_OPAD_SHIFT);
+                             V3D33_TFU_ICFG_OPAD_SHIFT);
         }
 
         int ret = v3d_ioctl(screen->fd, DRM_IOCTL_V3D_SUBMIT_TFU, &tfu);
@@ -390,10 +376,12 @@ v3d_tfu_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
             info->dst.box.y != 0 ||
             info->dst.box.width != dst_width ||
             info->dst.box.height != dst_height ||
+            info->dst.box.depth != 1 ||
             info->src.box.x != 0 ||
             info->src.box.y != 0 ||
             info->src.box.width != info->dst.box.width ||
-            info->src.box.height != info->dst.box.height) {
+            info->src.box.height != info->dst.box.height ||
+            info->src.box.depth != 1) {
                 return;
         }
 
@@ -412,12 +400,13 @@ v3d_tfu_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
 static struct pipe_surface *
 v3d_get_blit_surface(struct pipe_context *pctx,
                      struct pipe_resource *prsc,
+                     enum pipe_format format,
                      unsigned level,
                      int16_t layer)
 {
         struct pipe_surface tmpl;
 
-        tmpl.format = prsc->format;
+        tmpl.format = format;
         tmpl.u.tex.level = level;
         tmpl.u.tex.first_layer = layer;
         tmpl.u.tex.last_layer = layer;
@@ -460,14 +449,14 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                 return;
 
         if (is_color_blit &&
-            util_format_is_depth_or_stencil(info->dst.resource->format))
+            util_format_is_depth_or_stencil(info->dst.format))
                 return;
 
-        if (!v3d_rt_format_supported(&screen->devinfo, info->src.resource->format))
+        if (!v3d_rt_format_supported(&screen->devinfo, info->src.format))
                 return;
 
-        if (v3d_get_rt_format(&screen->devinfo, info->src.resource->format) !=
-            v3d_get_rt_format(&screen->devinfo, info->dst.resource->format))
+        if (v3d_get_rt_format(&screen->devinfo, info->src.format) !=
+            v3d_get_rt_format(&screen->devinfo, info->dst.format))
                 return;
 
         bool msaa = (info->src.resource->nr_samples > 1 ||
@@ -476,22 +465,27 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                                 info->dst.resource->nr_samples < 2);
 
         if (is_msaa_resolve &&
-            !v3d_format_supports_tlb_msaa_resolve(&screen->devinfo, info->src.resource->format))
+            !v3d_format_supports_tlb_msaa_resolve(&screen->devinfo, info->src.format))
                 return;
 
         v3d_flush_jobs_writing_resource(v3d, info->src.resource, V3D_FLUSH_DEFAULT, false);
 
         struct pipe_surface *dst_surf =
-           v3d_get_blit_surface(pctx, info->dst.resource, info->dst.level, info->dst.box.z);
+           v3d_get_blit_surface(pctx, info->dst.resource, info->dst.format, info->dst.level, info->dst.box.z);
         struct pipe_surface *src_surf =
-           v3d_get_blit_surface(pctx, info->src.resource, info->src.level, info->src.box.z);
+           v3d_get_blit_surface(pctx, info->src.resource, info->src.format, info->src.level, info->src.box.z);
 
         struct pipe_surface *surfaces[V3D_MAX_DRAW_BUFFERS] = { 0 };
         if (is_color_blit)
                 surfaces[0] = dst_surf;
 
+        bool double_buffer =
+                 unlikely(V3D_DEBUG & V3D_DEBUG_DOUBLE_BUFFER) && !msaa;
+
         uint32_t tile_width, tile_height, max_bpp;
-        v3d_get_tile_buffer_size(msaa, is_color_blit ? 1 : 0, surfaces, src_surf, &tile_width, &tile_height, &max_bpp);
+        v3d_get_tile_buffer_size(msaa, double_buffer,
+                                 is_color_blit ? 1 : 0, surfaces, src_surf,
+                                 &tile_width, &tile_height, &max_bpp);
 
         int dst_surface_width = u_minify(info->dst.resource->width0,
                                          info->dst.level);
@@ -514,6 +508,7 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                                           is_color_blit ? NULL : dst_surf,
                                           src_surf);
         job->msaa = msaa;
+        job->double_buffer = double_buffer;
         job->tile_width = tile_width;
         job->tile_height = tile_height;
         job->internal_bpp = max_bpp;
@@ -776,7 +771,7 @@ v3d_sand8_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
         assert(info->src.box.width == info->dst.box.width);
         assert(info->src.box.height == info->dst.box.height);
 
-        v3d_blitter_save(v3d);
+        v3d_blitter_save(v3d, true);
 
         struct pipe_surface dst_tmpl;
         util_blitter_default_dst_texture(&dst_tmpl, info->dst.resource,

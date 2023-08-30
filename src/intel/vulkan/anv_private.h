@@ -31,6 +31,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include "drm-uapi/i915_drm.h"
+#include "drm-uapi/drm_fourcc.h"
 
 #ifdef HAVE_VALGRIND
 #include <valgrind.h>
@@ -48,15 +49,18 @@
 #include "common/intel_gem.h"
 #include "common/intel_l3_config.h"
 #include "common/intel_measure.h"
+#include "common/intel_sample_positions.h"
 #include "dev/intel_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
 #include "compiler/brw_rt.h"
+#include "ds/intel_driver_ds.h"
 #include "util/bitset.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
 #include "util/hash_table.h"
 #include "util/list.h"
+#include "util/perf/u_trace.h"
 #include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_vector.h"
@@ -64,15 +68,23 @@
 #include "util/vma.h"
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
+#include "vk_buffer.h"
+#include "vk_command_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"
+#include "vk_drm_syncobj.h"
 #include "vk_enum_defines.h"
+#include "vk_framebuffer.h"
+#include "vk_graphics_state.h"
 #include "vk_image.h"
 #include "vk_instance.h"
+#include "vk_pipeline_cache.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
+#include "vk_sync.h"
+#include "vk_sync_timeline.h"
 #include "vk_util.h"
-#include "vk_command_buffer.h"
 #include "vk_queue.h"
 #include "vk_log.h"
 
@@ -133,7 +145,7 @@ struct intel_perf_query_result;
  * various reasons. This healthy margin prevents reads from wrapping around
  * 48-bit addresses.
  */
-#define GENERAL_STATE_POOL_MIN_ADDRESS     0x000000010000ULL /* 64 KiB */
+#define GENERAL_STATE_POOL_MIN_ADDRESS     0x000000200000ULL /* 2 MiB */
 #define GENERAL_STATE_POOL_MAX_ADDRESS     0x00003fffffffULL
 #define LOW_HEAP_MIN_ADDRESS               0x000040000000ULL /* 1 GiB */
 #define LOW_HEAP_MAX_ADDRESS               0x00007fffffffULL
@@ -157,6 +169,7 @@ struct intel_perf_query_result;
    (DYNAMIC_STATE_POOL_MAX_ADDRESS - DYNAMIC_STATE_POOL_MIN_ADDRESS + 1)
 #define BINDING_TABLE_POOL_SIZE     \
    (BINDING_TABLE_POOL_MAX_ADDRESS - BINDING_TABLE_POOL_MIN_ADDRESS + 1)
+#define BINDING_TABLE_POOL_BLOCK_SIZE (65536)
 #define SURFACE_STATE_POOL_SIZE     \
    (SURFACE_STATE_POOL_MAX_ADDRESS - SURFACE_STATE_POOL_MIN_ADDRESS + 1)
 #define INSTRUCTION_STATE_POOL_SIZE \
@@ -179,10 +192,19 @@ struct intel_perf_query_result;
  */
 #define ANV_HZ_FC_VAL 1.0f
 
-#define MAX_VBS         28
+/* 3DSTATE_VERTEX_BUFFER supports 33 VBs, we use 2 for base & drawid SGVs */
+#define MAX_VBS         (33 - 2)
+
+/* 3DSTATE_VERTEX_ELEMENTS supports up to 34 VEs, but our backend compiler
+ * only supports the push model of VS inputs, and we only have 128 GRFs,
+ * minus the g0 and g1 payload, which gives us a maximum of 31 VEs.  Plus,
+ * we use two of them for SGVs.
+ */
+#define MAX_VES         (31 - 2)
+
 #define MAX_XFB_BUFFERS  4
 #define MAX_XFB_STREAMS  4
-#define MAX_SETS         8
+#define MAX_SETS        32
 #define MAX_RTS          8
 #define MAX_VIEWPORTS   16
 #define MAX_SCISSORS    16
@@ -244,6 +266,8 @@ struct intel_perf_query_result;
  * Other code which uses the MI ALU should leave it alone.
  */
 #define ANV_PERF_QUERY_OFFSET_REG 0x2670 /* MI_ALU_REG14 */
+
+#define ANV_GRAPHICS_SHADER_STAGE_COUNT (MESA_SHADER_MESH + 1)
 
 /* For gfx12 we set the streamout buffers using 4 separate commands
  * (3DSTATE_SO_BUFFER_INDEX_*) instead of 3DSTATE_SO_BUFFER. However the layout
@@ -350,6 +374,26 @@ vk_to_isl_color(VkClearColorValue color)
    };
 }
 
+static inline union isl_color_value
+vk_to_isl_color_with_format(VkClearColorValue color, enum isl_format format)
+{
+   const struct isl_format_layout *fmtl = isl_format_get_layout(format);
+   union isl_color_value isl_color = { .u32 = {0, } };
+
+#define COPY_COLOR_CHANNEL(c, i) \
+   if (fmtl->channels.c.bits) \
+      isl_color.u32[i] = color.uint32[i]
+
+   COPY_COLOR_CHANNEL(r, 0);
+   COPY_COLOR_CHANNEL(g, 1);
+   COPY_COLOR_CHANNEL(b, 2);
+   COPY_COLOR_CHANNEL(a, 3);
+
+#undef COPY_COLOR_CHANNEL
+
+   return isl_color;
+}
+
 static inline void *anv_unpack_ptr(uintptr_t ptr, int bits, int *flags)
 {
    uintptr_t mask = (1ull << bits) - 1;
@@ -433,10 +477,10 @@ struct anv_bo {
    uint32_t refcount;
 
    /* Index into the current validation list.  This is used by the
-    * validation list building alrogithm to track which buffers are already
+    * validation list building algorithm to track which buffers are already
     * in the validation list so that we can ensure uniqueness.
     */
-   uint32_t index;
+   uint32_t exec_obj_index;
 
    /* Index for use with util_sparse_array_free_list */
    uint32_t free_index;
@@ -452,7 +496,8 @@ struct anv_bo {
 
    /* Map for internally mapped BOs.
     *
-    * If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
+    * If ANV_BO_ALLOC_MAPPED is set in flags, this is the map for the whole
+    * BO. If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
     */
    void *map;
 
@@ -523,6 +568,68 @@ anv_bo_unwrap(struct anv_bo *bo)
    return bo;
 }
 
+static inline bool
+anv_bo_is_pinned(struct anv_bo *bo)
+{
+#if defined(GFX_VERx10) && GFX_VERx10 >= 90
+   /* Sky Lake and later always uses softpin */
+   assert(bo->flags & EXEC_OBJECT_PINNED);
+   return true;
+#elif defined(GFX_VERx10) && GFX_VERx10 < 80
+   /* Haswell and earlier never use softpin */
+   assert(!(bo->flags & EXEC_OBJECT_PINNED));
+   assert(!bo->has_fixed_address);
+   return false;
+#else
+   /* If we don't have a GFX_VERx10 #define, we need to look at the BO.  Also,
+    * for GFX version 8, we need to look at the BO because Broadwell softpins
+    * but Cherryview doesn't.
+    */
+   assert((bo->flags & EXEC_OBJECT_PINNED) || !bo->has_fixed_address);
+   return (bo->flags & EXEC_OBJECT_PINNED) != 0;
+#endif
+}
+
+struct anv_address {
+   struct anv_bo *bo;
+   int64_t offset;
+};
+
+#define ANV_NULL_ADDRESS ((struct anv_address) { NULL, 0 })
+
+static inline struct anv_address
+anv_address_from_u64(uint64_t addr_u64)
+{
+   assert(addr_u64 == intel_canonical_address(addr_u64));
+   return (struct anv_address) {
+      .bo = NULL,
+      .offset = addr_u64,
+   };
+}
+
+static inline bool
+anv_address_is_null(struct anv_address addr)
+{
+   return addr.bo == NULL && addr.offset == 0;
+}
+
+static inline uint64_t
+anv_address_physical(struct anv_address addr)
+{
+   if (addr.bo && anv_bo_is_pinned(addr.bo)) {
+      return intel_canonical_address(addr.bo->offset + addr.offset);
+   } else {
+      return intel_canonical_address(addr.offset);
+   }
+}
+
+static inline struct anv_address
+anv_address_add(struct anv_address addr, uint64_t offset)
+{
+   addr.offset += offset;
+   return addr;
+}
+
 /* Represents a lock-free linked list of "free" things.  This is used by
  * both the block pool and the state pools.  Unfortunately, in order to
  * solve the ABA problem, we can't use a single uint32_t head.
@@ -566,7 +673,7 @@ struct anv_block_pool {
    const char *name;
 
    struct anv_device *device;
-   bool use_softpin;
+   bool use_relocations;
 
    /* Wrapper BO for use in relocation lists.  This BO is simply a wrapper
     * around the actual BO so that we grow the pool after the wrapper BO has
@@ -648,7 +755,7 @@ struct anv_fixed_size_state_pool {
 };
 
 #define ANV_MIN_STATE_SIZE_LOG2 6
-#define ANV_MAX_STATE_SIZE_LOG2 21
+#define ANV_MAX_STATE_SIZE_LOG2 22
 
 #define ANV_STATE_BUCKETS (ANV_MAX_STATE_SIZE_LOG2 - ANV_MIN_STATE_SIZE_LOG2 + 1)
 
@@ -861,12 +968,6 @@ struct anv_physical_device {
 
     struct anv_instance *                       instance;
     char                                        path[20];
-    struct {
-       uint16_t                                 domain;
-       uint8_t                                  bus;
-       uint8_t                                  device;
-       uint8_t                                  function;
-    }                                           pci_info;
     struct intel_device_info                      info;
     /** Amount of "GPU memory" we want to advertise
      *
@@ -890,16 +991,13 @@ struct anv_physical_device {
     int                                         cmd_parser_version;
     bool                                        has_exec_async;
     bool                                        has_exec_capture;
-    bool                                        has_exec_fence;
-    bool                                        has_syncobj_wait;
-    bool                                        has_syncobj_wait_available;
-    bool                                        has_context_priority;
+    int                                         max_context_priority;
     bool                                        has_context_isolation;
-    bool                                        has_thread_submit;
     bool                                        has_mmap_offset;
     bool                                        has_userptr_probe;
     uint64_t                                    gtt_size;
 
+    bool                                        use_relocations;
     bool                                        use_softpin;
     bool                                        always_use_bindless;
     bool                                        use_call_secondary;
@@ -942,14 +1040,20 @@ struct anv_physical_device {
       bool                                      need_clflush;
     } memory;
 
-    struct anv_memregion                        vram;
+    /* Either we have a single vram region and it's all mappable, or we have
+     * both mappable & non-mappable parts. System memory is always available.
+     */
+    struct anv_memregion                        vram_mappable;
+    struct anv_memregion                        vram_non_mappable;
     struct anv_memregion                        sys;
     uint8_t                                     driver_build_sha1[20];
     uint8_t                                     pipeline_cache_uuid[VK_UUID_SIZE];
     uint8_t                                     driver_uuid[VK_UUID_SIZE];
     uint8_t                                     device_uuid[VK_UUID_SIZE];
 
-    struct disk_cache *                         disk_cache;
+    struct vk_sync_type                         sync_syncobj_type;
+    struct vk_sync_timeline_type                sync_timeline_type;
+    const struct vk_sync_type *                 sync_types[4];
 
     struct wsi_device                       wsi_device;
     int                                         local_fd;
@@ -962,9 +1066,15 @@ struct anv_physical_device {
     int64_t                                     master_minor;
     struct drm_i915_query_engine_info *         engine_info;
 
-    void (*cmd_emit_timestamp)(struct anv_batch *, struct anv_bo *, uint32_t );
+    void (*cmd_emit_timestamp)(struct anv_batch *, struct anv_device *, struct anv_address, bool);
     struct intel_measure_device                 measure_device;
 };
+
+static inline bool
+anv_physical_device_has_vram(const struct anv_physical_device *device)
+{
+   return device->vram_mappable.size > 0;
+}
 
 struct anv_app_info {
    const char*        app_name;
@@ -980,65 +1090,19 @@ struct anv_instance {
     bool                                        physical_devices_enumerated;
     struct list_head                            physical_devices;
 
-    bool                                        pipeline_cache_enabled;
-
     struct driOptionCache                       dri_options;
     struct driOptionCache                       available_dri_options;
+
+    /**
+     * Workarounds for game bugs.
+     */
+    bool                                        assume_full_subgroups;
+    bool                                        limit_trig_input_range;
+    bool                                        sample_mask_out_opengl_behaviour;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
 void anv_finish_wsi(struct anv_physical_device *physical_device);
-
-struct anv_queue_submit {
-   struct anv_cmd_buffer **                  cmd_buffers;
-   uint32_t                                  cmd_buffer_count;
-   uint32_t                                  cmd_buffer_array_length;
-
-   uint32_t                                  fence_count;
-   uint32_t                                  fence_array_length;
-   struct drm_i915_gem_exec_fence *          fences;
-   uint64_t *                                fence_values;
-
-   uint32_t                                  temporary_semaphore_count;
-   uint32_t                                  temporary_semaphore_array_length;
-   struct anv_semaphore_impl *               temporary_semaphores;
-
-   /* Allocated only with non shareable timelines. */
-   union {
-      struct anv_timeline **                 wait_timelines;
-      uint32_t *                             wait_timeline_syncobjs;
-   };
-   uint32_t                                  wait_timeline_count;
-   uint32_t                                  wait_timeline_array_length;
-   uint64_t *                                wait_timeline_values;
-
-   struct anv_timeline **                    signal_timelines;
-   uint32_t                                  signal_timeline_count;
-   uint32_t                                  signal_timeline_array_length;
-   uint64_t *                                signal_timeline_values;
-
-   int                                       in_fence;
-   bool                                      need_out_fence;
-   int                                       out_fence;
-
-   uint32_t                                  fence_bo_count;
-   uint32_t                                  fence_bo_array_length;
-   /* An array of struct anv_bo pointers with lower bit used as a flag to
-    * signal we will wait on that BO (see anv_(un)pack_ptr).
-    */
-   uintptr_t *                               fence_bos;
-
-   int                                       perf_query_pass;
-   struct anv_query_pool *                   perf_query_pool;
-
-   const VkAllocationCallbacks *             alloc;
-   VkSystemAllocationScope                   alloc_scope;
-
-   struct anv_bo *                           simple_bo;
-   uint32_t                                  simple_bo_size;
-
-   struct list_head                          link;
-};
 
 struct anv_queue {
    struct vk_queue                           vk;
@@ -1047,79 +1111,30 @@ struct anv_queue {
 
    const struct anv_queue_family *           family;
 
+   uint32_t                                  index_in_family;
+
    uint32_t                                  exec_flags;
 
-   /* Set once from the device api calls. */
-   bool                                      lost_signaled;
+   /** Synchronization object for debug purposes (DEBUG_SYNC) */
+   struct vk_sync                           *sync;
 
-   /* Only set once atomically by the queue */
-   int                                       lost;
-   int                                       error_line;
-   const char *                              error_file;
-   char                                      error_msg[80];
-
-   /*
-    * This mutext protects the variables below.
-    */
-   pthread_mutex_t                           mutex;
-
-   pthread_t                                 thread;
-   pthread_cond_t                            cond;
-
-   /*
-    * A list of struct anv_queue_submit to be submitted to i915.
-    */
-   struct list_head                          queued_submits;
-
-   /* Set to true to stop the submission thread */
-   bool                                      quit;
-};
-
-struct anv_pipeline_cache {
-   struct vk_object_base                        base;
-   struct anv_device *                          device;
-   pthread_mutex_t                              mutex;
-
-   struct hash_table *                          nir_cache;
-
-   struct hash_table *                          cache;
-
-   bool                                         external_sync;
+   struct intel_ds_queue *                   ds;
 };
 
 struct nir_xfb_info;
 struct anv_pipeline_bind_map;
 
-void anv_pipeline_cache_init(struct anv_pipeline_cache *cache,
-                             struct anv_device *device,
-                             bool cache_enabled,
-                             bool external_sync);
-void anv_pipeline_cache_finish(struct anv_pipeline_cache *cache);
-
-struct anv_shader_bin *
-anv_pipeline_cache_search(struct anv_pipeline_cache *cache,
-                          const void *key, uint32_t key_size);
-struct anv_shader_bin *
-anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
-                                 gl_shader_stage stage,
-                                 const void *key_data, uint32_t key_size,
-                                 const void *kernel_data, uint32_t kernel_size,
-                                 const struct brw_stage_prog_data *prog_data,
-                                 uint32_t prog_data_size,
-                                 const struct brw_compile_stats *stats,
-                                 uint32_t num_stats,
-                                 const struct nir_xfb_info *xfb_info,
-                                 const struct anv_pipeline_bind_map *bind_map);
+extern const struct vk_pipeline_cache_object_ops *const anv_cache_import_ops[2];
 
 struct anv_shader_bin *
 anv_device_search_for_kernel(struct anv_device *device,
-                             struct anv_pipeline_cache *cache,
+                             struct vk_pipeline_cache *cache,
                              const void *key_data, uint32_t key_size,
                              bool *user_cache_bit);
 
 struct anv_shader_bin *
 anv_device_upload_kernel(struct anv_device *device,
-                         struct anv_pipeline_cache *cache,
+                         struct vk_pipeline_cache *cache,
                          gl_shader_stage stage,
                          const void *key_data, uint32_t key_size,
                          const void *kernel_data, uint32_t kernel_size,
@@ -1135,21 +1150,16 @@ struct nir_shader_compiler_options;
 
 struct nir_shader *
 anv_device_search_for_nir(struct anv_device *device,
-                          struct anv_pipeline_cache *cache,
+                          struct vk_pipeline_cache *cache,
                           const struct nir_shader_compiler_options *nir_options,
                           unsigned char sha1_key[20],
                           void *mem_ctx);
 
 void
 anv_device_upload_nir(struct anv_device *device,
-                      struct anv_pipeline_cache *cache,
+                      struct vk_pipeline_cache *cache,
                       const struct nir_shader *nir,
                       unsigned char sha1_key[20]);
-
-struct anv_address {
-   struct anv_bo *bo;
-   int64_t offset;
-};
 
 struct anv_device {
     struct vk_device                            vk;
@@ -1161,7 +1171,6 @@ struct anv_device {
     int                                         fd;
     bool                                        can_chain_batches;
     bool                                        robust_buffer_access;
-    bool                                        has_thread_submit;
 
     pthread_mutex_t                             vma_mutex;
     struct util_vma_heap                        vma_lo;
@@ -1172,6 +1181,7 @@ struct anv_device {
     struct list_head                            memory_objects;
 
     struct anv_bo_pool                          batch_bo_pool;
+    struct anv_bo_pool                          utrace_bo_pool;
 
     struct anv_bo_cache                         bo_cache;
 
@@ -1198,12 +1208,23 @@ struct anv_device {
     struct anv_bo *                             trivial_batch_bo;
     struct anv_state                            null_surface_state;
 
-    struct anv_pipeline_cache                   default_pipeline_cache;
+    struct vk_pipeline_cache *                  default_pipeline_cache;
+    struct vk_pipeline_cache *                  internal_cache;
     struct blorp_context                        blorp;
 
     struct anv_state                            border_colors;
 
     struct anv_state                            slice_hash;
+
+    /** An array of CPS_STATE structures grouped by MAX_VIEWPORTS elements
+     *
+     * We need to emit CPS_STATE structures for each viewport accessible by a
+     * pipeline. So rather than write many identical CPS_STATE structures
+     * dynamically, we can enumerate all possible combinaisons and then just
+     * emit a 3DSTATE_CPS_POINTERS instruction with the right offset into this
+     * array.
+     */
+    struct anv_state                            cps_states;
 
     uint32_t                                    queue_count;
     struct anv_queue  *                         queues;
@@ -1211,13 +1232,26 @@ struct anv_device {
     struct anv_scratch_pool                     scratch_pool;
     struct anv_bo                              *rt_scratch_bos[16];
 
+    /** Shadow ray query BO
+     *
+     * The ray_query_bo only holds the current ray being traced. When using
+     * more than 1 ray query per thread, we cannot fit all the queries in
+     * there, so we need a another buffer to hold query data that is not
+     * currently being used by the HW for tracing, similar to a scratch space.
+     *
+     * The size of the shadow buffer depends on the number of queries per
+     * shader.
+     */
+    struct anv_bo                              *ray_query_shadow_bos[16];
+    /** Ray query buffer used to communicated with HW unit.
+     */
+    struct anv_bo                              *ray_query_bo;
+
     struct anv_shader_bin                      *rt_trampoline;
     struct anv_shader_bin                      *rt_trivial_return;
 
     pthread_mutex_t                             mutex;
     pthread_cond_t                              queue_submit;
-    int                                         _lost;
-    int                                         lost_reported;
 
     struct intel_batch_decode_ctx               decoder_ctx;
     /*
@@ -1234,6 +1268,8 @@ struct anv_device {
     const struct intel_l3_config                *l3_config;
 
     struct intel_debug_block_frame              *debug_frame_desc;
+
+    struct intel_ds_device                       ds;
 };
 
 #if defined(GFX_VERx10) && GFX_VERx10 >= 90
@@ -1243,42 +1279,42 @@ struct anv_device {
 #endif
 
 static inline bool
-anv_use_softpin(const struct anv_physical_device *pdevice)
+anv_use_relocations(const struct anv_physical_device *pdevice)
 {
 #if defined(GFX_VERx10) && GFX_VERx10 >= 90
    /* Sky Lake and later always uses softpin */
-   assert(pdevice->use_softpin);
-   return true;
+   assert(!pdevice->use_relocations);
+   return false;
 #elif defined(GFX_VERx10) && GFX_VERx10 < 80
    /* Haswell and earlier never use softpin */
-   assert(!pdevice->use_softpin);
-   return false;
+   assert(pdevice->use_relocations);
+   return true;
 #else
    /* If we don't have a GFX_VERx10 #define, we need to look at the physical
     * device.  Also, for GFX version 8, we need to look at the physical
     * device because Broadwell softpins but Cherryview doesn't.
     */
-   return pdevice->use_softpin;
+   return pdevice->use_relocations;
 #endif
 }
 
 static inline struct anv_state_pool *
 anv_binding_table_pool(struct anv_device *device)
 {
-   if (anv_use_softpin(device->physical))
-      return &device->binding_table_pool;
-   else
+   if (anv_use_relocations(device->physical))
       return &device->surface_state_pool;
+   else
+      return &device->binding_table_pool;
 }
 
 static inline struct anv_state
 anv_binding_table_pool_alloc(struct anv_device *device)
 {
-   if (anv_use_softpin(device->physical))
+   if (anv_use_relocations(device->physical))
+      return anv_state_pool_alloc_back(&device->surface_state_pool);
+   else
       return anv_state_pool_alloc(&device->binding_table_pool,
                                   device->binding_table_pool.block_size, 0);
-   else
-      return anv_state_pool_alloc_back(&device->surface_state_pool);
 }
 
 static inline void
@@ -1296,34 +1332,6 @@ anv_mocs(const struct anv_device *device,
 
 void anv_device_init_blorp(struct anv_device *device);
 void anv_device_finish_blorp(struct anv_device *device);
-
-void _anv_device_report_lost(struct anv_device *device);
-VkResult _anv_device_set_lost(struct anv_device *device,
-                              const char *file, int line,
-                              const char *msg, ...)
-   anv_printflike(4, 5);
-VkResult _anv_queue_set_lost(struct anv_queue *queue,
-                              const char *file, int line,
-                              const char *msg, ...)
-   anv_printflike(4, 5);
-#define anv_device_set_lost(dev, ...) \
-   _anv_device_set_lost(dev, __FILE__, __LINE__, __VA_ARGS__)
-#define anv_queue_set_lost(queue, ...) \
-   (queue)->device->has_thread_submit ? \
-   _anv_queue_set_lost(queue, __FILE__, __LINE__, __VA_ARGS__) : \
-   _anv_device_set_lost(queue->device, __FILE__, __LINE__, __VA_ARGS__)
-
-static inline bool
-anv_device_is_lost(struct anv_device *device)
-{
-   int lost = p_atomic_read(&device->_lost);
-   if (unlikely(lost && !device->lost_reported))
-      _anv_device_report_lost(device);
-   return lost;
-}
-
-VkResult anv_device_query_status(struct anv_device *device);
-
 
 enum anv_bo_alloc_flags {
    /** Specifies that the BO must have a 32-bit address
@@ -1370,6 +1378,9 @@ enum anv_bo_alloc_flags {
 
    /** This buffer is allocated from local memory */
    ANV_BO_ALLOC_LOCAL_MEM = (1 << 10),
+
+   /** This buffer is allocated from local memory and should be cpu visible */
+   ANV_BO_ALLOC_LOCAL_MEM_CPU_VISIBLE = (1 << 11),
 };
 
 VkResult anv_device_alloc_bo(struct anv_device *device,
@@ -1377,6 +1388,15 @@ VkResult anv_device_alloc_bo(struct anv_device *device,
                              enum anv_bo_alloc_flags alloc_flags,
                              uint64_t explicit_address,
                              struct anv_bo **bo);
+VkResult anv_device_map_bo(struct anv_device *device,
+                           struct anv_bo *bo,
+                           uint64_t offset,
+                           size_t size,
+                           uint32_t gem_flags,
+                           void **map_out);
+void anv_device_unmap_bo(struct anv_device *device,
+                         struct anv_bo *bo,
+                         void *map, size_t map_size);
 VkResult anv_device_import_bo_from_host_ptr(struct anv_device *device,
                                             void *host_ptr, uint32_t size,
                                             enum anv_bo_alloc_flags alloc_flags,
@@ -1388,6 +1408,13 @@ VkResult anv_device_import_bo(struct anv_device *device, int fd,
                               struct anv_bo **bo);
 VkResult anv_device_export_bo(struct anv_device *device,
                               struct anv_bo *bo, int *fd_out);
+VkResult anv_device_get_bo_tiling(struct anv_device *device,
+                                  struct anv_bo *bo,
+                                  enum isl_tiling *tiling_out);
+VkResult anv_device_set_bo_tiling(struct anv_device *device,
+                                  struct anv_bo *bo,
+                                  uint32_t row_pitch_B,
+                                  enum isl_tiling tiling);
 void anv_device_release_bo(struct anv_device *device,
                            struct anv_bo *bo);
 
@@ -1397,7 +1424,6 @@ anv_device_lookup_bo(struct anv_device *device, uint32_t gem_handle)
    return util_sparse_array_get(&device->bo_cache.bo_map, gem_handle);
 }
 
-VkResult anv_device_bo_busy(struct anv_device *device, struct anv_bo *bo);
 VkResult anv_device_wait(struct anv_device *device, struct anv_bo *bo,
                          int64_t timeout);
 
@@ -1407,12 +1433,10 @@ VkResult anv_queue_init(struct anv_device *device, struct anv_queue *queue,
                         uint32_t index_in_family);
 void anv_queue_finish(struct anv_queue *queue);
 
-VkResult anv_queue_execbuf_locked(struct anv_queue *queue, struct anv_queue_submit *submit);
+VkResult anv_queue_submit(struct vk_queue *queue,
+                          struct vk_queue_submit *submit);
 VkResult anv_queue_submit_simple_batch(struct anv_queue *queue,
                                        struct anv_batch *batch);
-
-uint64_t anv_gettime_ns(void);
-uint64_t anv_get_absolute_timeout(uint64_t timeout);
 
 void* anv_gem_mmap(struct anv_device *device,
                    uint32_t gem_handle, uint64_t offset, uint64_t size, uint32_t flags);
@@ -1420,7 +1444,7 @@ void anv_gem_munmap(struct anv_device *device, void *p, uint64_t size);
 uint32_t anv_gem_create(struct anv_device *device, uint64_t size);
 void anv_gem_close(struct anv_device *device, uint32_t gem_handle);
 uint32_t anv_gem_create_regions(struct anv_device *device, uint64_t anv_bo_size,
-                                uint32_t num_regions,
+                                uint32_t flags, uint32_t num_regions,
                                 struct drm_i915_gem_memory_class_instance *regions);
 uint32_t anv_gem_userptr(struct anv_device *device, void *mem, size_t size);
 int anv_gem_busy(struct anv_device *device, uint32_t gem_handle);
@@ -1430,20 +1454,12 @@ int anv_gem_execbuffer(struct anv_device *device,
 int anv_gem_set_tiling(struct anv_device *device, uint32_t gem_handle,
                        uint32_t stride, uint32_t tiling);
 int anv_gem_create_context(struct anv_device *device);
-int anv_gem_create_context_engines(struct anv_device *device,
-                                   const struct drm_i915_query_engine_info *info,
-                                   int num_engines,
-                                   uint16_t *engine_classes);
-bool anv_gem_has_context_priority(int fd);
+bool anv_gem_has_context_priority(int fd, int priority);
 int anv_gem_destroy_context(struct anv_device *device, int context);
 int anv_gem_set_context_param(int fd, int context, uint32_t param,
                               uint64_t value);
-int anv_gem_get_context_param(int fd, int context, uint32_t param,
-                              uint64_t *value);
 int anv_gem_get_param(int fd, uint32_t param);
-uint64_t anv_gem_get_drm_cap(int fd, uint32_t capability);
 int anv_gem_get_tiling(struct anv_device *device, uint32_t gem_handle);
-bool anv_gem_get_bit6_swizzle(int fd, uint32_t tiling);
 int anv_gem_context_get_reset_stats(int fd, int context,
                                     uint32_t *active, uint32_t *pending);
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
@@ -1452,35 +1468,9 @@ uint32_t anv_gem_fd_to_handle(struct anv_device *device, int fd);
 int anv_gem_set_caching(struct anv_device *device, uint32_t gem_handle, uint32_t caching);
 int anv_gem_set_domain(struct anv_device *device, uint32_t gem_handle,
                        uint32_t read_domains, uint32_t write_domain);
-int anv_gem_sync_file_merge(struct anv_device *device, int fd1, int fd2);
-uint32_t anv_gem_syncobj_create(struct anv_device *device, uint32_t flags);
-void anv_gem_syncobj_destroy(struct anv_device *device, uint32_t handle);
-int anv_gem_syncobj_handle_to_fd(struct anv_device *device, uint32_t handle);
-uint32_t anv_gem_syncobj_fd_to_handle(struct anv_device *device, int fd);
-int anv_gem_syncobj_export_sync_file(struct anv_device *device,
-                                     uint32_t handle);
-int anv_gem_syncobj_import_sync_file(struct anv_device *device,
-                                     uint32_t handle, int fd);
-void anv_gem_syncobj_reset(struct anv_device *device, uint32_t handle);
-bool anv_gem_supports_syncobj_wait(int fd);
-int anv_gem_syncobj_wait(struct anv_device *device,
-                         const uint32_t *handles, uint32_t num_handles,
-                         int64_t abs_timeout_ns, bool wait_all);
-int anv_gem_syncobj_timeline_wait(struct anv_device *device,
-                                  const uint32_t *handles, const uint64_t *points,
-                                  uint32_t num_items, int64_t abs_timeout_ns,
-                                  bool wait_all, bool wait_materialize);
-int anv_gem_syncobj_timeline_signal(struct anv_device *device,
-                                    const uint32_t *handles, const uint64_t *points,
-                                    uint32_t num_items);
-int anv_gem_syncobj_timeline_query(struct anv_device *device,
-                                   const uint32_t *handles, uint64_t *points,
-                                   uint32_t num_items);
 int anv_i915_query(int fd, uint64_t query_id, void *buffer,
                    int32_t *buffer_len);
 struct drm_i915_query_engine_info *anv_gem_get_engine_info(int fd);
-int anv_gem_count_engines(const struct drm_i915_query_engine_info *info,
-                          uint16_t engine_class);
 
 uint64_t anv_vma_alloc(struct anv_device *device,
                        uint64_t size, uint64_t align,
@@ -1610,44 +1600,6 @@ anv_batch_emit_reloc(struct anv_batch *batch,
    return address_u64;
 }
 
-
-#define ANV_NULL_ADDRESS ((struct anv_address) { NULL, 0 })
-
-static inline struct anv_address
-anv_address_from_u64(uint64_t addr_u64)
-{
-   assert(addr_u64 == intel_canonical_address(addr_u64));
-   return (struct anv_address) {
-      .bo = NULL,
-      .offset = addr_u64,
-   };
-}
-
-static inline bool
-anv_address_is_null(struct anv_address addr)
-{
-   return addr.bo == NULL && addr.offset == 0;
-}
-
-static inline uint64_t
-anv_address_physical(struct anv_address addr)
-{
-   if (addr.bo && (ANV_ALWAYS_SOFTPIN ||
-                   (addr.bo->flags & EXEC_OBJECT_PINNED))) {
-      assert(addr.bo->flags & EXEC_OBJECT_PINNED);
-      return intel_canonical_address(addr.bo->offset + addr.offset);
-   } else {
-      return intel_canonical_address(addr.offset);
-   }
-}
-
-static inline struct anv_address
-anv_address_add(struct anv_address addr, uint64_t offset)
-{
-   addr.offset += offset;
-   return addr;
-}
-
 static inline void
 write_reloc(const struct anv_device *device, void *p, uint64_t v, bool flush)
 {
@@ -1660,7 +1612,7 @@ write_reloc(const struct anv_device *device, void *p, uint64_t v, bool flush)
       *(uint32_t *)p = v;
    }
 
-   if (flush && !device->info.has_llc)
+   if (flush && device->physical->memory.need_clflush)
       intel_flush_range(p, reloc_size);
 }
 
@@ -1671,7 +1623,7 @@ _anv_combine_address(struct anv_batch *batch, void *location,
    if (address.bo == NULL) {
       return address.offset + delta;
    } else if (batch == NULL) {
-      assert(address.bo->flags & EXEC_OBJECT_PINNED);
+      assert(anv_bo_is_pinned(address.bo));
       return anv_address_physical(anv_address_add(address, delta));
    } else {
       assert(batch->start <= location && location < batch->end);
@@ -1766,8 +1718,12 @@ struct anv_device_memory {
 
    struct anv_bo *                              bo;
    const struct anv_memory_type *               type;
-   VkDeviceSize                                 map_size;
+
    void *                                       map;
+   size_t                                       map_size;
+
+   /* The map, from the user PoV is map + map_delta */
+   uint64_t                                     map_delta;
 
    /* The map, from the user PoV is map + map_delta */
    uint32_t                                     map_delta;
@@ -1873,7 +1829,7 @@ struct anv_descriptor_set_binding_layout {
    VkDescriptorType type;
 
    /* Flags provided when this binding was created */
-   VkDescriptorBindingFlagsEXT flags;
+   VkDescriptorBindingFlags flags;
 
    /* Bitfield representing the type of data this descriptor contains */
    enum anv_descriptor_data data;
@@ -1886,7 +1842,7 @@ struct anv_descriptor_set_binding_layout {
     */
    uint32_t array_size;
 
-   /* Index into the flattend descriptor set */
+   /* Index into the flattened descriptor set */
    uint32_t descriptor_index;
 
    /* Index into the dynamic state array for a dynamic buffer */
@@ -1898,14 +1854,12 @@ struct anv_descriptor_set_binding_layout {
    /* Offset into the descriptor buffer where this descriptor lives */
    uint32_t descriptor_offset;
 
+   /* Pre computed stride */
+   unsigned descriptor_stride;
+
    /* Immutable samplers (or NULL if no immutable samplers) */
    struct anv_sampler **immutable_samplers;
 };
-
-unsigned anv_descriptor_size(const struct anv_descriptor_set_binding_layout *layout);
-
-unsigned anv_descriptor_type_size(const struct anv_physical_device *pdevice,
-                                  VkDescriptorType type);
 
 bool anv_descriptor_supports_bindless(const struct anv_physical_device *pdevice,
                                       const struct anv_descriptor_set_binding_layout *binding,
@@ -1978,12 +1932,15 @@ struct anv_descriptor {
       };
 
       struct {
+         struct anv_buffer_view *set_buffer_view;
          struct anv_buffer *buffer;
          uint64_t offset;
          uint64_t range;
       };
 
       struct anv_buffer_view *buffer_view;
+
+      struct anv_acceleration_structure *accel_struct;
    };
 };
 
@@ -2025,7 +1982,6 @@ anv_descriptor_set_is_push(struct anv_descriptor_set *set)
 struct anv_buffer_view {
    struct vk_object_base base;
 
-   enum isl_format format; /**< VkBufferViewCreateInfo::format */
    uint64_t range; /**< VkBufferViewCreateInfo::range */
 
    struct anv_address address;
@@ -2082,13 +2038,9 @@ struct anv_descriptor_pool {
 
    struct list_head desc_sets;
 
-   char data[0];
-};
+   bool host_only;
 
-enum anv_descriptor_template_entry_type {
-   ANV_DESCRIPTOR_TEMPLATE_ENTRY_TYPE_IMAGE,
-   ANV_DESCRIPTOR_TEMPLATE_ENTRY_TYPE_BUFFER,
-   ANV_DESCRIPTOR_TEMPLATE_ENTRY_TYPE_BUFFER_VIEW
+   char data[0];
 };
 
 struct anv_descriptor_template_entry {
@@ -2186,18 +2138,6 @@ anv_descriptor_set_write_template(struct anv_device *device,
                                   const struct anv_descriptor_update_template *template,
                                   const void *data);
 
-VkResult
-anv_descriptor_set_create(struct anv_device *device,
-                          struct anv_descriptor_pool *pool,
-                          struct anv_descriptor_set_layout *layout,
-                          uint32_t var_desc_count,
-                          struct anv_descriptor_set **out_set);
-
-void
-anv_descriptor_set_destroy(struct anv_device *device,
-                           struct anv_descriptor_pool *pool,
-                           struct anv_descriptor_set *set);
-
 #define ANV_DESCRIPTOR_SET_NULL             (UINT8_MAX - 5)
 #define ANV_DESCRIPTOR_SET_PUSH_CONSTANTS   (UINT8_MAX - 4)
 #define ANV_DESCRIPTOR_SET_DESCRIPTORS      (UINT8_MAX - 3)
@@ -2223,9 +2163,6 @@ struct anv_pipeline_binding {
    union {
       /** Plane in the binding index for images */
       uint8_t plane;
-
-      /** Input attachment index (relative to the subpass) */
-      uint8_t input_attachment_index;
 
       /** Dynamic offset index (for dynamic UBOs and SSBOs) */
       uint8_t dynamic_offset_index;
@@ -2271,161 +2208,19 @@ struct anv_pipeline_layout {
 };
 
 struct anv_buffer {
-   struct vk_object_base                        base;
-
-   struct anv_device *                          device;
-   VkDeviceSize                                 size;
-
-   VkBufferCreateFlags                          create_flags;
-   VkBufferUsageFlags                           usage;
+   struct vk_buffer vk;
 
    /* Set when bound */
-   struct anv_address                           address;
+   struct anv_address address;
 };
-
-static inline uint64_t
-anv_buffer_get_range(struct anv_buffer *buffer, uint64_t offset, uint64_t range)
-{
-   assert(offset <= buffer->size);
-   if (range == VK_WHOLE_SIZE) {
-      return buffer->size - offset;
-   } else {
-      assert(range + offset >= range);
-      assert(range + offset <= buffer->size);
-      return range;
-   }
-}
 
 enum anv_cmd_dirty_bits {
-   ANV_CMD_DIRTY_DYNAMIC_VIEWPORT                    = 1 << 0, /* VK_DYNAMIC_STATE_VIEWPORT */
-   ANV_CMD_DIRTY_DYNAMIC_SCISSOR                     = 1 << 1, /* VK_DYNAMIC_STATE_SCISSOR */
-   ANV_CMD_DIRTY_DYNAMIC_LINE_WIDTH                  = 1 << 2, /* VK_DYNAMIC_STATE_LINE_WIDTH */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS                  = 1 << 3, /* VK_DYNAMIC_STATE_DEPTH_BIAS */
-   ANV_CMD_DIRTY_DYNAMIC_BLEND_CONSTANTS             = 1 << 4, /* VK_DYNAMIC_STATE_BLEND_CONSTANTS */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS                = 1 << 5, /* VK_DYNAMIC_STATE_DEPTH_BOUNDS */
-   ANV_CMD_DIRTY_DYNAMIC_STENCIL_COMPARE_MASK        = 1 << 6, /* VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK */
-   ANV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK          = 1 << 7, /* VK_DYNAMIC_STATE_STENCIL_WRITE_MASK */
-   ANV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE           = 1 << 8, /* VK_DYNAMIC_STATE_STENCIL_REFERENCE */
-   ANV_CMD_DIRTY_PIPELINE                            = 1 << 9,
-   ANV_CMD_DIRTY_INDEX_BUFFER                        = 1 << 10,
-   ANV_CMD_DIRTY_RENDER_TARGETS                      = 1 << 11,
-   ANV_CMD_DIRTY_XFB_ENABLE                          = 1 << 12,
-   ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE                = 1 << 13, /* VK_DYNAMIC_STATE_LINE_STIPPLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_CULL_MODE                   = 1 << 14, /* VK_DYNAMIC_STATE_CULL_MODE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE                  = 1 << 15, /* VK_DYNAMIC_STATE_FRONT_FACE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY          = 1 << 16, /* VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE = 1 << 17, /* VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE           = 1 << 18, /* VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE          = 1 << 19, /* VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP            = 1 << 20, /* VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE    = 1 << 21, /* VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE         = 1 << 22, /* VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP                  = 1 << 23, /* VK_DYNAMIC_STATE_STENCIL_OP_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS            = 1 << 24, /* VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE           = 1 << 25, /* VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE                = 1 << 26, /* VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR */
-   ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE   = 1 << 27, /* VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE           = 1 << 28, /* VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP                    = 1 << 29, /* VK_DYNAMIC_STATE_LOGIC_OP_EXT */
-   ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE    = 1 << 30, /* VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT */
+   ANV_CMD_DIRTY_PIPELINE                            = 1 << 0,
+   ANV_CMD_DIRTY_INDEX_BUFFER                        = 1 << 1,
+   ANV_CMD_DIRTY_RENDER_TARGETS                      = 1 << 2,
+   ANV_CMD_DIRTY_XFB_ENABLE                          = 1 << 3,
 };
-typedef uint32_t anv_cmd_dirty_mask_t;
-
-#define ANV_CMD_DIRTY_DYNAMIC_ALL                       \
-   (ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |                    \
-    ANV_CMD_DIRTY_DYNAMIC_SCISSOR |                     \
-    ANV_CMD_DIRTY_DYNAMIC_LINE_WIDTH |                  \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS |                  \
-    ANV_CMD_DIRTY_DYNAMIC_BLEND_CONSTANTS |             \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS |                \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_COMPARE_MASK |        \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK |          \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE |           \
-    ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE |                \
-    ANV_CMD_DIRTY_DYNAMIC_CULL_MODE |                   \
-    ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE |                  \
-    ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY |          \
-    ANV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE | \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE |           \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE |          \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |            \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |    \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |         \
-    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP |                  \
-    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |            \
-    ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE |           \
-    ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE |                \
-    ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE |   \
-    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE |           \
-    ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP |                    \
-    ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE)
-
-static inline enum anv_cmd_dirty_bits
-anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
-{
-   switch (vk_state) {
-   case VK_DYNAMIC_STATE_VIEWPORT:
-   case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_VIEWPORT;
-   case VK_DYNAMIC_STATE_SCISSOR:
-   case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_SCISSOR;
-   case VK_DYNAMIC_STATE_LINE_WIDTH:
-      return ANV_CMD_DIRTY_DYNAMIC_LINE_WIDTH;
-   case VK_DYNAMIC_STATE_DEPTH_BIAS:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS;
-   case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
-      return ANV_CMD_DIRTY_DYNAMIC_BLEND_CONSTANTS;
-   case VK_DYNAMIC_STATE_DEPTH_BOUNDS:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS;
-   case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
-      return ANV_CMD_DIRTY_DYNAMIC_STENCIL_COMPARE_MASK;
-   case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
-      return ANV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK;
-   case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
-      return ANV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE;
-   case VK_DYNAMIC_STATE_LINE_STIPPLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE;
-   case VK_DYNAMIC_STATE_CULL_MODE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_CULL_MODE;
-   case VK_DYNAMIC_STATE_FRONT_FACE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE;
-   case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY;
-   case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT_BINDING_STRIDE;
-   case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP;
-   case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE;
-   case VK_DYNAMIC_STATE_STENCIL_OP_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
-   case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
-   case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE;
-   case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR:
-      return ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE;
-   case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
-   case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE;
-   case VK_DYNAMIC_STATE_LOGIC_OP_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP;
-   case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT:
-      return ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE;
-   default:
-      assert(!"Unsupported dynamic state");
-      return 0;
-   }
-}
-
+typedef enum anv_cmd_dirty_bits anv_cmd_dirty_mask_t;
 
 enum anv_pipe_bits {
    ANV_PIPE_DEPTH_CACHE_FLUSH_BIT            = (1 << 0),
@@ -2445,6 +2240,7 @@ enum anv_pipe_bits {
     * must reinterpret this flush as ANV_PIPE_DATA_CACHE_FLUSH_BIT.
     */
    ANV_PIPE_HDC_PIPELINE_FLUSH_BIT           = (1 << 14),
+   ANV_PIPE_PSS_STALL_SYNC_BIT               = (1 << 15),
    ANV_PIPE_CS_STALL_BIT                     = (1 << 20),
    ANV_PIPE_END_OF_PIPE_SYNC_BIT             = (1 << 21),
 
@@ -2492,42 +2288,44 @@ enum anv_pipe_bits {
    ANV_PIPE_STATE_CACHE_INVALIDATE_BIT | \
    ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT | \
    ANV_PIPE_VF_CACHE_INVALIDATE_BIT | \
-   ANV_PIPE_HDC_PIPELINE_FLUSH_BIT | \
    ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT | \
    ANV_PIPE_INSTRUCTION_CACHE_INVALIDATE_BIT | \
    ANV_PIPE_AUX_TABLE_INVALIDATE_BIT)
 
+enum intel_ds_stall_flag
+anv_pipe_flush_bit_to_ds_stall_flag(enum anv_pipe_bits bits);
+
 static inline enum anv_pipe_bits
 anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
-                                     VkAccessFlags2KHR flags)
+                                     VkAccessFlags2 flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
    u_foreach_bit64(b, flags) {
-      switch ((VkAccessFlags2KHR)BITFIELD64_BIT(b)) {
-      case VK_ACCESS_2_SHADER_WRITE_BIT_KHR:
-      case VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR:
+      switch ((VkAccessFlags2)BITFIELD64_BIT(b)) {
+      case VK_ACCESS_2_SHADER_WRITE_BIT:
+      case VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT:
          /* We're transitioning a buffer that was previously used as write
           * destination through the data port. To make its content available
           * to future operations, flush the hdc pipeline.
           */
          pipe_bits |= ANV_PIPE_HDC_PIPELINE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR:
+      case VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT:
          /* We're transitioning a buffer that was previously used as render
           * target. To make its content available to future operations, flush
           * the render target cache.
           */
          pipe_bits |= ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR:
+      case VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:
          /* We're transitioning a buffer that was previously used as depth
           * buffer. To make its content available to future operations, flush
           * the depth cache.
           */
          pipe_bits |= ANV_PIPE_DEPTH_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR:
+      case VK_ACCESS_2_TRANSFER_WRITE_BIT:
          /* We're transitioning a buffer that was previously used as a
           * transfer write destination. Generic write operations include color
           * & depth operations as well as buffer operations like :
@@ -2544,13 +2342,13 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
          pipe_bits |= ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
          pipe_bits |= ANV_PIPE_DEPTH_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_MEMORY_WRITE_BIT_KHR:
+      case VK_ACCESS_2_MEMORY_WRITE_BIT:
          /* We're transitioning a buffer for generic write operations. Flush
           * all the caches.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
          break;
-      case VK_ACCESS_2_HOST_WRITE_BIT_KHR:
+      case VK_ACCESS_2_HOST_WRITE_BIT:
          /* We're transitioning a buffer for access by CPU. Invalidate
           * all the caches. Since data and tile caches don't have invalidate,
           * we are forced to flush those as well.
@@ -2576,13 +2374,13 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
 
 static inline enum anv_pipe_bits
 anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
-                                          VkAccessFlags2KHR flags)
+                                          VkAccessFlags2 flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
    u_foreach_bit64(b, flags) {
-      switch ((VkAccessFlags2KHR)BITFIELD64_BIT(b)) {
-      case VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT_KHR:
+      switch ((VkAccessFlags2)BITFIELD64_BIT(b)) {
+      case VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT:
          /* Indirect draw commands take a buffer as input that we're going to
           * read from the command streamer to load some of the HW registers
           * (see genX_cmd_buffer.c:load_indirect_parameters). This requires a
@@ -2604,15 +2402,15 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
           */
          pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_INDEX_READ_BIT_KHR:
-      case VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT_KHR:
+      case VK_ACCESS_2_INDEX_READ_BIT:
+      case VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT:
          /* We transitioning a buffer to be used for as input for vkCmdDraw*
           * commands, so we invalidate the VF cache to make sure there is no
           * stale data when we start rendering.
           */
          pipe_bits |= ANV_PIPE_VF_CACHE_INVALIDATE_BIT;
          break;
-      case VK_ACCESS_2_UNIFORM_READ_BIT_KHR:
+      case VK_ACCESS_2_UNIFORM_READ_BIT:
          /* We transitioning a buffer to be used as uniform data. Because
           * uniform is accessed through the data port & sampler, we need to
           * invalidate the texture cache (sampler) & constant cache (data
@@ -2624,21 +2422,21 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
          else
             pipe_bits |= ANV_PIPE_HDC_PIPELINE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_SHADER_READ_BIT_KHR:
-      case VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT_KHR:
-      case VK_ACCESS_2_TRANSFER_READ_BIT_KHR:
+      case VK_ACCESS_2_SHADER_READ_BIT:
+      case VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT:
+      case VK_ACCESS_2_TRANSFER_READ_BIT:
          /* Transitioning a buffer to be read through the sampler, so
           * invalidate the texture cache, we don't want any stale data.
           */
          pipe_bits |= ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
          break;
-      case VK_ACCESS_2_MEMORY_READ_BIT_KHR:
+      case VK_ACCESS_2_MEMORY_READ_BIT:
          /* Transitioning a buffer for generic read, invalidate all the
           * caches.
           */
          pipe_bits |= ANV_PIPE_INVALIDATE_BITS;
          break;
-      case VK_ACCESS_2_MEMORY_WRITE_BIT_KHR:
+      case VK_ACCESS_2_MEMORY_WRITE_BIT:
          /* Generic write, make sure all previously written things land in
           * memory.
           */
@@ -2656,11 +2454,19 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
          pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          pipe_bits |= ANV_PIPE_DATA_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_2_HOST_READ_BIT_KHR:
+      case VK_ACCESS_2_HOST_READ_BIT:
          /* We're transitioning a buffer that was written by CPU.  Flush
           * all the caches.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
+         break;
+      case VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT:
+         /* We're transitioning a buffer to be written by the streamout fixed
+          * function. This one is apparently not L3 coherent, so we need a
+          * tile cache flush to make sure any previous write is not going to
+          * create WaW hazards.
+          */
+         pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          break;
       default:
          break; /* Nothing to do */
@@ -2683,7 +2489,6 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
 struct anv_vertex_binding {
    struct anv_buffer *                          buffer;
    VkDeviceSize                                 offset;
-   VkDeviceSize                                 stride;
    VkDeviceSize                                 size;
 };
 
@@ -2703,8 +2508,8 @@ struct anv_push_constants {
    /* Robust access pushed registers. */
    uint64_t push_reg_mask[MESA_SHADER_STAGES];
 
-   /** Pad out to a multiple of 32 bytes */
-   uint32_t pad[2];
+   /** Ray query globals (RT_DISPATCH_GLOBALS) */
+   uint64_t ray_query_globals;
 
    /* Base addresses for descriptor sets */
    uint64_t desc_sets[MAX_SETS];
@@ -2724,99 +2529,6 @@ struct anv_push_constants {
       uint32_t subgroup_id;
    } cs;
 };
-
-struct anv_dynamic_state {
-   struct {
-      uint32_t                                  count;
-      VkViewport                                viewports[MAX_VIEWPORTS];
-   } viewport;
-
-   struct {
-      uint32_t                                  count;
-      VkRect2D                                  scissors[MAX_SCISSORS];
-   } scissor;
-
-   float                                        line_width;
-
-   struct {
-      float                                     bias;
-      float                                     clamp;
-      float                                     slope;
-   } depth_bias;
-
-   float                                        blend_constants[4];
-
-   struct {
-      float                                     min;
-      float                                     max;
-   } depth_bounds;
-
-   struct {
-      uint32_t                                  front;
-      uint32_t                                  back;
-   } stencil_compare_mask;
-
-   struct {
-      uint32_t                                  front;
-      uint32_t                                  back;
-   } stencil_write_mask;
-
-   struct {
-      uint32_t                                  front;
-      uint32_t                                  back;
-   } stencil_reference;
-
-   struct {
-      struct {
-         VkStencilOp fail_op;
-         VkStencilOp pass_op;
-         VkStencilOp depth_fail_op;
-         VkCompareOp compare_op;
-      } front;
-      struct {
-         VkStencilOp fail_op;
-         VkStencilOp pass_op;
-         VkStencilOp depth_fail_op;
-         VkCompareOp compare_op;
-      } back;
-   } stencil_op;
-
-   struct {
-      uint32_t                                  factor;
-      uint16_t                                  pattern;
-   } line_stipple;
-
-   struct {
-      uint32_t                                  samples;
-      VkSampleLocationEXT                       locations[MAX_SAMPLE_LOCATIONS];
-   } sample_locations;
-
-   VkExtent2D                                   fragment_shading_rate;
-
-   VkCullModeFlags                              cull_mode;
-   VkFrontFace                                  front_face;
-   VkPrimitiveTopology                          primitive_topology;
-   bool                                         depth_test_enable;
-   bool                                         depth_write_enable;
-   VkCompareOp                                  depth_compare_op;
-   bool                                         depth_bounds_test_enable;
-   bool                                         stencil_test_enable;
-   bool                                         raster_discard;
-   bool                                         depth_bias_enable;
-   bool                                         primitive_restart_enable;
-   VkLogicOp                                    logic_op;
-   bool                                         dyn_vbo_stride;
-   bool                                         dyn_vbo_size;
-
-   /* Bitfield, one bit per render target */
-   uint8_t                                      color_writes;
-};
-
-extern const struct anv_dynamic_state default_dynamic_state;
-
-uint32_t anv_dynamic_state_copy(struct anv_dynamic_state *dest,
-                                const struct anv_dynamic_state *src,
-                                uint32_t copy_mask);
 
 struct anv_surface_state {
    struct anv_state state;
@@ -2840,31 +2552,16 @@ struct anv_surface_state {
    struct anv_address clear_address;
 };
 
-/**
- * Attachment state when recording a renderpass instance.
- *
- * The clear value is valid only if there exists a pending clear.
- */
-struct anv_attachment_state {
-   enum isl_aux_usage                           aux_usage;
-   struct anv_surface_state                     color;
-   struct anv_surface_state                     input;
+struct anv_attachment {
+   VkFormat vk_format;
+   const struct anv_image_view *iview;
+   VkImageLayout layout;
+   enum isl_aux_usage aux_usage;
+   struct anv_surface_state surface_state;
 
-   VkImageLayout                                current_layout;
-   VkImageLayout                                current_stencil_layout;
-   VkImageAspectFlags                           pending_clear_aspects;
-   VkImageAspectFlags                           pending_load_aspects;
-   bool                                         fast_clear;
-   VkClearValue                                 clear_value;
-
-   /* When multiview is active, attachments with a renderpass clear
-    * operation have their respective layers cleared on the first
-    * subpass that uses them, and only in that subpass. We keep track
-    * of this using a bitfield to indicate which layers of an attachment
-    * have not been cleared yet when multiview is active.
-    */
-   uint32_t                                     pending_clear_views;
-   struct anv_image_view *                      image_view;
+   VkResolveModeFlagBits resolve_mode;
+   const struct anv_image_view *resolve_iview;
+   VkImageLayout resolve_layout;
 };
 
 /** State tracking for vertex buffer flushes
@@ -2887,6 +2584,37 @@ struct anv_vb_cache_range {
     */
    uint64_t end;
 };
+
+/* Check whether we need to apply the Gfx8-9 vertex buffer workaround*/
+static inline bool
+anv_gfx8_9_vb_cache_range_needs_workaround(struct anv_vb_cache_range *bound,
+                                           struct anv_vb_cache_range *dirty,
+                                           struct anv_address vb_address,
+                                           uint32_t vb_size)
+{
+   if (vb_size == 0) {
+      bound->start = 0;
+      bound->end = 0;
+      return false;
+   }
+
+   assert(vb_address.bo && anv_bo_is_pinned(vb_address.bo));
+   bound->start = intel_48b_address(anv_address_physical(vb_address));
+   bound->end = bound->start + vb_size;
+   assert(bound->end > bound->start); /* No overflow */
+
+   /* Align everything to a cache line */
+   bound->start &= ~(64ull - 1ull);
+   bound->end = align_u64(bound->end, 64);
+
+   /* Compute the dirty range */
+   dirty->start = MIN2(dirty->start, bound->start);
+   dirty->end = MAX2(dirty->end, bound->end);
+
+   /* If our range is larger than 32 bits, we have to flush */
+   assert(bound->end - bound->start <= (1ull << 32));
+   return (dirty->end - dirty->start) > (1ull << 32);
+}
 
 /** State tracking for particular pipeline bind point
  *
@@ -2918,6 +2646,18 @@ struct anv_cmd_graphics_state {
 
    struct anv_graphics_pipeline *pipeline;
 
+   VkRenderingFlags rendering_flags;
+   VkRect2D render_area;
+   uint32_t layer_count;
+   uint32_t samples;
+   uint32_t view_mask;
+   uint32_t color_att_count;
+   struct anv_state att_states;
+   struct anv_attachment color_att[MAX_RTS];
+   struct anv_attachment depth_att;
+   struct anv_attachment stencil_att;
+   struct anv_state null_surface_state;
+
    anv_cmd_dirty_mask_t dirty;
    uint32_t vb_dirty;
 
@@ -2926,23 +2666,23 @@ struct anv_cmd_graphics_state {
    struct anv_vb_cache_range vb_bound_ranges[33];
    struct anv_vb_cache_range vb_dirty_ranges[33];
 
-   VkShaderStageFlags push_constant_stages;
+   uint32_t restart_index;
 
-   struct anv_dynamic_state dynamic;
+   VkShaderStageFlags push_constant_stages;
 
    uint32_t primitive_topology;
 
-   struct {
-      struct anv_buffer *index_buffer;
-      uint32_t index_type; /**< 3DSTATE_INDEX_BUFFER.IndexFormat */
-      uint32_t index_offset;
-   } gfx7;
+   struct anv_buffer *index_buffer;
+   uint32_t index_type; /**< 3DSTATE_INDEX_BUFFER.IndexFormat */
+   uint32_t index_offset;
+
+   struct vk_sample_locations_state sample_locations;
 };
 
 enum anv_depth_reg_mode {
    ANV_DEPTH_REG_MODE_UNKNOWN = 0,
    ANV_DEPTH_REG_MODE_HW_DEFAULT,
-   ANV_DEPTH_REG_MODE_D16,
+   ANV_DEPTH_REG_MODE_D16_1X_MSAA,
 };
 
 /** State tracking for compute pipeline
@@ -2992,20 +2732,15 @@ struct anv_cmd_state {
    VkShaderStageFlags                           descriptors_dirty;
    VkShaderStageFlags                           push_constants_dirty;
 
-   struct anv_framebuffer *                     framebuffer;
-   struct anv_render_pass *                     pass;
-   struct anv_subpass *                         subpass;
-   VkRect2D                                     render_area;
-   uint32_t                                     restart_index;
    struct anv_vertex_binding                    vertex_bindings[MAX_VBS];
    bool                                         xfb_enabled;
    struct anv_xfb_binding                       xfb_bindings[MAX_XFB_BUFFERS];
    struct anv_state                             binding_tables[MESA_VULKAN_SHADER_STAGES];
    struct anv_state                             samplers[MESA_VULKAN_SHADER_STAGES];
 
-   unsigned char                                sampler_sha1s[MESA_SHADER_STAGES][20];
-   unsigned char                                surface_sha1s[MESA_SHADER_STAGES][20];
-   unsigned char                                push_sha1s[MESA_SHADER_STAGES][20];
+   unsigned char                                sampler_sha1s[MESA_VULKAN_SHADER_STAGES][20];
+   unsigned char                                surface_sha1s[MESA_VULKAN_SHADER_STAGES][20];
+   unsigned char                                push_sha1s[MESA_VULKAN_SHADER_STAGES][20];
 
    /**
     * Whether or not the gfx8 PMA fix is enabled.  We ensure that, at the top
@@ -3021,12 +2756,23 @@ struct anv_cmd_state {
     */
    bool                                         hiz_enabled;
 
-   /* We ensure the registers for the gfx12 D16 fix are initalized at the
+   /* We ensure the registers for the gfx12 D16 fix are initialized at the
     * first non-NULL depth stencil packet emission of every command buffer.
     * For secondary command buffer execution, we transfer the state from the
     * last command buffer to the primary (if known).
     */
    enum anv_depth_reg_mode                      depth_reg_mode;
+
+   /**
+    * Whether RHWO optimization is enabled (Wa_1508744258).
+    */
+   bool                                         rhwo_optimization_enabled;
+
+   /**
+    * Pending state of the RHWO optimization, to be applied at the next
+    * genX(cmd_buffer_apply_pipe_flushes).
+    */
+   bool                                         pending_rhwo_optimization_enabled;
 
    bool                                         conditional_render_enabled;
 
@@ -3037,32 +2783,9 @@ struct anv_cmd_state {
    unsigned                                     current_hash_scale;
 
    /**
-    * Array length is anv_cmd_state::pass::attachment_count. Array content is
-    * valid only when recording a render pass instance.
+    * A buffer used for spill/fill of ray queries.
     */
-   struct anv_attachment_state *                attachments;
-
-   /**
-    * Surface states for color render targets.  These are stored in a single
-    * flat array.  For depth-stencil attachments, the surface state is simply
-    * left blank.
-    */
-   struct anv_state                             attachment_states;
-
-   /**
-    * A null surface state of the right size to match the framebuffer.  This
-    * is one of the states in attachment_states.
-    */
-   struct anv_state                             null_surface_state;
-};
-
-struct anv_cmd_pool {
-   struct vk_object_base                        base;
-   VkAllocationCallbacks                        alloc;
-   struct list_head                             cmd_buffers;
-
-   VkCommandPoolCreateFlags                     flags;
-   struct anv_queue_family *                    queue_family;
+   struct anv_bo *                              ray_query_shadow_bo;
 };
 
 #define ANV_MIN_CMD_BUFFER_BATCH_SIZE 8192
@@ -3083,9 +2806,7 @@ struct anv_cmd_buffer {
    struct vk_command_buffer                     vk;
 
    struct anv_device *                          device;
-
-   struct anv_cmd_pool *                        pool;
-   struct list_head                             pool_link;
+   struct anv_queue_family *                    queue_family;
 
    struct anv_batch                             batch;
 
@@ -3129,7 +2850,6 @@ struct anv_cmd_buffer {
    struct anv_state_stream                      general_state_stream;
 
    VkCommandBufferUsageFlags                    usage_flags;
-   VkCommandBufferLevel                         level;
 
    struct anv_query_pool                       *perf_query_pool;
 
@@ -3161,6 +2881,11 @@ struct anv_cmd_buffer {
     * Used to increase allocation size for long command buffers.
     */
    uint32_t                                     total_batch_size;
+
+   /**
+    *
+    */
+   struct u_trace                               trace;
 };
 
 /* Determine whether we can chain a given cmd_buffer to another one. We need
@@ -3171,7 +2896,7 @@ struct anv_cmd_buffer {
 static inline bool
 anv_cmd_buffer_is_chainable(struct anv_cmd_buffer *cmd_buffer)
 {
-   return anv_use_softpin(cmd_buffer->device->physical) &&
+   return !anv_use_relocations(cmd_buffer->device->physical) &&
       !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 }
 
@@ -3215,25 +2940,12 @@ anv_cmd_buffer_alloc_dynamic_state(struct anv_cmd_buffer *cmd_buffer,
 VkResult
 anv_cmd_buffer_new_binding_table_block(struct anv_cmd_buffer *cmd_buffer);
 
-void gfx8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer);
-void gfx8_cmd_buffer_emit_depth_viewport(struct anv_cmd_buffer *cmd_buffer,
-                                         bool depth_clamp_enable);
-void gfx7_cmd_buffer_emit_scissor(struct anv_cmd_buffer *cmd_buffer);
-
-void anv_cmd_buffer_setup_attachments(struct anv_cmd_buffer *cmd_buffer,
-                                      struct anv_render_pass *pass,
-                                      struct anv_framebuffer *framebuffer,
-                                      const VkClearValue *clear_values);
-
 void anv_cmd_buffer_emit_state_base_address(struct anv_cmd_buffer *cmd_buffer);
 
 struct anv_state
 anv_cmd_buffer_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer);
 struct anv_state
 anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer);
-
-const struct anv_image_view *
-anv_cmd_buffer_get_depth_stencil_view(const struct anv_cmd_buffer *cmd_buffer);
 
 VkResult
 anv_cmd_buffer_alloc_blorp_binding_table(struct anv_cmd_buffer *cmd_buffer,
@@ -3245,162 +2957,43 @@ void anv_cmd_buffer_dump(struct anv_cmd_buffer *cmd_buffer);
 
 void anv_cmd_emit_conditional_render_predicate(struct anv_cmd_buffer *cmd_buffer);
 
-enum anv_fence_type {
-   ANV_FENCE_TYPE_NONE = 0,
-   ANV_FENCE_TYPE_BO,
-   ANV_FENCE_TYPE_WSI_BO,
-   ANV_FENCE_TYPE_SYNCOBJ,
-   ANV_FENCE_TYPE_WSI,
-};
-
-enum anv_bo_fence_state {
+enum anv_bo_sync_state {
    /** Indicates that this is a new (or newly reset fence) */
-   ANV_BO_FENCE_STATE_RESET,
+   ANV_BO_SYNC_STATE_RESET,
 
    /** Indicates that this fence has been submitted to the GPU but is still
     * (as far as we know) in use by the GPU.
     */
-   ANV_BO_FENCE_STATE_SUBMITTED,
+   ANV_BO_SYNC_STATE_SUBMITTED,
 
-   ANV_BO_FENCE_STATE_SIGNALED,
+   ANV_BO_SYNC_STATE_SIGNALED,
 };
 
-struct anv_fence_impl {
-   enum anv_fence_type type;
+struct anv_bo_sync {
+   struct vk_sync sync;
 
-   union {
-      /** Fence implementation for BO fences
-       *
-       * These fences use a BO and a set of CPU-tracked state flags.  The BO
-       * is added to the object list of the last execbuf call in a QueueSubmit
-       * and is marked EXEC_WRITE.  The state flags track when the BO has been
-       * submitted to the kernel.  We need to do this because Vulkan lets you
-       * wait on a fence that has not yet been submitted and I915_GEM_BUSY
-       * will say it's idle in this case.
-       */
-      struct {
-         struct anv_bo *bo;
-         enum anv_bo_fence_state state;
-      } bo;
-
-      /** DRM syncobj handle for syncobj-based fences */
-      uint32_t syncobj;
-
-      /** WSI fence */
-      struct wsi_fence *fence_wsi;
-   };
+   enum anv_bo_sync_state state;
+   struct anv_bo *bo;
 };
 
-struct anv_fence {
-   struct vk_object_base base;
+extern const struct vk_sync_type anv_bo_sync_type;
 
-   /* Permanent fence state.  Every fence has some form of permanent state
-    * (type != ANV_SEMAPHORE_TYPE_NONE).  This may be a BO to fence on (for
-    * cross-process fences) or it could just be a dummy for use internally.
-    */
-   struct anv_fence_impl permanent;
+static inline bool
+vk_sync_is_anv_bo_sync(const struct vk_sync *sync)
+{
+   return sync->type == &anv_bo_sync_type;
+}
 
-   /* Temporary fence state.  A fence *may* have temporary state.  That state
-    * is added to the fence by an import operation and is reset back to
-    * ANV_SEMAPHORE_TYPE_NONE when the fence is reset.  A fence with temporary
-    * state cannot be signaled because the fence must already be signaled
-    * before the temporary state can be exported from the fence in the other
-    * process and imported here.
-    */
-   struct anv_fence_impl temporary;
-};
-
-void anv_fence_reset_temporary(struct anv_device *device,
-                               struct anv_fence *fence);
+VkResult anv_create_sync_for_memory(struct vk_device *device,
+                                    VkDeviceMemory memory,
+                                    bool signal_memory,
+                                    struct vk_sync **sync_out);
 
 struct anv_event {
    struct vk_object_base                        base;
    uint64_t                                     semaphore;
    struct anv_state                             state;
 };
-
-enum anv_semaphore_type {
-   ANV_SEMAPHORE_TYPE_NONE = 0,
-   ANV_SEMAPHORE_TYPE_DUMMY,
-   ANV_SEMAPHORE_TYPE_WSI_BO,
-   ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ,
-   ANV_SEMAPHORE_TYPE_TIMELINE,
-   ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ_TIMELINE,
-};
-
-struct anv_timeline_point {
-   struct list_head link;
-
-   uint64_t serial;
-
-   /* Number of waiter on this point, when > 0 the point should not be garbage
-    * collected.
-    */
-   int waiting;
-
-   /* BO used for synchronization. */
-   struct anv_bo *bo;
-};
-
-struct anv_timeline {
-   pthread_mutex_t mutex;
-   pthread_cond_t  cond;
-
-   uint64_t highest_past;
-   uint64_t highest_pending;
-
-   struct list_head points;
-   struct list_head free_points;
-};
-
-struct anv_semaphore_impl {
-   enum anv_semaphore_type type;
-
-   union {
-      /* A BO representing this semaphore when type == ANV_SEMAPHORE_TYPE_BO
-       * or type == ANV_SEMAPHORE_TYPE_WSI_BO.  This BO will be added to the
-       * object list on any execbuf2 calls for which this semaphore is used as
-       * a wait or signal fence.  When used as a signal fence or when type ==
-       * ANV_SEMAPHORE_TYPE_WSI_BO, the EXEC_OBJECT_WRITE flag will be set.
-       */
-      struct anv_bo *bo;
-
-      /* Sync object handle when type == ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ.
-       * Unlike GEM BOs, DRM sync objects aren't deduplicated by the kernel on
-       * import so we don't need to bother with a userspace cache.
-       */
-      uint32_t syncobj;
-
-      /* Non shareable timeline semaphore
-       *
-       * Used when kernel don't have support for timeline semaphores.
-       */
-      struct anv_timeline timeline;
-   };
-};
-
-struct anv_semaphore {
-   struct vk_object_base base;
-
-   /* Permanent semaphore state.  Every semaphore has some form of permanent
-    * state (type != ANV_SEMAPHORE_TYPE_NONE).  This may be a BO to fence on
-    * (for cross-process semaphores0 or it could just be a dummy for use
-    * internally.
-    */
-   struct anv_semaphore_impl permanent;
-
-   /* Temporary semaphore state.  A semaphore *may* have temporary state.
-    * That state is added to the semaphore by an import operation and is reset
-    * back to ANV_SEMAPHORE_TYPE_NONE when the semaphore is waited on.  A
-    * semaphore with temporary state cannot be signaled because the semaphore
-    * must already be signaled before the temporary state can be exported from
-    * the semaphore in the other process and imported here.
-    */
-   struct anv_semaphore_impl temporary;
-};
-
-void anv_semaphore_reset_temporary(struct anv_device *device,
-                                   struct anv_semaphore *semaphore);
 
 #define ANV_STAGE_MASK ((1 << MESA_VULKAN_SHADER_STAGES) - 1)
 
@@ -3424,17 +3017,10 @@ struct anv_pipeline_bind_map {
    struct anv_push_range                        push_ranges[4];
 };
 
-struct anv_shader_bin_key {
-   uint32_t size;
-   uint8_t data[0];
-};
-
 struct anv_shader_bin {
-   uint32_t ref_cnt;
+   struct vk_pipeline_cache_object base;
 
    gl_shader_stage stage;
-
-   const struct anv_shader_bin_key *key;
 
    struct anv_state kernel;
    uint32_t kernel_size;
@@ -3461,22 +3047,16 @@ anv_shader_bin_create(struct anv_device *device,
                       const struct nir_xfb_info *xfb_info,
                       const struct anv_pipeline_bind_map *bind_map);
 
-void
-anv_shader_bin_destroy(struct anv_device *device, struct anv_shader_bin *shader);
-
 static inline void
 anv_shader_bin_ref(struct anv_shader_bin *shader)
 {
-   assert(shader && shader->ref_cnt >= 1);
-   p_atomic_inc(&shader->ref_cnt);
+   vk_pipeline_cache_object_ref(&shader->base);
 }
 
 static inline void
 anv_shader_bin_unref(struct anv_device *device, struct anv_shader_bin *shader)
 {
-   assert(shader && shader->ref_cnt >= 1);
-   if (p_atomic_dec_zero(&shader->ref_cnt))
-      anv_shader_bin_destroy(device, shader);
+   vk_pipeline_cache_object_unref(&shader->base);
 }
 
 #define anv_shader_bin_get_bsr(bin, local_arg_offset) ({             \
@@ -3487,7 +3067,8 @@ anv_shader_bin_unref(struct anv_device *device, struct anv_shader_bin *shader)
                                                                      \
    (struct GFX_BINDLESS_SHADER_RECORD) {                             \
       .OffsetToLocalArguments = (local_arg_offset) / 8,              \
-      .BindlessShaderDispatchMode = prog_data->simd_size / 16,       \
+      .BindlessShaderDispatchMode =                                  \
+         prog_data->simd_size == 16 ? RT_SIMD16 : RT_SIMD8,          \
       .KernelStartPointer = bin->kernel.offset,                      \
    };                                                                \
 })
@@ -3520,6 +3101,8 @@ struct anv_pipeline {
    enum anv_pipeline_type                       type;
    VkPipelineCreateFlags                        flags;
 
+   uint32_t                                     ray_queries;
+
    struct util_dynarray                         executables;
 
    const struct intel_l3_config *               l3_config;
@@ -3528,58 +3111,37 @@ struct anv_pipeline {
 struct anv_graphics_pipeline {
    struct anv_pipeline                          base;
 
-   uint32_t                                     batch_data[512];
+   /* Shaders */
+   struct anv_shader_bin *                      shaders[ANV_GRAPHICS_SHADER_STAGE_COUNT];
 
-   /* States that are part of batch_data and should be not emitted
-    * dynamically.
-    */
-   anv_cmd_dirty_mask_t                         static_state_mask;
+   VkShaderStageFlags                           active_stages;
 
-   /* States that need to be reemitted in cmd_buffer_flush_dynamic_state().
-    * This might cover more than the dynamic states specified at pipeline
-    * creation.
-    */
-   anv_cmd_dirty_mask_t                         dynamic_state_mask;
-
-   struct anv_dynamic_state                     dynamic_state;
-
-   /* States declared dynamic at pipeline creation. */
-   anv_cmd_dirty_mask_t                         dynamic_states;
-
-   uint32_t                                     topology;
+   struct vk_sample_locations_state             sample_locations;
+   struct vk_dynamic_graphics_state             dynamic_state;
 
    /* These fields are required with dynamic primitive topology,
     * rasterization_samples used only with gen < 8.
     */
    VkLineRasterizationModeEXT                   line_mode;
    VkPolygonMode                                polygon_mode;
+   uint32_t                                     patch_control_points;
    uint32_t                                     rasterization_samples;
 
-   struct anv_subpass *                         subpass;
+   VkColorComponentFlags                        color_comp_writes[MAX_RTS];
 
-   struct anv_shader_bin *                      shaders[MESA_SHADER_STAGES];
+   uint32_t                                     view_mask;
+   uint32_t                                     instance_multiplier;
 
-   VkShaderStageFlags                           active_stages;
-
-   bool                                         writes_depth;
-   bool                                         depth_test_enable;
-   bool                                         writes_stencil;
-   bool                                         stencil_test_enable;
    bool                                         depth_clamp_enable;
    bool                                         depth_clip_enable;
-   bool                                         sample_shading_enable;
    bool                                         kill_pixel;
-   bool                                         depth_bounds_test_enable;
    bool                                         force_fragment_thread_dispatch;
+   bool                                         negative_one_to_one;
 
    /* When primitive replication is used, subpass->view_mask will describe what
     * views to replicate.
     */
    bool                                         use_primitive_replication;
-
-   struct anv_state                             blend_state;
-
-   struct anv_state                             cps_state;
 
    uint32_t                                     vb_used;
    struct anv_pipeline_vertex_binding {
@@ -3588,9 +3150,16 @@ struct anv_graphics_pipeline {
       uint32_t                                  instance_divisor;
    } vb[MAX_VBS];
 
+   /* Pre computed CS instructions that can directly be copied into
+    * anv_cmd_buffer.
+    */
+   uint32_t                                     batch_data[512];
+
+   /* Pre packed CS instructions & structures that need to be merged later
+    * with dynamic state.
+    */
    struct {
       uint32_t                                  sf[7];
-      uint32_t                                  depth_stencil_state[3];
       uint32_t                                  clip[4];
       uint32_t                                  xfb_bo_pitch[4];
       uint32_t                                  wm[3];
@@ -3601,16 +3170,11 @@ struct anv_graphics_pipeline {
    struct {
       uint32_t                                  sf[4];
       uint32_t                                  raster[5];
-      uint32_t                                  wm_depth_stencil[3];
       uint32_t                                  wm[2];
       uint32_t                                  ps_blend[2];
       uint32_t                                  blend_state[1 + MAX_RTS * 2];
       uint32_t                                  streamout_state[5];
    } gfx8;
-
-   struct {
-      uint32_t                                  wm_depth_stencil[4];
-   } gfx9;
 };
 
 struct anv_compute_pipeline {
@@ -3674,6 +3238,33 @@ anv_pipeline_is_primitive(const struct anv_graphics_pipeline *pipeline)
    return anv_pipeline_has_stage(pipeline, MESA_SHADER_VERTEX);
 }
 
+static inline bool
+anv_pipeline_is_mesh(const struct anv_graphics_pipeline *pipeline)
+{
+   return anv_pipeline_has_stage(pipeline, MESA_SHADER_MESH);
+}
+
+static inline bool
+anv_cmd_buffer_all_color_write_masked(const struct anv_cmd_buffer *cmd_buffer)
+{
+   const struct anv_cmd_graphics_state *state = &cmd_buffer->state.gfx;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
+   uint8_t color_writes = dyn->cb.color_write_enables;
+
+   /* All writes disabled through vkCmdSetColorWriteEnableEXT */
+   if ((color_writes & ((1u << state->color_att_count) - 1)) == 0)
+      return true;
+
+   /* Or all write masks are empty */
+   for (uint32_t i = 0; i < state->color_att_count; i++) {
+      if (state->pipeline->color_comp_writes[i] != 0)
+         return false;
+   }
+
+   return true;
+}
+
 #define ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(prefix, stage)             \
 static inline const struct brw_##prefix##_prog_data *                   \
 get_##prefix##_prog_data(const struct anv_graphics_pipeline *pipeline)  \
@@ -3691,6 +3282,8 @@ ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(tcs, MESA_SHADER_TESS_CTRL)
 ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(tes, MESA_SHADER_TESS_EVAL)
 ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(gs, MESA_SHADER_GEOMETRY)
 ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(wm, MESA_SHADER_FRAGMENT)
+ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(mesh, MESA_SHADER_MESH)
+ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(task, MESA_SHADER_TASK)
 
 static inline const struct brw_cs_prog_data *
 get_cs_prog_data(const struct anv_compute_pipeline *pipeline)
@@ -3727,27 +3320,6 @@ void
 anv_pipeline_finish(struct anv_pipeline *pipeline,
                     struct anv_device *device,
                     const VkAllocationCallbacks *pAllocator);
-
-VkResult
-anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline, struct anv_device *device,
-                           struct anv_pipeline_cache *cache,
-                           const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                           const VkAllocationCallbacks *alloc);
-
-VkResult
-anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
-                        struct anv_pipeline_cache *cache,
-                        const VkComputePipelineCreateInfo *info,
-                        const struct vk_shader_module *module,
-                        const char *entrypoint,
-                        const VkSpecializationInfo *spec_info);
-
-VkResult
-anv_ray_tracing_pipeline_init(struct anv_ray_tracing_pipeline *pipeline,
-                              struct anv_device *device,
-                              struct anv_pipeline_cache *cache,
-                              const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
-                              const VkAllocationCallbacks *alloc);
 
 struct anv_format_plane {
    enum isl_format isl_format:16;
@@ -3850,9 +3422,9 @@ anv_get_isl_format(const struct intel_device_info *devinfo, VkFormat vk_format,
 
 bool anv_formats_ccs_e_compatible(const struct intel_device_info *devinfo,
                                   VkImageCreateFlags create_flags,
-                                  VkFormat vk_format,
-                                  VkImageTiling vk_tiling,
-                                  const VkImageFormatListCreateInfoKHR *fmt_list);
+                                  VkFormat vk_format, VkImageTiling vk_tiling,
+                                  VkImageUsageFlags vk_usage,
+                                  const VkImageFormatListCreateInfo *fmt_list);
 
 extern VkFormat
 vk_format_from_android(unsigned android_format, unsigned android_usage);
@@ -4015,8 +3587,39 @@ struct anv_image {
 
       /** Location of the fast clear state.  */
       struct anv_image_memory_range fast_clear_memory_range;
+
+      /**
+       * Whether this image can be fast cleared with non-zero clear colors.
+       * This can happen with mutable images when formats of different bit
+       * sizes per components are used.
+       *
+       * On Gfx9+, because the clear colors are stored as a 4 components 32bit
+       * values, we can clear in R16G16_UNORM (store 2 16bit values in the
+       * components 0 & 1 of the clear color) and then draw in R32_UINT which
+       * would interpret the clear color as a single component value, using
+       * only the first 16bit component of the previous written clear color.
+       *
+       * On Gfx7/7.5/8, only CC_ZERO/CC_ONE clear colors are supported, this
+       * boolean will prevent the usage of CC_ONE.
+       */
+      bool can_non_zero_fast_clear;
    } planes[3];
 };
+
+static inline bool
+anv_image_is_externally_shared(const struct anv_image *image)
+{
+   return image->vk.drm_format_mod != DRM_FORMAT_MOD_INVALID ||
+          image->vk.external_handle_types != 0;
+}
+
+static inline bool
+anv_image_has_private_binding(const struct anv_image *image)
+{
+   const struct anv_image_binding private_binding =
+      image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE];
+   return private_binding.memory_range.size != 0;
+}
 
 /* The ordering of this enum is important */
 enum anv_fast_clear_type {
@@ -4402,38 +4005,6 @@ enum isl_format
 anv_isl_format_for_descriptor_type(const struct anv_device *device,
                                    VkDescriptorType type);
 
-static inline VkExtent3D
-anv_sanitize_image_extent(const VkImageType imageType,
-                          const VkExtent3D imageExtent)
-{
-   switch (imageType) {
-   case VK_IMAGE_TYPE_1D:
-      return (VkExtent3D) { imageExtent.width, 1, 1 };
-   case VK_IMAGE_TYPE_2D:
-      return (VkExtent3D) { imageExtent.width, imageExtent.height, 1 };
-   case VK_IMAGE_TYPE_3D:
-      return imageExtent;
-   default:
-      unreachable("invalid image type");
-   }
-}
-
-static inline VkOffset3D
-anv_sanitize_image_offset(const VkImageType imageType,
-                          const VkOffset3D imageOffset)
-{
-   switch (imageType) {
-   case VK_IMAGE_TYPE_1D:
-      return (VkOffset3D) { imageOffset.x, 0, 0 };
-   case VK_IMAGE_TYPE_2D:
-      return (VkOffset3D) { imageOffset.x, imageOffset.y, 0 };
-   case VK_IMAGE_TYPE_3D:
-      return imageOffset;
-   default:
-      unreachable("invalid image type");
-   }
-}
-
 static inline uint32_t
 anv_rasterization_aa_mode(VkPolygonMode raster_mode,
                           VkLineRasterizationModeEXT line_mode)
@@ -4444,7 +4015,7 @@ anv_rasterization_aa_mode(VkPolygonMode raster_mode,
    return false;
 }
 
-VkFormatFeatureFlags2KHR
+VkFormatFeatureFlags2
 anv_get_image_format_features2(const struct intel_device_info *devinfo,
                                VkFormat vk_format,
                                const struct anv_format *anv_format,
@@ -4454,29 +4025,10 @@ anv_get_image_format_features2(const struct intel_device_info *devinfo,
 void anv_fill_buffer_surface_state(struct anv_device *device,
                                    struct anv_state state,
                                    enum isl_format format,
+                                   struct isl_swizzle swizzle,
                                    isl_surf_usage_flags_t usage,
                                    struct anv_address address,
                                    uint32_t range, uint32_t stride);
-
-static inline void
-anv_clear_color_from_att_state(union isl_color_value *clear_color,
-                               const struct anv_attachment_state *att_state,
-                               const struct anv_image_view *iview)
-{
-   const struct isl_format_layout *view_fmtl =
-      isl_format_get_layout(iview->planes[0].isl.format);
-
-#define COPY_CLEAR_COLOR_CHANNEL(c, i) \
-   if (view_fmtl->channels.c.bits) \
-      clear_color->u32[i] = att_state->clear_value.color.uint32[i]
-
-   COPY_CLEAR_COLOR_CHANNEL(r, 0);
-   COPY_CLEAR_COLOR_CHANNEL(g, 1);
-   COPY_CLEAR_COLOR_CHANNEL(b, 2);
-   COPY_CLEAR_COLOR_CHANNEL(a, 3);
-
-#undef COPY_CLEAR_COLOR_CHANNEL
-}
 
 
 /* Haswell border color is a bit of a disaster.  Float and unorm formats use a
@@ -4532,92 +4084,6 @@ struct anv_sampler {
    struct anv_state             bindless_state;
 
    struct anv_state             custom_border_color;
-};
-
-struct anv_framebuffer {
-   struct vk_object_base                        base;
-
-   uint32_t                                     width;
-   uint32_t                                     height;
-   uint32_t                                     layers;
-
-   uint32_t                                     attachment_count;
-   struct anv_image_view *                      attachments[0];
-};
-
-struct anv_subpass_attachment {
-   VkImageUsageFlagBits usage;
-   uint32_t attachment;
-   VkImageLayout layout;
-
-   /* Used only with attachment containing stencil data. */
-   VkImageLayout stencil_layout;
-};
-
-struct anv_subpass {
-   uint32_t                                     attachment_count;
-
-   /**
-    * A pointer to all attachment references used in this subpass.
-    * Only valid if ::attachment_count > 0.
-    */
-   struct anv_subpass_attachment *              attachments;
-   uint32_t                                     input_count;
-   struct anv_subpass_attachment *              input_attachments;
-   uint32_t                                     color_count;
-   struct anv_subpass_attachment *              color_attachments;
-   struct anv_subpass_attachment *              resolve_attachments;
-
-   struct anv_subpass_attachment *              depth_stencil_attachment;
-   struct anv_subpass_attachment *              ds_resolve_attachment;
-   VkResolveModeFlagBitsKHR                     depth_resolve_mode;
-   VkResolveModeFlagBitsKHR                     stencil_resolve_mode;
-
-   uint32_t                                     view_mask;
-
-   /** Subpass has a depth/stencil self-dependency */
-   bool                                         has_ds_self_dep;
-
-   /** Subpass has at least one color resolve attachment */
-   bool                                         has_color_resolve;
-};
-
-static inline unsigned
-anv_subpass_view_count(const struct anv_subpass *subpass)
-{
-   return MAX2(1, util_bitcount(subpass->view_mask));
-}
-
-struct anv_render_pass_attachment {
-   /* TODO: Consider using VkAttachmentDescription instead of storing each of
-    * its members individually.
-    */
-   VkFormat                                     format;
-   uint32_t                                     samples;
-   VkImageUsageFlags                            usage;
-   VkAttachmentLoadOp                           load_op;
-   VkAttachmentStoreOp                          store_op;
-   VkAttachmentLoadOp                           stencil_load_op;
-   VkImageLayout                                initial_layout;
-   VkImageLayout                                final_layout;
-   VkImageLayout                                first_subpass_layout;
-
-   VkImageLayout                                stencil_initial_layout;
-   VkImageLayout                                stencil_final_layout;
-
-   /* The subpass id in which the attachment will be used last. */
-   uint32_t                                     last_subpass_idx;
-};
-
-struct anv_render_pass {
-   struct vk_object_base                        base;
-
-   uint32_t                                     attachment_count;
-   uint32_t                                     subpass_count;
-   /* An array of subpass_count+1 flushes, one per subpass boundary */
-   enum anv_pipe_bits *                         subpass_flushes;
-   struct anv_render_pass_attachment *          attachments;
-   struct anv_subpass                           subpasses[0];
 };
 
 #define ANV_PIPELINE_STATISTICS_MASK 0x000007ff
@@ -4695,21 +4161,6 @@ anv_add_pending_pipe_bits(struct anv_cmd_buffer* cmd_buffer,
    }
 }
 
-static inline uint32_t
-anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)
-{
-   /* This function must be called from within a subpass. */
-   assert(cmd_state->pass && cmd_state->subpass);
-
-   const uint32_t subpass_id = cmd_state->subpass - cmd_state->pass->subpasses;
-
-   /* The id of this subpass shouldn't exceed the number of subpasses in this
-    * render pass minus 1.
-    */
-   assert(subpass_id < cmd_state->pass->subpass_count);
-   return subpass_id;
-}
-
 struct anv_performance_configuration_intel {
    struct vk_object_base      base;
 
@@ -4725,6 +4176,66 @@ void anv_perf_write_pass_results(struct intel_perf_config *perf,
                                  const struct intel_perf_query_result *accumulated_results,
                                  union VkPerformanceCounterResultKHR *results);
 
+/* Use to emit a series of memcpy operations */
+struct anv_memcpy_state {
+   struct anv_device *device;
+   struct anv_batch *batch;
+
+   struct anv_vb_cache_range vb_bound;
+   struct anv_vb_cache_range vb_dirty;
+};
+
+struct anv_utrace_flush_copy {
+   /* Needs to be the first field */
+   struct intel_ds_flush_data ds;
+
+   /* Batch stuff to implement of copy of timestamps recorded in another
+    * buffer.
+    */
+   struct anv_reloc_list relocs;
+   struct anv_batch batch;
+   struct anv_bo *batch_bo;
+
+   /* Buffer of 64bits timestamps */
+   struct anv_bo *trace_bo;
+
+   /* Syncobj to be signaled when the batch completes */
+   struct vk_sync *sync;
+
+   /* Queue on which all the recorded traces are submitted */
+   struct anv_queue *queue;
+
+   struct anv_memcpy_state memcpy_state;
+};
+
+void anv_device_utrace_init(struct anv_device *device);
+void anv_device_utrace_finish(struct anv_device *device);
+VkResult
+anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
+                                    uint32_t cmd_buffer_count,
+                                    struct anv_cmd_buffer **cmd_buffers,
+                                    struct anv_utrace_flush_copy **out_flush_data);
+
+#ifdef HAVE_PERFETTO
+void anv_perfetto_init(void);
+uint64_t anv_perfetto_begin_submit(struct anv_queue *queue);
+void anv_perfetto_end_submit(struct anv_queue *queue, uint32_t submission_id,
+                             uint64_t start_ts);
+#else
+static inline void anv_perfetto_init(void)
+{
+}
+static inline uint64_t anv_perfetto_begin_submit(struct anv_queue *queue)
+{
+   return 0;
+}
+static inline void anv_perfetto_end_submit(struct anv_queue *queue,
+                                           uint32_t submission_id,
+                                           uint64_t start_ts)
+{}
+#endif
+
+
 #define ANV_FROM_HANDLE(__anv_type, __name, __handle) \
    VK_FROM_HANDLE(__anv_type, __name, __handle)
 
@@ -4739,9 +4250,7 @@ VK_DEFINE_HANDLE_CASTS(anv_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_acceleration_structure, base,
                                VkAccelerationStructureKHR,
                                VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_cmd_pool, base, VkCommandPool,
-                               VK_OBJECT_TYPE_COMMAND_POOL)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer, base, VkBuffer,
+VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
@@ -4757,27 +4266,18 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(anv_descriptor_update_template, base,
                                VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_device_memory, base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_fence, base, VkFence, VK_OBJECT_TYPE_FENCE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_framebuffer, base, VkFramebuffer,
-                               VK_OBJECT_TYPE_FRAMEBUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_image_view, vk.base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW);
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_pipeline_cache, base, VkPipelineCache,
-                               VK_OBJECT_TYPE_PIPELINE_CACHE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_pipeline, base, VkPipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_pipeline_layout, base, VkPipelineLayout,
                                VK_OBJECT_TYPE_PIPELINE_LAYOUT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_query_pool, base, VkQueryPool,
                                VK_OBJECT_TYPE_QUERY_POOL)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_render_pass, base, VkRenderPass,
-                               VK_OBJECT_TYPE_RENDER_PASS)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_sampler, base, VkSampler,
                                VK_OBJECT_TYPE_SAMPLER)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_semaphore, base, VkSemaphore,
-                               VK_OBJECT_TYPE_SEMAPHORE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_ycbcr_conversion, base,
                                VkSamplerYcbcrConversion,
                                VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION)
