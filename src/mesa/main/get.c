@@ -33,7 +33,9 @@
 #include "extensions.h"
 #include "get.h"
 #include "macros.h"
+#include "multisample.h"
 #include "mtypes.h"
+#include "queryobj.h"
 #include "spirv_extensions.h"
 #include "state.h"
 #include "texcompress.h"
@@ -42,6 +44,9 @@
 #include "samplerobj.h"
 #include "stencil.h"
 #include "version.h"
+
+#include "state_tracker/st_context.h"
+#include "api_exec_decl.h"
 
 /* This is a table driven implemetation of the glGet*v() functions.
  * The basic idea is that most getters just look up an int somewhere
@@ -225,6 +230,7 @@ union value {
    GLdouble value_double_2[2];
    GLmatrix *value_matrix;
    GLint value_int;
+   GLint value_int_2[2];
    GLint value_int_4[4];
    GLint64 value_int64;
    GLenum value_enum;
@@ -512,7 +518,13 @@ static const int extra_ARB_timer_query_or_EXT_disjoint_timer_query[] = {
    EXTRA_END
 };
 
-EXTRA_EXT(ARB_texture_cube_map);
+static const int extra_ARB_framebuffer_object_or_EXT_framebuffer_multisample_or_EXT_multisampled_render_to_texture[] = {
+   EXT(ARB_framebuffer_object),
+   EXT(EXT_framebuffer_multisample),
+   EXT(EXT_multisampled_render_to_texture),
+   EXTRA_END
+};
+
 EXTRA_EXT(EXT_texture_array);
 EXTRA_EXT(NV_fog_distance);
 EXTRA_EXT(EXT_texture_filter_anisotropic);
@@ -525,7 +537,6 @@ EXTRA_EXT(ATI_fragment_shader);
 EXTRA_EXT(EXT_provoking_vertex);
 EXTRA_EXT(ARB_fragment_shader);
 EXTRA_EXT(ARB_fragment_program);
-EXTRA_EXT2(ARB_framebuffer_object, EXT_framebuffer_multisample);
 EXTRA_EXT(ARB_seamless_cube_map);
 EXTRA_EXT(ARB_sync);
 EXTRA_EXT(ARB_vertex_shader);
@@ -572,6 +583,7 @@ EXTRA_EXT(ARB_sample_locations);
 EXTRA_EXT(AMD_framebuffer_multisample_advanced);
 EXTRA_EXT(ARB_spirv_extensions);
 EXTRA_EXT(NV_viewport_swizzle);
+EXTRA_EXT(ARB_sparse_texture);
 
 static const int
 extra_ARB_color_buffer_float_or_glcore[] = {
@@ -968,6 +980,14 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       _mesa_get_device_uuid(ctx, v->value_int_4);
       break;
 
+   /* GL_EXT_memory_object_win32 */
+   case GL_DEVICE_LUID_EXT:
+      _mesa_get_device_luid(ctx, v->value_int_2);
+      break;
+   case GL_DEVICE_NODE_MASK_EXT:
+      v->value_int = ctx->pipe->screen->get_device_node_mask(ctx->pipe->screen);
+      break;
+
    /* GL_EXT_packed_float */
    case GL_RGBA_SIGNED_COMPONENTS_EXT:
       {
@@ -1176,12 +1196,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
    /* GL_ARB_timer_query */
    case GL_TIMESTAMP:
-      if (ctx->Driver.GetTimestamp) {
-         v->value_int64 = ctx->Driver.GetTimestamp(ctx);
-      }
-      else {
-         _mesa_problem(ctx, "driver doesn't implement GetTimestamp");
-      }
+      v->value_int64 = _mesa_get_timestamp(ctx);
       break;
    /* GL_KHR_DEBUG */
    case GL_DEBUG_OUTPUT:
@@ -1241,9 +1256,11 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_GPU_MEMORY_INFO_EVICTION_COUNT_NVX:
    case GL_GPU_MEMORY_INFO_EVICTED_MEMORY_NVX:
       {
-         struct gl_memory_info info;
+         struct pipe_memory_info info;
+         struct pipe_screen *screen = ctx->pipe->screen;
 
-         ctx->Driver.QueryMemoryInfo(ctx, &info);
+         assert(screen->query_memory_info);
+         screen->query_memory_info(screen, &info);
 
          if (d->pname == GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX)
             v->value_int = info.total_device_memory;
@@ -1316,8 +1333,8 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
             break;
          }
 
-         ctx->Driver.GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
-                                               &bits, &width, &height);
+         _mesa_GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
+                                         &bits, &width, &height);
 
          if (d->pname == GL_SAMPLE_LOCATION_PIXEL_GRID_WIDTH_ARB)
             v->value_uint = width;
@@ -1481,8 +1498,9 @@ check_extra(struct gl_context *ctx, const char *func, const struct value_desc *d
          break;
       case EXTRA_EXT_SHADER_IMAGE_GS:
          api_check = GL_TRUE;
-         if (ctx->Extensions.ARB_shader_image_load_store &&
-            _mesa_has_geometry_shaders(ctx))
+         if ((ctx->Extensions.ARB_shader_image_load_store ||
+              _mesa_is_gles31(ctx)) &&
+             _mesa_has_geometry_shaders(ctx))
             api_found = GL_TRUE;
          break;
       case EXTRA_EXT_ATOMICS_TESS:
@@ -2024,22 +2042,31 @@ _mesa_GetIntegerv(GLenum pname, GLint *params)
       break;
 
    case TYPE_INT_4:
-   case TYPE_UINT_4:
       params[3] = ((GLint *) p)[3];
       FALLTHROUGH;
    case TYPE_INT_3:
-   case TYPE_UINT_3:
       params[2] = ((GLint *) p)[2];
       FALLTHROUGH;
    case TYPE_INT_2:
-   case TYPE_UINT_2:
    case TYPE_ENUM_2:
       params[1] = ((GLint *) p)[1];
       FALLTHROUGH;
    case TYPE_INT:
-   case TYPE_UINT:
    case TYPE_ENUM:
       params[0] = ((GLint *) p)[0];
+      break;
+
+   case TYPE_UINT_4:
+      params[3] = MIN2(((GLuint *) p)[3], INT_MAX);
+      FALLTHROUGH;
+   case TYPE_UINT_3:
+      params[2] = MIN2(((GLuint *) p)[2], INT_MAX);
+      FALLTHROUGH;
+   case TYPE_UINT_2:
+      params[1] = MIN2(((GLuint *) p)[1], INT_MAX);
+      FALLTHROUGH;
+   case TYPE_UINT:
+      params[0] = MIN2(((GLuint *) p)[0], INT_MAX);
       break;
 
    case TYPE_ENUM16:
@@ -2437,10 +2464,11 @@ tex_binding_to_index(const struct gl_context *ctx, GLenum binding)
    case GL_TEXTURE_BINDING_2D:
       return TEXTURE_2D_INDEX;
    case GL_TEXTURE_BINDING_3D:
-      return ctx->API != API_OPENGLES ? TEXTURE_3D_INDEX : -1;
+      return (ctx->API != API_OPENGLES &&
+              !(ctx->API == API_OPENGLES2 && !ctx->Extensions.OES_texture_3D))
+         ? TEXTURE_3D_INDEX : -1;
    case GL_TEXTURE_BINDING_CUBE_MAP:
-      return ctx->Extensions.ARB_texture_cube_map
-         ? TEXTURE_CUBE_INDEX : -1;
+      return TEXTURE_CUBE_INDEX;
    case GL_TEXTURE_BINDING_RECTANGLE:
       return _mesa_is_desktop_gl(ctx) && ctx->Extensions.NV_texture_rectangle
          ? TEXTURE_RECT_INDEX : -1;
@@ -2830,8 +2858,8 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
          goto invalid_enum;
       if (index >= 3)
          goto invalid_value;
-      v->value_int = ctx->Const.MaxComputeWorkGroupCount[index];
-      return TYPE_INT;
+      v->value_uint = ctx->Const.MaxComputeWorkGroupCount[index];
+      return TYPE_UINT;
 
    case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
       if (!_mesa_has_compute_shaders(ctx))
@@ -2864,6 +2892,17 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
          goto invalid_value;
       _mesa_get_device_uuid(ctx, v->value_int_4);
       return TYPE_INT_4;
+   /* GL_EXT_memory_object_win32 */
+   case GL_DEVICE_LUID_EXT:
+      if (index >= 1)
+         goto invalid_value;
+      _mesa_get_device_luid(ctx, v->value_int_2);
+      return TYPE_INT_2;
+   case GL_DEVICE_NODE_MASK_EXT:
+      if (index >= 1)
+         goto invalid_value;
+      v->value_int = ctx->pipe->screen->get_device_node_mask(ctx->pipe->screen);
+      return TYPE_INT;
    /* GL_EXT_direct_state_access */
    case GL_TEXTURE_1D:
    case GL_TEXTURE_2D:
@@ -3004,15 +3043,22 @@ _mesa_GetIntegeri_v( GLenum pname, GLuint index, GLint *params )
       break;
 
    case TYPE_INT:
-   case TYPE_UINT:
       params[0] = v.value_int;
       break;
+   case TYPE_UINT:
+      params[0] = MIN2(v.value_uint, INT_MAX);
+      break;
    case TYPE_INT_4:
-   case TYPE_UINT_4:
       params[0] = v.value_int_4[0];
       params[1] = v.value_int_4[1];
       params[2] = v.value_int_4[2];
       params[3] = v.value_int_4[3];
+      break;
+   case TYPE_UINT_4:
+      params[0] = MIN2((GLuint)v.value_int_4[0], INT_MAX);
+      params[1] = MIN2((GLuint)v.value_int_4[1], INT_MAX);
+      params[2] = MIN2((GLuint)v.value_int_4[2], INT_MAX);
+      params[3] = MIN2((GLuint)v.value_int_4[3], INT_MAX);
       break;
    case TYPE_INT64:
       params[0] = INT64_TO_INT(v.value_int64);
@@ -3040,7 +3086,7 @@ _mesa_GetInteger64i_v( GLenum pname, GLuint index, GLint64 *params )
       params[3] = v.value_int_4[3];
       break;
    case TYPE_UINT:
-      params[0] = (GLuint) v.value_int;
+      params[0] = v.value_uint;
       break;
    case TYPE_UINT_4:
       params[0] = (GLuint) v.value_int_4[0];
@@ -3357,22 +3403,31 @@ _mesa_GetFixedv(GLenum pname, GLfixed *params)
       break;
 
    case TYPE_INT_4:
-   case TYPE_UINT_4:
       params[3] = INT_TO_FIXED(((GLint *) p)[3]);
       FALLTHROUGH;
    case TYPE_INT_3:
-   case TYPE_UINT_3:
       params[2] = INT_TO_FIXED(((GLint *) p)[2]);
       FALLTHROUGH;
    case TYPE_INT_2:
-   case TYPE_UINT_2:
    case TYPE_ENUM_2:
       params[1] = INT_TO_FIXED(((GLint *) p)[1]);
       FALLTHROUGH;
    case TYPE_INT:
-   case TYPE_UINT:
    case TYPE_ENUM:
       params[0] = INT_TO_FIXED(((GLint *) p)[0]);
+      break;
+
+   case TYPE_UINT_4:
+      params[3] = INT_TO_FIXED(((GLuint *) p)[3]);
+      FALLTHROUGH;
+   case TYPE_UINT_3:
+      params[2] = INT_TO_FIXED(((GLuint *) p)[2]);
+      FALLTHROUGH;
+   case TYPE_UINT_2:
+      params[1] = INT_TO_FIXED(((GLuint *) p)[1]);
+      FALLTHROUGH;
+   case TYPE_UINT:
+      params[0] = INT_TO_FIXED(((GLuint *) p)[0]);
       break;
 
    case TYPE_ENUM16:

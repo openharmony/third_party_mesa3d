@@ -67,7 +67,6 @@ static inline boolean can_cache_resource(uint32_t bind)
           bind == VIRGL_BIND_CUSTOM ||
           bind == VIRGL_BIND_STAGING ||
           bind == VIRGL_BIND_DEPTH_STENCIL ||
-          bind == VIRGL_BIND_SAMPLER_VIEW ||
           bind == VIRGL_BIND_RENDER_TARGET ||
           bind == 0;
 }
@@ -403,6 +402,7 @@ virgl_bo_transfer_get(struct virgl_winsys *vws,
 static struct virgl_hw_res *
 virgl_drm_winsys_resource_cache_create(struct virgl_winsys *qws,
                                        enum pipe_texture_target target,
+                                       const void *map_front_private,
                                        uint32_t format,
                                        uint32_t bind,
                                        uint32_t width,
@@ -455,7 +455,7 @@ alloc:
       res = virgl_drm_winsys_resource_create(qws, target, format, bind, width,
                                              height, depth, array_size,
                                              last_level, nr_samples, size,
-                                             false);
+                                             true);
    return res;
 }
 
@@ -1298,6 +1298,43 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
    }
 }
 
+static uint32_t
+hash_fd(const void *key)
+{
+   int fd = pointer_to_intptr(key);
+
+   return _mesa_hash_int(&fd);
+}
+
+static bool
+equal_fd(const void *key1, const void *key2)
+{
+   int ret;
+   int fd1 = pointer_to_intptr(key1);
+   int fd2 = pointer_to_intptr(key2);
+
+   /* Since the scope of prime handle is limited to drm_file,
+    * virgl_screen is only shared at the drm_file level,
+    * not at the device (/dev/dri/cardX) level.
+    */
+   ret = os_same_file_description(fd1, fd2);
+   if (ret == 0) {
+       return true;
+   } else if (ret < 0) {
+      static bool logged;
+
+      if (!logged) {
+         _debug_printf("virgl: os_same_file_description couldn't "
+                       "determine if two DRM fds reference the same "
+                       "file description.\n"
+                       "If they do, bad things may happen!\n");
+         logged = true;
+      }
+   }
+
+   return false;
+}
+
 struct pipe_screen *
 virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 {
@@ -1305,7 +1342,7 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 
    mtx_lock(&virgl_screen_mutex);
    if (!fd_tab) {
-      fd_tab = util_hash_table_create_fd_keys();
+      fd_tab = _mesa_hash_table_create(NULL, hash_fd, equal_fd);
       if (!fd_tab)
          goto unlock;
    }

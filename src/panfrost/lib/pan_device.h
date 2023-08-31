@@ -88,7 +88,8 @@ enum pan_indirect_draw_flags {
         PAN_INDIRECT_DRAW_HAS_PSIZ = 1 << 2,
         PAN_INDIRECT_DRAW_PRIMITIVE_RESTART = 1 << 3,
         PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE = 1 << 4,
-        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE,
+        PAN_INDIRECT_DRAW_IDVS = 1 << 5,
+        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_IDVS,
         PAN_INDIRECT_DRAW_FLAGS_MASK = (PAN_INDIRECT_DRAW_LAST_FLAG << 1) - 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX = PAN_INDIRECT_DRAW_LAST_FLAG << 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_2B_INDEX,
@@ -147,6 +148,35 @@ struct panfrost_tiler_features {
         unsigned max_levels;
 };
 
+struct panfrost_model {
+        /* GPU ID */
+        uint32_t gpu_id;
+
+        /* Marketing name for the GPU, used as the GL_RENDERER */
+        const char *name;
+
+        /* Set of associated performance counters */
+        const char *performance_counters;
+
+        /* Minimum GPU revision required for anisotropic filtering. ~0 and 0
+         * means "no revisions support anisotropy" and "all revisions support
+         * anistropy" respectively -- so checking for anisotropy is simply
+         * comparing the reivsion.
+         */
+        uint32_t min_rev_anisotropic;
+
+        /* Default tilebuffer size in bytes for the model. */
+        unsigned tilebuffer_size;
+
+        struct {
+                /* The GPU lacks the capability for hierarchical tiling, without
+                 * an "Advanced Tiling Unit", instead requiring a single bin
+                 * size for the entire framebuffer be selected by the driver
+                 */
+                bool no_hierarchical_tiling;
+        } quirks;
+};
+
 struct panfrost_device {
         /* For ralloc */
         void *memctx;
@@ -156,10 +186,22 @@ struct panfrost_device {
         /* Properties of the GPU in use */
         unsigned arch;
         unsigned gpu_id;
+        unsigned revision;
+
+        /* Number of shader cores */
         unsigned core_count;
+
+        /* Range of core IDs, equal to the maximum core ID + 1. Satisfies
+         * core_id_range >= core_count.
+         */
+        unsigned core_id_range;
+
+        /* Maximum tilebuffer size in bytes for optimal performance. */
+        unsigned optimal_tib_size;
+
         unsigned thread_tls_alloc;
         struct panfrost_tiler_features tiler_features;
-        unsigned quirks;
+        const struct panfrost_model *model;
         bool has_afbc;
 
         /* Table of formats, indexed by a PIPE format */
@@ -244,6 +286,9 @@ panfrost_query_sample_position(
                 unsigned sample_idx,
                 float *out);
 
+unsigned
+panfrost_query_l2_slices(const struct panfrost_device *dev);
+
 static inline struct panfrost_bo *
 pan_lookup_bo(struct panfrost_device *dev, uint32_t gem_handle)
 {
@@ -255,6 +300,8 @@ pan_is_bifrost(const struct panfrost_device *dev)
 {
         return dev->arch >= 6 && dev->arch <= 7;
 }
+
+const struct panfrost_model * panfrost_get_model(uint32_t gpu_id);
 
 #if defined(__cplusplus)
 } // extern "C"

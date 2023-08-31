@@ -99,7 +99,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
                               unsigned *out_stride)
 {
    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
-   struct nouveau_bo *bo = 0;
+   struct nouveau_bo *bo = NULL;
    int ret;
 
    if (whandle->offset != 0) {
@@ -202,14 +202,13 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    if (nv_dbg)
       nouveau_mesa_debug = atoi(nv_dbg);
 
-   if (dev->chipset < 0x140)
-      screen->prefer_nir = debug_get_bool_option("NV50_PROG_USE_NIR", false);
-   else
-      screen->prefer_nir = true;
+   screen->prefer_nir = !debug_get_bool_option("NV50_PROG_USE_TGSI", false);
 
    screen->force_enable_cl = debug_get_bool_option("NOUVEAU_ENABLE_CL", false);
    if (screen->force_enable_cl)
       glsl_type_singleton_init_or_ref();
+
+   screen->disable_fences = debug_get_bool_option("NOUVEAU_DISABLE_FENCES", false);
 
    /* These must be set before any failure is possible, as the cleanup
     * paths assume they're responsible for deleting them.
@@ -383,7 +382,7 @@ nouveau_screen_fini(struct nouveau_screen *screen)
 
 static void
 nouveau_set_debug_callback(struct pipe_context *pipe,
-                           const struct pipe_debug_callback *cb)
+                           const struct util_debug_callback *cb)
 {
    struct nouveau_context *context = nouveau_context(pipe);
 

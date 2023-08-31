@@ -284,20 +284,6 @@ print_tex_reg(FILE *fp, unsigned reg, bool is_write)
 }
 
 
-static char *outmod_names_float[4] = {
-        "",
-        ".clamp_0_inf",
-        ".clamp_m1_1",
-        ".clamp_0_1"
-};
-
-static char *outmod_names_int[4] = {
-        ".ssat",
-        ".usat",
-        ".keeplo",
-        ".keephi"
-};
-
 static char *srcmod_names_int[4] = {
         ".sext",
         ".zext",
@@ -319,13 +305,6 @@ static char *index_format_names[4] = {
 };
 
 static void
-print_outmod(FILE *fp, unsigned outmod, bool is_int)
-{
-        fprintf(fp, "%s", is_int ? outmod_names_int[outmod] :
-                outmod_names_float[outmod]);
-}
-
-static void
 print_alu_outmod(FILE *fp, unsigned outmod, bool is_int, bool half)
 {
         if (is_int && !half) {
@@ -336,7 +315,7 @@ print_alu_outmod(FILE *fp, unsigned outmod, bool is_int, bool half)
         if (!is_int && half)
                 fprintf(fp, ".shrink");
 
-        print_outmod(fp, outmod, is_int);
+        mir_print_outmod(fp, outmod, is_int);
 }
 
 /* arg == 0 (dest), arg == 1 (src1), arg == 2 (src2) */
@@ -415,7 +394,10 @@ print_vec_selectors_64(FILE *fp, unsigned swizzle,
                 unsigned a = (swizzle >> (i * 2)) & 3;
 
                 if (INPUT_EXPANDS(expand_mode)) {
-                        fprintf(fp, "%c", components[a]);
+                        if (expand_mode == midgard_src_expand_high)
+                                a += 2;
+
+                        fprintf(fp, "%c", components[a / 2]);
                         continue;
                 }
 
@@ -563,7 +545,11 @@ print_vector_constants(FILE *fp, unsigned src_binary,
         comp_mask = effective_writemask(alu->op, condense_writemask(alu->mask, bits));
         num_comp = util_bitcount(comp_mask);
 
-        fprintf(fp, "<");
+        if (num_comp > 1)
+                fprintf(fp, "<");
+        else
+                fprintf(fp, "#");
+
         bool first = true;
 
 	for (unsigned i = 0; i < max_comp; ++i) {
@@ -621,8 +607,6 @@ print_vector_constants(FILE *fp, unsigned src_binary,
                         /* We work on twos, actually */
                         if (i & 1)
                                 c++;
-                } else {
-                        printf(" (%u)", src->expand_mode);
                 }
 
                 if (first)
@@ -732,7 +716,6 @@ print_alu_mask(FILE *fp, uint8_t mask, unsigned bits, midgard_shrink_mode shrink
         fprintf(fp, ".");
 
         unsigned skip = MAX2(bits / 16, 1);
-        bool uppercase = bits > 32;
         bool tripped = false;
 
         /* To apply an upper destination shrink_mode, we "shift" the alphabet.
@@ -758,11 +741,6 @@ print_alu_mask(FILE *fp, uint8_t mask, unsigned bits, midgard_shrink_mode shrink
                         /* TODO: handle shrinking from 16-bit */
                         unsigned comp_idx = bits == 8 ? i * 2 : i;
                         char c = alphabet[comp_idx / skip];
-
-                        if (uppercase) {
-                                c = toupper(c);
-                                assert(c == 'X' || c == 'Y');
-                        }
 
                         fprintf(fp, "%c", c);
                         if (bits == 8)
@@ -865,7 +843,7 @@ print_vector_field(disassemble_context *ctx, FILE *fp, const char *name,
         /* Mask out unused components based on the writemask, but don't mask out
          * components that are used for interlane instructions like fdot3. */
         uint8_t src_mask =
-                rep ? expand_writemask(mask_of(rep), log2(128 / bits_for_mode(mode))) : mask;
+                rep ? expand_writemask(mask_of(rep), util_logbase2(128 / bits_for_mode(mode))) : mask;
 
         fprintf(fp, ", ");
 
@@ -936,8 +914,8 @@ print_scalar_field(disassemble_context *ctx, FILE *fp, const char *name,
         bool is_int_out = midgard_is_integer_out_op(alu_field->op);
         bool full = alu_field->output_full;
 
-        if (alu_field->unknown)
-                fprintf(fp, "scalar ALU unknown bit set\n");
+        if (alu_field->reserved)
+                fprintf(fp, "scalar ALU reserved bit set\n");
 
         if (verbose)
                 fprintf(fp, "%s.", name);
@@ -1040,6 +1018,17 @@ print_branch_cond(FILE *fp, int cond)
         }
 }
 
+static const char *
+function_call_mode(enum midgard_call_mode mode)
+{
+        switch (mode) {
+        case midgard_call_mode_default: return "";
+        case midgard_call_mode_call: return ".call";
+        case midgard_call_mode_return: return ".return";
+        default: return ".reserved";
+        }
+}
+
 static bool
 print_compact_branch_writeout_field(disassemble_context *ctx, FILE *fp, uint16_t word)
 {
@@ -1050,10 +1039,7 @@ print_compact_branch_writeout_field(disassemble_context *ctx, FILE *fp, uint16_t
         case midgard_jmp_writeout_op_branch_uncond: {
                 midgard_branch_uncond br_uncond;
                 memcpy((char *) &br_uncond, (char *) &word, sizeof(br_uncond));
-                fprintf(fp, "br.uncond ");
-
-                if (br_uncond.unknown != 1)
-                        fprintf(fp, "unknown:%u, ", br_uncond.unknown);
+                fprintf(fp, "br.uncond%s ", function_call_mode(br_uncond.call_mode));
 
                 if (br_uncond.offset >= 0)
                         fprintf(fp, "+");
@@ -1100,7 +1086,7 @@ print_extended_branch_writeout_field(disassemble_context *ctx, FILE *fp, uint8_t
         midgard_branch_extended br;
         memcpy((char *) &br, (char *) words, sizeof(br));
 
-        fprintf(fp, "brx.");
+        fprintf(fp, "brx%s.", function_call_mode(br.call_mode));
 
         print_branch_op(fp, br.op);
 
@@ -1116,9 +1102,6 @@ print_extended_branch_writeout_field(disassemble_context *ctx, FILE *fp, uint8_t
                 print_branch_cond(fp, br.cond & 0x3);
         else
                 fprintf(fp, "lut%X", br.cond);
-
-        if (br.unknown)
-                fprintf(fp, ".unknown%u", br.unknown);
 
         fprintf(fp, " ");
 
@@ -1410,9 +1393,15 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                         swizzle = 0xE4;
                 print_ldst_mask(fp, word->mask, swizzle);
         } else {
+                uint8_t mask =
+                        (word->mask & 0x1) |
+                        ((word->mask & 0x2) << 1) |
+                        ((word->mask & 0x4) << 2) |
+                        ((word->mask & 0x8) << 3);
+                mask |= mask << 1;
                 print_ldst_read_reg(fp, word->reg);
                 print_vec_swizzle(fp, word->swizzle, midgard_src_passthrough,
-                                  midgard_reg_mode_32, 0xFF);
+                                  midgard_reg_mode_32, mask);
         }
 
         /* ld_ubo args */
@@ -1430,7 +1419,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                 print_ldst_read_reg(fp, word->index_reg);
                 fprintf(fp, ".%c", components[word->index_comp]);
                 if (word->index_shift)
-                        fprintf(fp, " lsl %u",  word->index_shift);
+                        fprintf(fp, " << %u",  word->index_shift);
                 midgard_print_sint(fp, UNPACK_LDST_UBO_OFS(word->signed_offset));
         }
 
@@ -1458,7 +1447,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                                 index_format_names[word->index_format],
                                 components[word->index_comp]);
                         if (word->index_shift)
-                                fprintf(fp, " lsl %u",  word->index_shift);
+                                fprintf(fp, " << %u",  word->index_shift);
                 }
 
                 midgard_print_sint(fp, word->signed_offset);
@@ -1495,7 +1484,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                 print_ldst_read_reg(fp, word->index_reg);
                 fprintf(fp, ".%c", components[word->index_comp]);
                 if (word->index_shift)
-                        fprintf(fp, " lsl %u",  word->index_shift);
+                        fprintf(fp, " << %u",  word->index_shift);
                 midgard_print_sint(fp, UNPACK_LDST_ATTRIB_OFS(word->signed_offset));
         }
 
@@ -1707,6 +1696,17 @@ derivative_mode(enum mali_derivative_mode mode)
         }
 }
 
+static const char *
+partial_exection_mode(enum midgard_partial_execution mode)
+{
+        switch (mode) {
+        case MIDGARD_PARTIAL_EXECUTION_NONE: return "";
+        case MIDGARD_PARTIAL_EXECUTION_SKIP: return ".skip";
+        case MIDGARD_PARTIAL_EXECUTION_KILL: return ".kill";
+        default: return ".reserved";
+        }
+}
+
 static void
 print_texture_word(disassemble_context *ctx, FILE *fp, uint32_t *word,
                    unsigned tabs, unsigned in_reg_base, unsigned out_reg_base)
@@ -1736,12 +1736,7 @@ print_texture_word(disassemble_context *ctx, FILE *fp, uint32_t *word,
         print_texture_format(fp, texture->format);
 
         /* Instruction "modifiers" parallel the ALU instructions. */
-
-        if (texture->cont)
-                fprintf(fp, ".cont");
-
-        if (texture->last)
-                fprintf(fp, ".last");
+        fputs(partial_exection_mode(texture->exec), fp);
 
         if (texture->out_of_order)
                 fprintf(fp, ".ooo%u", texture->out_of_order);
@@ -1755,7 +1750,7 @@ print_texture_word(disassemble_context *ctx, FILE *fp, uint32_t *word,
 
         /* Output modifiers are only valid for float texture operations */
         if (texture->sampler_type == MALI_SAMPLER_FLOAT)
-                print_outmod(fp, texture->outmod, false);
+                mir_print_outmod(fp, texture->outmod, false);
 
         fprintf(fp, ", ");
 

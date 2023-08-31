@@ -29,9 +29,9 @@
 #define sizeof_field(type, field) sizeof(((type *)0)->field)
 
 void
-anv_nir_compute_push_layout(const struct anv_physical_device *pdevice,
+anv_nir_compute_push_layout(nir_shader *nir,
+                            const struct anv_physical_device *pdevice,
                             bool robust_buffer_access,
-                            nir_shader *nir,
                             struct brw_stage_prog_data *prog_data,
                             struct anv_pipeline_bind_map *map,
                             void *mem_ctx)
@@ -86,7 +86,7 @@ anv_nir_compute_push_layout(const struct anv_physical_device *pdevice,
    const bool push_ubo_ranges =
       pdevice->info.verx10 >= 75 &&
       has_const_ubo && nir->info.stage != MESA_SHADER_COMPUTE &&
-      !brw_shader_stage_is_bindless(nir->info.stage);
+      !brw_shader_stage_requires_bindless_resources(nir->info.stage);
 
    if (push_ubo_ranges && robust_buffer_access) {
       /* We can't on-the-fly adjust our push ranges because doing so would
@@ -157,7 +157,7 @@ anv_nir_compute_push_layout(const struct anv_physical_device *pdevice,
                    * brw_nir_lower_rt_intrinsics.c).
                    */
                   unsigned base_offset =
-                     brw_shader_stage_is_bindless(nir->info.stage) ? 0 : push_start;
+                     brw_shader_stage_requires_bindless_resources(nir->info.stage) ? 0 : push_start;
                   intrin->intrinsic = nir_intrinsic_load_uniform;
                   nir_intrinsic_set_base(intrin,
                                          nir_intrinsic_base(intrin) -

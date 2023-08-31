@@ -43,7 +43,7 @@ static const struct debug_named_value debug_control[] = {
         { "cl",          V3D_DEBUG_CL,
           "Dump command list during creation" },
         { "cl_nobin",    V3D_DEBUG_CL_NO_BIN,
-          "Dump command listduring creation, excluding binary resources" },
+          "Dump command list during creation, excluding binary resources" },
         { "clif",        V3D_DEBUG_CLIF,
           "Dump command list (CLIF format) during creation", },
         { "qpu",         V3D_DEBUG_QPU,
@@ -53,15 +53,17 @@ static const struct debug_named_value debug_control[] = {
         { "nir",         V3D_DEBUG_NIR,
           "Dump NIR during program compile" },
         { "tgsi",        V3D_DEBUG_TGSI,
-          "Dump TGSI during program compile" },
+          "Dump TGSI during program compile (v3d only)" },
         { "shaderdb",    V3D_DEBUG_SHADERDB,
           "Dump program compile information for shader-db analysis" },
         { "surface",     V3D_DEBUG_SURFACE,
-          "Print resource layout information" },
+          /* FIXME: evaluate to implement it on v3dv */
+          "Print resource layout information (v3d only)" },
         { "perf",        V3D_DEBUG_PERF,
-          "Print during runtime performance-related events" },
+          "Print performance-related events during runtime" },
         { "norast",      V3D_DEBUG_NORAST,
-          "Skip actual hardware execution of commands" },
+          /* FIXME: evaluate to implement on v3dv*/
+          "Skip actual hardware execution of commands (v3d only)" },
         { "fs",          V3D_DEBUG_FS,
           "Dump fragment shaders" },
         { "gs",          V3D_DEBUG_GS,
@@ -73,11 +75,11 @@ static const struct debug_named_value debug_control[] = {
         { "always_flush", V3D_DEBUG_ALWAYS_FLUSH,
           "Flush after each draw call" },
         { "precompile",  V3D_DEBUG_PRECOMPILE,
-          "Precompiles shader variant at shader state creation time" },
+          "Precompiles shader variant at shader state creation time (v3d only)" },
         { "ra",          V3D_DEBUG_RA,
           "Dump register allocation failures" },
         { "dump_spirv",  V3D_DEBUG_DUMP_SPIRV,
-          "Dump SPIR-V code" },
+          "Dump SPIR-V code (v3dv only)" },
         { "tmu32",  V3D_DEBUG_TMU_32BIT,
           "Force 32-bit precision on all TMU operations" },
         /* This can lead to incorrect behavior for applications that do
@@ -88,6 +90,14 @@ static const struct debug_named_value debug_control[] = {
           "Force 16-bit precision on all TMU operations" },
         { "noloopunroll",  V3D_DEBUG_NO_LOOP_UNROLL,
           "Disable loop unrolling" },
+        { "db", V3D_DEBUG_DOUBLE_BUFFER,
+          "Enable double buffer for Tile Buffer when MSAA is disabled" },
+#ifdef ENABLE_SHADER_CACHE
+        { "cache", V3D_DEBUG_CACHE,
+          "Print on-disk cache events (only with cache enabled)" },
+#endif
+        { "no_merge_jobs", V3D_DEBUG_NO_MERGE_JOBS,
+          "Don't try to merge subpasses in the same job even if they share framebuffer configuration (v3dv only)" },
         { NULL }
 };
 
@@ -112,7 +122,4 @@ void
 v3d_process_debug_variable(void)
 {
         V3D_DEBUG = debug_get_option_v3d_debug();
-
-        if (V3D_DEBUG & V3D_DEBUG_SHADERDB)
-                V3D_DEBUG |= V3D_DEBUG_NORAST;
 }

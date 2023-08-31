@@ -29,8 +29,6 @@
  * Author: Jakob Bornecrantz <wallbraker@gmail.com>
  */
 
-#include "utils.h"
-
 #include "dri_screen.h"
 #include "dri_drawable.h"
 #include "dri_context.h"
@@ -41,6 +39,7 @@
 #include "state_tracker/st_context.h"
 
 #include "util/u_memory.h"
+#include "util/debug.h"
 
 GLboolean
 dri_create_context(gl_api api, const struct gl_config * visual,
@@ -57,11 +56,11 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    struct st_context_attribs attribs;
    enum st_context_error ctx_err = 0;
    unsigned allowed_flags = __DRI_CTX_FLAG_DEBUG |
-                            __DRI_CTX_FLAG_FORWARD_COMPATIBLE |
-                            __DRI_CTX_FLAG_NO_ERROR;
+                            __DRI_CTX_FLAG_FORWARD_COMPATIBLE;
    unsigned allowed_attribs =
       __DRIVER_CONTEXT_ATTRIB_PRIORITY |
-      __DRIVER_CONTEXT_ATTRIB_RELEASE_BEHAVIOR;
+      __DRIVER_CONTEXT_ATTRIB_RELEASE_BEHAVIOR |
+      __DRIVER_CONTEXT_ATTRIB_NO_ERROR;
    const __DRIbackgroundCallableExtension *backgroundCallable =
       screen->sPriv->dri2.backgroundCallable;
    const struct driOptionCache *optionCache = &screen->dev->option_cache;
@@ -119,8 +118,8 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       if (ctx_config->reset_strategy != __DRI_CTX_RESET_NO_NOTIFICATION)
          attribs.flags |= ST_CONTEXT_FLAG_RESET_NOTIFICATION_ENABLED;
 
-   if (ctx_config->flags & __DRI_CTX_FLAG_NO_ERROR)
-      attribs.flags |= ST_CONTEXT_FLAG_NO_ERROR;
+   if (ctx_config->attribute_mask & __DRIVER_CONTEXT_ATTRIB_NO_ERROR)
+      attribs.flags |= ctx_config->no_error ? ST_CONTEXT_FLAG_NO_ERROR : 0;
 
    if (ctx_config->attribute_mask & __DRIVER_CONTEXT_ATTRIB_PRIORITY) {
       switch (ctx_config->priority) {
@@ -155,8 +154,15 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    ctx->cPriv = cPriv;
    ctx->sPriv = sPriv;
 
-   if (driQueryOptionb(&screen->dev->option_cache, "mesa_no_error"))
-      attribs.flags |= ST_CONTEXT_FLAG_NO_ERROR;
+   /* KHR_no_error is likely to crash, overflow memory, etc if an application
+    * has errors so don't enable it for setuid processes.
+    */
+   if (env_var_as_boolean("MESA_NO_ERROR", false) ||
+       driQueryOptionb(&screen->dev->option_cache, "mesa_no_error"))
+#if !defined(_WIN32)
+      if (geteuid() == getuid())
+#endif
+         attribs.flags |= ST_CONTEXT_FLAG_NO_ERROR;
 
    attribs.options = screen->options;
    dri_fill_st_visual(&attribs.visual, screen, visual);
@@ -259,17 +265,15 @@ dri_unbind_context(__DRIcontext * cPriv)
    struct st_context_iface *st = ctx->st;
    struct st_api *stapi = screen->st_api;
 
-   if (--ctx->bind_count == 0) {
-      if (st == stapi->get_current(stapi)) {
-         if (st->thread_finish)
-            st->thread_finish(st);
+   if (st == stapi->get_current(stapi)) {
+      if (st->thread_finish)
+         st->thread_finish(st);
 
-         /* Record HUD queries for the duration the context was "current". */
-         if (ctx->hud)
-            hud_record_only(ctx->hud, st->pipe);
+      /* Record HUD queries for the duration the context was "current". */
+      if (ctx->hud)
+         hud_record_only(ctx->hud, st->pipe);
 
-         stapi->make_current(stapi, NULL, NULL, NULL);
-      }
+      stapi->make_current(stapi, NULL, NULL, NULL);
    }
    ctx->dPriv = NULL;
    ctx->rPriv = NULL;
@@ -286,8 +290,6 @@ dri_make_current(__DRIcontext * cPriv,
    struct dri_context *ctx = dri_context(cPriv);
    struct dri_drawable *draw = dri_drawable(driDrawPriv);
    struct dri_drawable *read = dri_drawable(driReadPriv);
-
-   ++ctx->bind_count;
 
    if (!draw && !read)
       return ctx->stapi->make_current(ctx->stapi, ctx->st, NULL, NULL);

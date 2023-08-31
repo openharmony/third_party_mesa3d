@@ -96,14 +96,9 @@
 #else
 #define PIPE_ARCH_SSE
 #endif
-#if defined(PIPE_CC_GCC) && (__GNUC__ * 100 + __GNUC_MINOR__) < 409 && !defined(__SSSE3__)
-/* #warning SSE3 support requires -msse3 compiler options before GCC 4.9 */
-#else
-#define PIPE_ARCH_SSSE3
-#endif
 #endif
 
-#if defined(__ppc__) || defined(__ppc64__) || defined(__PPC__)
+#if defined(__ppc__) || defined(__ppc64__) || defined(__PPC__) || defined(__PPC64__)
 #define PIPE_ARCH_PPC
 #if defined(__ppc64__) || defined(__PPC64__)
 #define PIPE_ARCH_PPC_64

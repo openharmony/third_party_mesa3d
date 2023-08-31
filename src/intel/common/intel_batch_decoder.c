@@ -24,12 +24,13 @@
 #include "common/intel_decoder.h"
 #include "intel_disasm.h"
 #include "util/macros.h"
-#include "main/macros.h" /* Needed for ROUND_DOWN_TO */
+#include "util/u_math.h" /* Needed for ROUND_DOWN_TO */
 
 #include <string.h>
 
 void
 intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
+                            const struct brw_isa_info *isa,
                             const struct intel_device_info *devinfo,
                             FILE *fp, enum intel_batch_decode_flags flags,
                             const char *xml_path,
@@ -42,6 +43,7 @@ intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
 {
    memset(ctx, 0, sizeof(*ctx));
 
+   ctx->isa = isa;
    ctx->devinfo = *devinfo;
    ctx->get_bo = get_bo;
    ctx->get_state_size = get_state_size;
@@ -137,7 +139,7 @@ ctx_disassemble_program(struct intel_batch_decode_ctx *ctx,
       return;
 
    fprintf(ctx->fp, "\nReferenced %s:\n", type);
-   intel_disassemble(&ctx->devinfo, bo.map, 0, ctx->fp);
+   intel_disassemble(ctx->isa, bo.map, 0, ctx->fp);
 }
 
 /* Heuristic to determine whether a uint32_t is probably actually a float
@@ -263,7 +265,7 @@ handle_binding_table_pool_alloc(struct intel_batch_decode_ctx *ctx,
       }
    }
 
-   if (bt_pool_enable) {
+   if (bt_pool_enable || ctx->devinfo.verx10 >= 125) {
       ctx->bt_pool_base = bt_pool_base;
    } else {
       ctx->bt_pool_base = 0;
@@ -281,9 +283,22 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx,
       return;
    }
 
-   /* When 256B binding tables are enabled, we have to shift the offset */
-   if (ctx->use_256B_binding_tables)
+   /* Most platforms use a 16-bit pointer with 32B alignment in bits 15:5. */
+   uint32_t btp_alignment = 32;
+   uint32_t btp_pointer_bits = 16;
+
+   if (ctx->devinfo.verx10 >= 125) {
+      /* The pointer is now 21-bit with 32B alignment in bits 20:5. */
+      btp_pointer_bits = 21;
+   } else if (ctx->use_256B_binding_tables) {
+      /* When 256B binding tables are enabled, we have to shift the offset
+       * which is stored in bits 15:5 but interpreted as bits 18:8 of the
+       * actual offset.  The effective pointer is 19-bit with 256B alignment.
+       */
       offset <<= 3;
+      btp_pointer_bits = 19;
+      btp_alignment = 256;
+   }
 
    const uint64_t bt_pool_base = ctx->bt_pool_base ? ctx->bt_pool_base :
                                                      ctx->surface_base;
@@ -293,7 +308,7 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx,
                            bt_pool_base, 1, 8);
    }
 
-   if (offset % 32 != 0 || offset >= UINT16_MAX) {
+   if (offset % btp_alignment != 0 || offset >= (1u << btp_pointer_bits)) {
       fprintf(ctx->fp, "  invalid binding table pointer\n");
       return;
    }
@@ -611,6 +626,38 @@ decode_single_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
+decode_mesh_task_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+
+   uint64_t ksp = 0;
+   uint64_t local_x_maximum = 0;
+   uint64_t threads = 0;
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Kernel Start Pointer") == 0) {
+         ksp = iter.raw_value;
+      } else if (strcmp(iter.name, "Local X Maximum") == 0) {
+         local_x_maximum = iter.raw_value;
+      } else if (strcmp(iter.name, "Number of Threads in GPGPU Thread Group") == 0) {
+         threads = iter.raw_value;
+      }
+   }
+
+   const char *type =
+      strcmp(inst->name,   "3DSTATE_MESH_SHADER") == 0 ? "mesh shader" :
+      strcmp(inst->name,   "3DSTATE_TASK_SHADER") == 0 ? "task shader" :
+      NULL;
+
+   if (threads && local_x_maximum) {
+      ctx_disassemble_program(ctx, ksp, type);
+      fprintf(ctx->fp, "\n");
+   }
+}
+
+static void
 decode_ps_kern(struct intel_batch_decode_ctx *ctx,
                struct intel_group *inst, const uint32_t *p)
 {
@@ -679,7 +726,7 @@ decode_3dstate_constant_all(struct intel_batch_decode_ctx *ctx, const uint32_t *
    struct intel_group *body =
       intel_spec_find_struct(ctx->spec, "3DSTATE_CONSTANT_ALL_DATA");
 
-   uint32_t read_length[4];
+   uint32_t read_length[4] = {0};
    struct intel_batch_decode_bo buffer[4];
    memset(buffer, 0, sizeof(buffer));
 
@@ -722,7 +769,7 @@ decode_3dstate_constant(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
       intel_spec_find_struct(ctx->spec, "3DSTATE_CONSTANT_BODY");
 
    uint32_t read_length[4] = {0};
-   uint64_t read_addr[4];
+   uint64_t read_addr[4] = {0};
 
    struct intel_field_iterator outer;
    intel_field_iterator_init(&outer, inst, p, 0, false);
@@ -1309,6 +1356,8 @@ struct custom_decoder {
    { "3DSTATE_HS", decode_single_ksp },
    { "3DSTATE_PS", decode_ps_kernels },
    { "3DSTATE_WM", decode_ps_kernels },
+   { "3DSTATE_MESH_SHADER", decode_mesh_task_ksp },
+   { "3DSTATE_TASK_SHADER", decode_mesh_task_ksp },
    { "3DSTATE_CONSTANT_VS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_GS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_PS", decode_3dstate_constant },

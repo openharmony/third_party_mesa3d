@@ -32,7 +32,6 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
 {
         unsigned temp_count = bi_max_temp(ctx);
 
-        bi_invalidate_liveness(ctx);
         bi_compute_liveness(ctx);
 
         bi_foreach_block_rev(ctx, block) {
@@ -49,13 +48,23 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
                         bi_foreach_dest(ins, d) {
                                 unsigned index = bi_get_node(ins->dest[d]);
 
+                                /* Destination required */
+                                if (ins->op == BI_OPCODE_AXCHG_I32 ||
+                                    ins->op == BI_OPCODE_ACMPXCHG_I32 ||
+                                    ins->op == BI_OPCODE_ATOM_RETURN_I32 ||
+                                    ins->op == BI_OPCODE_ATOM1_RETURN_I32 ||
+                                    ins->op == BI_OPCODE_BLEND ||
+                                    ins->op == BI_OPCODE_ATEST ||
+                                    ins->op == BI_OPCODE_ZS_EMIT)
+                                        continue;
+
                                 if (index < temp_count && !(live[index] & bi_writemask(ins, d)))
                                         ins->dest[d] = bi_null();
 
                                 all_null &= bi_is_null(ins->dest[d]);
                         }
 
-                        if (all_null && !bi_side_effects(ins->op))
+                        if (all_null && !bi_side_effects(ins))
                                 bi_remove_instruction(ins);
                         else
                                 bi_liveness_ins_update(live, ins, temp_count);
@@ -68,7 +77,7 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
 
 /* Post-RA liveness-based dead code analysis to clean up results of bundling */
 
-uint64_t
+uint64_t MUST_CHECK
 bi_postra_liveness_ins(uint64_t live, bi_instr *ins)
 {
         bi_foreach_dest(ins, d) {
@@ -115,40 +124,29 @@ bi_postra_liveness_block(bi_block *blk)
 void
 bi_postra_liveness(bi_context *ctx)
 {
-        struct set *work_list = _mesa_set_create(NULL,
-                        _mesa_hash_pointer,
-                        _mesa_key_pointer_equal);
-
-        struct set *visited = _mesa_set_create(NULL,
-                        _mesa_hash_pointer,
-                        _mesa_key_pointer_equal);
-
-        struct set_entry *cur;
-        cur = _mesa_set_add(work_list, pan_exit_block(&ctx->blocks));
+        u_worklist worklist;
+        bi_worklist_init(ctx, &worklist);
 
         bi_foreach_block(ctx, block) {
                 block->reg_live_out = block->reg_live_in = 0;
+
+                bi_worklist_push_tail(&worklist, block);
         }
 
-        do {
-                bi_block *blk = (struct bi_block *) cur->key;
-                _mesa_set_remove(work_list, cur);
+        while (!u_worklist_is_empty(&worklist)) {
+                /* Pop off in reverse order since liveness is backwards */
+                bi_block *blk = bi_worklist_pop_tail(&worklist);
 
-                /* Update its liveness information */
-                bool progress = bi_postra_liveness_block(blk);
-
-                /* If we made progress, we need to process the predecessors */
-
-                if (progress || !_mesa_set_search(visited, blk)) {
-                        bi_foreach_predecessor((blk), pred)
-                                _mesa_set_add(work_list, pred);
+                /* Update liveness information. If we made progress, we need to
+                 * reprocess the predecessors
+                 */
+                if (bi_postra_liveness_block(blk)) {
+                        bi_foreach_predecessor(blk, pred)
+                                bi_worklist_push_head(&worklist, *pred);
                 }
+        }
 
-                _mesa_set_add(visited, blk);
-        } while((cur = _mesa_set_next_entry(work_list, NULL)) != NULL);
-
-        _mesa_set_destroy(visited, NULL);
-        _mesa_set_destroy(work_list, NULL);
+        u_worklist_fini(&worklist);
 }
 
 void
@@ -160,6 +158,9 @@ bi_opt_dce_post_ra(bi_context *ctx)
                 uint64_t live = block->reg_live_out;
 
                 bi_foreach_instr_in_block_rev(block, ins) {
+                        if (ins->op == BI_OPCODE_DTSEL_IMM)
+                                ins->dest[0] = bi_null();
+
                         bi_foreach_dest(ins, d) {
                                 if (ins->dest[d].type != BI_INDEX_REGISTER)
                                         continue;
@@ -168,6 +169,7 @@ bi_opt_dce_post_ra(bi_context *ctx)
                                 unsigned reg = ins->dest[d].value;
                                 uint64_t mask = (BITFIELD64_MASK(nr) << reg);
                                 bool cullable = (ins->op != BI_OPCODE_BLEND);
+                                cullable &= !bi_opcode_props[ins->op].sr_write;
 
                                 if (!(live & mask) && cullable)
                                         ins->dest[d] = bi_null();

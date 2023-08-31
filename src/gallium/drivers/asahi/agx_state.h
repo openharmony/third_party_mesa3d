@@ -88,8 +88,8 @@ struct agx_stage {
    unsigned sampler_count, texture_count;
 };
 
-/* Uploaded scissor descriptors */
-struct agx_scissors {
+/* Uploaded scissor or depth bias descriptors */
+struct agx_array {
       struct agx_bo *bo;
       unsigned count;
 };
@@ -103,6 +103,8 @@ struct agx_batch {
    uint32_t clear, draw;
 
    float clear_color[4];
+   double clear_depth;
+   unsigned clear_stencil;
 
    /* Resource list requirements, represented as a bit set indexed by BO
     * handles (GEM handles on Linux, or IOGPU's equivalent on macOS) */
@@ -112,7 +114,7 @@ struct agx_batch {
    struct agx_bo *encoder;
    uint8_t *encoder_current;
 
-   struct agx_scissors scissor;
+   struct agx_array scissor, depth_bias;
 };
 
 struct agx_zsa {
@@ -139,7 +141,7 @@ struct asahi_shader_key {
 enum agx_dirty {
    AGX_DIRTY_VERTEX   = BITFIELD_BIT(0),
    AGX_DIRTY_VIEWPORT = BITFIELD_BIT(1),
-   AGX_DIRTY_SCISSOR  = BITFIELD_BIT(2),
+   AGX_DIRTY_SCISSOR_ZBIAS  = BITFIELD_BIT(2),
 };
 
 struct agx_context {
@@ -234,6 +236,11 @@ struct agx_resource {
    struct pipe_resource	base;
    uint64_t modifier;
 
+   /* Should probably be part of the modifier. Affects the tiling algorithm, or
+    * something like that.
+    */
+   bool mipmapped;
+
    /* Hardware backing */
    struct agx_bo *bo;
 
@@ -246,16 +253,49 @@ struct agx_resource {
    struct {
       unsigned offset;
       unsigned line_stride;
+      unsigned size;
    } slices[PIPE_MAX_TEXTURE_LEVELS];
 
    /* Bytes from one miptree to the next */
    unsigned array_stride;
+
+   /* Metal does not support packed depth/stencil formats; presumably AGX does
+    * not either. Instead, we create separate depth and stencil resources,
+    * managed by u_transfer_helper.  We provide the illusion of packed
+    * resources.
+    */
+   struct agx_resource *separate_stencil;
+
+   /* Internal format, since many depth/stencil formats are emulated. */
+   enum pipe_format internal_format;
 };
 
 static inline struct agx_resource *
 agx_resource(struct pipe_resource *pctx)
 {
    return (struct agx_resource *) pctx;
+}
+
+/*
+ * Within a resource containing multiple layers and multiple mip levels,
+ * returns the offset from the start of the backing BO of a given level/slice.
+ */
+static inline uint32_t
+agx_texture_offset(struct agx_resource *rsrc, unsigned level, unsigned z)
+{
+   return rsrc->slices[level].offset + (z * rsrc->array_stride);
+}
+
+static inline void *
+agx_map_texture_cpu(struct agx_resource *rsrc, unsigned level, unsigned z)
+{
+   return ((uint8_t *) rsrc->bo->ptr.cpu) + agx_texture_offset(rsrc, level, z);
+}
+
+static inline uint64_t
+agx_map_texture_gpu(struct agx_resource *rsrc, unsigned level, unsigned z)
+{
+   return rsrc->bo->ptr.gpu + (uint64_t) agx_texture_offset(rsrc, level, z);
 }
 
 struct agx_transfer {

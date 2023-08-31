@@ -28,7 +28,7 @@ using namespace aco;
 BEGIN_TEST(optimize.neg)
    for (unsigned i = GFX9; i <= GFX10; i++) {
       //>> v1: %a, v1: %b, s1: %c, s1: %d = p_startpgm
-      if (!setup_cs("v1 v1 s1 s1", (chip_class)i))
+      if (!setup_cs("v1 v1 s1 s1", (amd_gfx_level)i))
          continue;
 
       //! v1: %res0 = v_mul_f32 %a, -%b
@@ -266,13 +266,13 @@ END_TEST
 
 Temp create_subbrev_co(Operand op0, Operand op1, Operand op2)
 {
-   return bld.vop2_e64(aco_opcode::v_subbrev_co_u32, bld.def(v1), bld.hint_vcc(bld.def(bld.lm)), op0, op1, op2);
+   return bld.vop2_e64(aco_opcode::v_subbrev_co_u32, bld.def(v1), bld.def(bld.lm), op0, op1, op2);
 }
 
 BEGIN_TEST(optimize.cndmask)
    for (unsigned i = GFX9; i <= GFX10; i++) {
       //>> v1: %a, s1: %b, s2: %c = p_startpgm
-      if (!setup_cs("v1 s1 s2", (chip_class)i))
+      if (!setup_cs("v1 s1 s2", (amd_gfx_level)i))
          continue;
 
       Temp subbrev;
@@ -316,7 +316,7 @@ END_TEST
 BEGIN_TEST(optimize.add_lshl)
    for (unsigned i = GFX8; i <= GFX10; i++) {
       //>> s1: %a, v1: %b = p_startpgm
-      if (!setup_cs("s1 v1", (chip_class)i))
+      if (!setup_cs("s1 v1", (amd_gfx_level)i))
          continue;
 
       Temp shift;
@@ -398,7 +398,7 @@ END_TEST
 BEGIN_TEST(optimize.bcnt)
    for (unsigned i = GFX8; i <= GFX10; i++) {
       //>> v1: %a, s1: %b = p_startpgm
-      if (!setup_cs("v1 s1", (chip_class)i))
+      if (!setup_cs("v1 s1", (amd_gfx_level)i))
          continue;
 
       Temp bcnt;
@@ -530,21 +530,22 @@ BEGIN_TEST(optimize.clamp)
                            bld.vop2(cfg.max, bld.def(v1), inputs[2], inputs[0])));
 
       /* correct NaN behaviour with precise */
+      if (cfg.min == aco_opcode::v_min_f16 || cfg.min == aco_opcode::v_min_f32) {
+         //~f(16|32)! v1: %res7 = @med3 @ub, @lb, %a
+         //~f(16|32)! p_unit_test 7, %res7
+         Builder::Result max = bld.vop2(cfg.max, bld.def(v1), cfg.lb, inputs[0]);
+         max.def(0).setPrecise(true);
+         Builder::Result min = bld.vop2(cfg.min, bld.def(v1), cfg.ub, max);
+         max.def(0).setPrecise(true);
+         writeout(7, min);
 
-      //! v1: %res7 = @med3 @ub, @lb, %a
-      //! p_unit_test 7, %res7
-      Builder::Result max = bld.vop2(cfg.max, bld.def(v1), cfg.lb, inputs[0]);
-      max.def(0).setPrecise(true);
-      Builder::Result min = bld.vop2(cfg.min, bld.def(v1), cfg.ub, max);
-      max.def(0).setPrecise(true);
-      writeout(7, min);
-
-      //! v1: (precise)%res8_tmp = @min @ub, %a
-      //! v1: %res8 = @max @lb, %res8_tmp
-      //! p_unit_test 8, %res8
-      min = bld.vop2(cfg.min, bld.def(v1), cfg.ub, inputs[0]);
-      min.def(0).setPrecise(true);
-      writeout(8, bld.vop2(cfg.max, bld.def(v1), cfg.lb, min));
+         //~f(16|32)! v1: (precise)%res8_tmp = @min @ub, %a
+         //~f(16|32)! v1: %res8 = @max @lb, %res8_tmp
+         //~f(16|32)! p_unit_test 8, %res8
+         min = bld.vop2(cfg.min, bld.def(v1), cfg.ub, inputs[0]);
+         min.def(0).setPrecise(true);
+         writeout(8, bld.vop2(cfg.max, bld.def(v1), cfg.lb, min));
+      }
 
       finish_opt_test();
    }
@@ -714,7 +715,7 @@ END_TEST
 BEGIN_TEST(optimize.minmax)
    for (unsigned i = GFX9; i <= GFX10; i++) {
       //>> v1: %a = p_startpgm
-      if (!setup_cs("v1", (chip_class)i))
+      if (!setup_cs("v1", (amd_gfx_level)i))
          continue;
 
       //! v1: %res0 = v_max3_f32 0, -0, %a
@@ -737,7 +738,7 @@ END_TEST
 BEGIN_TEST(optimize.mad_32_24)
    for (unsigned i = GFX8; i <= GFX9; i++) {
       //>> v1: %a, v1: %b, v1: %c = p_startpgm
-      if (!setup_cs("v1 v1 v1", (chip_class)i))
+      if (!setup_cs("v1 v1 v1", (amd_gfx_level)i))
          continue;
 
       //! v1: %res0 = v_mad_u32_u24 %b, %c, %a
@@ -758,7 +759,7 @@ END_TEST
 BEGIN_TEST(optimize.add_lshlrev)
    for (unsigned i = GFX8; i <= GFX10; i++) {
       //>> v1: %a, v1: %b, s1: %c = p_startpgm
-      if (!setup_cs("v1 v1 s1", (chip_class)i))
+      if (!setup_cs("v1 v1 s1", (amd_gfx_level)i))
          continue;
 
       Temp lshl;
@@ -886,7 +887,7 @@ BEGIN_TEST(optimize.denorm_propagation)
          sprintf(subvariant, "_%s_%s_%s_%s",
                  cfg.flush ? "flush" : "keep", srcdest_op_name(cfg.src),
                  denorm_op_names[(int)cfg.op], srcdest_op_name(cfg.dest));
-         if (!setup_cs("v1 s2", (chip_class)i, CHIP_UNKNOWN, subvariant))
+         if (!setup_cs("v1 s2", (amd_gfx_level)i, CHIP_UNKNOWN, subvariant))
             continue;
 
          bool can_propagate = cfg.src == aco_opcode::v_rcp_f32 || (i >= GFX9 && cfg.src == aco_opcode::v_min_f32) ||
@@ -988,7 +989,7 @@ BEGIN_TEST(optimizer.dpp)
    //! v1: %res3 = v_add_f32 -%a, %b row_mirror bound_ctrl:1
    //! p_unit_test 3, %res3
    auto tmp3 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
-   tmp3.instr->dpp().neg[0] = true;
+   tmp3.instr->dpp16().neg[0] = true;
    Temp res3 = bld.vop2(aco_opcode::v_add_f32, bld.def(v1), tmp3, b);
    writeout(3, res3);
 
@@ -1010,7 +1011,7 @@ BEGIN_TEST(optimizer.dpp)
    //! v1: %res6 = v_add_f32 |%a|, %b row_mirror bound_ctrl:1
    //! p_unit_test 6, %res6
    auto tmp6 = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), a, dpp_row_mirror);
-   tmp6.instr->dpp().neg[0] = true;
+   tmp6.instr->dpp16().neg[0] = true;
    auto res6 = bld.vop2_e64(aco_opcode::v_add_f32, bld.def(v1), tmp6, b);
    res6.instr->vop3().abs[0] = true;
    writeout(6, res6);
@@ -1090,3 +1091,691 @@ BEGIN_TEST(optimize.dpp_prop)
    finish_opt_test();
 END_TEST
 
+BEGIN_TEST(optimize.casts)
+   //>> v1: %a, v2b: %a16 = p_startpgm
+   if (!setup_cs("v1 v2b", GFX10_3))
+      return;
+
+   Temp a = inputs[0];
+   Temp a16 = inputs[1];
+
+   program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+   //! v1: %res0_tmp = v_mul_f32 -1.0, %a
+   //! v2b: %res0 = v_mul_f16 %res0_tmp, %a16
+   //! p_unit_test 0, %res0
+   writeout(0, fmul(u2u16(fneg(a)), a16));
+
+   //! v2b: %res1_tmp = v_mul_f16 -1.0, %a16
+   //! v1: %res1 = v_mul_f32 %res1_tmp, %a
+   //! p_unit_test 1, %res1
+   writeout(1, fmul(bld.as_uniform(fneg(a16)), a));
+
+   //! v1: %res2_tmp = v_mul_f32 -1.0, %a16
+   //! v2b: %res2 = v_mul_f16 %res2_tmp, %a16
+   //! p_unit_test 2, %res2
+   writeout(2, fmul(u2u16(bld.vop2_e64(aco_opcode::v_mul_f32, bld.def(v1), Operand::c32(0xbf800000u), bld.as_uniform(a16))), a16));
+
+   //! v1: %res3_tmp = v_mul_f32 %a, %a
+   //! v2b: %res3 = v_med3_f16 0, 1.0, %res3_tmp
+   //! p_unit_test 3, %res3
+   writeout(3, fsat(u2u16(fmul(a, a))));
+
+   //! v2b: %res4_tmp = v_mul_f16 %a16, %a16
+   //! v1: %res4 = v_med3_f32 0, 1.0, %res4_tmp
+   //! p_unit_test 4, %res4
+   writeout(4, fsat(bld.as_uniform(fmul(a16, a16))));
+
+   //! v1: %res5_tmp = v_mul_f32 %a, %a
+   //! v2b: %res5 = v_mul_f16 2.0, %res5_tmp
+   //! p_unit_test 5, %res5
+   writeout(5, fmul(u2u16(fmul(a, a)), bld.copy(bld.def(v2b), Operand::c16(0x4000))));
+
+   //! v2b: %res6_tmp = v_mul_f16 %a16, %a16
+   //! v1: %res6 = v_mul_f32 2.0, %res6_tmp
+   //! p_unit_test 6, %res6
+   writeout(6, fmul(bld.as_uniform(fmul(a16, a16)), bld.copy(bld.def(v1), Operand::c32(0x40000000))));
+
+   //! v1: %res7_tmp = v_mul_f32 %a, %a
+   //! v2b: %res7 = v_add_f16 %res7_tmp, %a16
+   //! p_unit_test 7, %res7
+   writeout(7, fadd(u2u16(fmul(a, a)), a16));
+
+   //! v2b: %res8_tmp = v_mul_f16 %a16, %a16
+   //! v1: %res8 = v_add_f32 %res8_tmp, %a
+   //! p_unit_test 8, %res8
+   writeout(8, fadd(bld.as_uniform(fmul(a16, a16)), a));
+
+   //! v1: %res9_tmp = v_mul_f32 %a, %a
+   //! v2b: %res9 = v_mul_f16 -1.0, %res9_tmp
+   //! p_unit_test 9, %res9
+   writeout(9, fneg(u2u16(fmul(a, a))));
+
+   //! v2b: %res10_tmp = v_mul_f16 %a16, %a16
+   //! v1: %res10 = v_mul_f32 -1.0, %res10_tmp
+   //! p_unit_test 10, %res10
+   writeout(10, bld.vop2_e64(aco_opcode::v_mul_f32, bld.def(v1), Operand::c32(0xbf800000u), bld.as_uniform(fmul(a16, a16))));
+
+   finish_opt_test();
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.input_conv.basic)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v2b: %a16 = p_startpgm
+      if (!setup_cs("v1 v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp a16 = inputs[1];
+
+      //! v1: %res0 = v_fma_mix_f32 %a, lo(%a16), -0
+      //! p_unit_test 0, %res0
+      writeout(0, fmul(a, f2f32(a16)));
+
+      //! v1: %res1 = v_fma_mix_f32 1.0, %a, lo(%a16)
+      //! p_unit_test 1, %res1
+      writeout(1, fadd(a, f2f32(a16)));
+
+      //! v1: %res2 = v_fma_mix_f32 1.0, lo(%a16), %a
+      //! p_unit_test 2, %res2
+      writeout(2, fadd(f2f32(a16), a));
+
+      //! v1: %res3 = v_fma_mix_f32 %a, %a, lo(%a16)
+      //! p_unit_test 3, %res3
+      writeout(3, fma(a, a, f2f32(a16)));
+
+      //! v1: %res4 = v_fma_mix_f32 %a, %a, lo(%a16)
+      //! p_unit_test 4, %res4
+      writeout(4, fma(a, a, f2f32(a16)));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.input_conv.precision)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v2b: %a16 = p_startpgm
+      if (!setup_cs("v1 v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp a16 = inputs[1];
+
+      /* precise arithmetic */
+      //~gfx9! v1: %res0_cvt = v_cvt_f32_f16 %a16
+      //~gfx9! v1: (precise)%res0 = v_fma_f32 %a, %a, %res0_cvt
+      //~gfx10! v1: (precise)%res0 = v_fma_mix_f32 %a, %a, lo(%a16)
+      //! p_unit_test 0, %res0
+      writeout(0, fma(a, a, f2f32(a16), bld.precise()));
+
+      //! v2b: %res1_cvt = v_cvt_f16_f32 %a
+      //! v2b: (precise)%res1 = v_mul_f16 %a16, %res1_cvt
+      //! p_unit_test 1, %res1
+      writeout(1, fmul(a16, f2f16(a), bld.precise()));
+
+      //! v2b: %res2_cvt = v_cvt_f16_f32 %a
+      //! v2b: (precise)%res2 = v_add_f16 %a16, %res2_cvt
+      //! p_unit_test 2, %res2
+      writeout(2, fadd(a16, f2f16(a), bld.precise()));
+
+      //! v2b: %res3_cvt = v_cvt_f16_f32 %a
+      //! v2b: (precise)%res3 = v_fma_f16 %a16, %a16, %res3_cvt
+      //! p_unit_test 3, %res3
+      writeout(3, fma(a16, a16, f2f16(a), bld.precise()));
+
+      /* precise conversions */
+      //! v2b: (precise)%res4_cvt = v_cvt_f16_f32 %a
+      //! v2b: %res4 = v_mul_f16 %a16, %res4_cvt
+      //! p_unit_test 4, %res4
+      writeout(4, fmul(a16, f2f16(a, bld.precise())));
+
+      //! v2b: (precise)%res5_cvt = v_cvt_f16_f32 %a
+      //! v2b: %res5 = v_add_f16 %a16, %res5_cvt
+      //! p_unit_test 5, %res5
+      writeout(5, fadd(a16, f2f16(a, bld.precise())));
+
+      //! v2b: (precise)%res6_cvt = v_cvt_f16_f32 %a
+      //! v2b: %res6 = v_fma_f16 %a16, %a16, %res6_cvt
+      //! p_unit_test 6, %res6
+      writeout(6, fma(a16, a16, f2f16(a, bld.precise())));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.input_conv.modifiers)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v2b: %a16 = p_startpgm
+      if (!setup_cs("v1 v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp a16 = inputs[1];
+
+      /* check whether modifiers are preserved when converting to VOP3P */
+      //! v1: %res0 = v_fma_mix_f32 -%a, lo(%a16), -0
+      //! p_unit_test 0, %res0
+      writeout(0, fmul(fneg(a), f2f32(a16)));
+
+      //! v1: %res1 = v_fma_mix_f32 |%a|, lo(%a16), -0
+      //! p_unit_test 1, %res1
+      writeout(1, fmul(fabs(a), f2f32(a16)));
+
+      /* fneg modifiers */
+      //! v1: %res2 = v_fma_mix_f32 %a, -lo(%a16), -0
+      //! p_unit_test 2, %res2
+      writeout(2, fmul(a, fneg(f2f32(a16))));
+
+      //! v1: %res3 = v_fma_mix_f32 %a, -lo(%a16), -0
+      //! p_unit_test 3, %res3
+      writeout(3, fmul(a, f2f32(fneg(a16))));
+
+      /* fabs modifiers */
+      //! v1: %res4 = v_fma_mix_f32 %a, |lo(%a16)|, -0
+      //! p_unit_test 4, %res4
+      writeout(4, fmul(a, fabs(f2f32(a16))));
+
+      //! v1: %res5 = v_fma_mix_f32 %a, |lo(%a16)|, -0
+      //! p_unit_test 5, %res5
+      writeout(5, fmul(a, f2f32(fabs(a16))));
+
+      /* both fabs and fneg modifiers */
+      //! v1: %res6 = v_fma_mix_f32 %a, -|lo(%a16)|, -0
+      //! p_unit_test 6, %res6
+      writeout(6, fmul(a, fneg(f2f32(fabs(a16)))));
+
+      //! v1: %res7 = v_fma_mix_f32 %a, |lo(%a16)|, -0
+      //! p_unit_test 7, %res7
+      writeout(7, fmul(a, fabs(f2f32(fabs(a16)))));
+
+      //! v1: %res8 = v_fma_mix_f32 %a, -|lo(%a16)|, -0
+      //! p_unit_test 8, %res8
+      writeout(8, fmul(a, fneg(fabs(f2f32(fabs(a16))))));
+
+      //! v1: %res9 = v_fma_mix_f32 %a, -|lo(%a16)|, -0
+      //! p_unit_test 9, %res9
+      writeout(9, fmul(a, f2f32(fneg(fabs(a16)))));
+
+      //! v1: %res10 = v_fma_mix_f32 %a, |lo(%a16)|, -0
+      //! p_unit_test 10, %res10
+      writeout(10, fmul(a, fneg(f2f32(fneg(fabs(a16))))));
+
+      //! v1: %res11 = v_fma_mix_f32 %a, |lo(%a16)|, -0
+      //! p_unit_test 11, %res11
+      writeout(11, fmul(a, fabs(f2f32(fneg(fabs(a16))))));
+
+      //! v1: %res12 = v_fma_mix_f32 %a, -|lo(%a16)|, -0
+      //! p_unit_test 12, %res12
+      writeout(12, fmul(a, fneg(fabs(f2f32(fneg(fabs(a16)))))));
+
+      /* sdwa */
+      //! v1: %res13 = v_fma_mix_f32 lo(%a), %a, -0
+      //! p_unit_test 13, %res13
+      writeout(13, fmul(f2f32(ext_ushort(a, 0)), a));
+
+      //! v1: %res14 = v_fma_mix_f32 hi(%a), %a, -0
+      //! p_unit_test 14, %res14
+      writeout(14, fmul(f2f32(ext_ushort(a, 1)), a));
+
+      //! v1: %res15_cvt = v_cvt_f32_f16 %a dst_sel:uword0 src0_sel:dword
+      //! v1: %res15 = v_mul_f32 %res15_cvt, %a
+      //! p_unit_test 15, %res15
+      writeout(15, fmul(ext_ushort(f2f32(a), 0), a));
+
+      //! v1: %res16_cvt = v_cvt_f32_f16 %a
+      //! v1: %res16 = v_mul_f32 %res16_cvt, %a dst_sel:dword src0_sel:uword1 src1_sel:dword
+      //! p_unit_test 16, %res16
+      writeout(16, fmul(ext_ushort(f2f32(a), 1), a));
+
+      //! v1: %res17_cvt = v_cvt_f32_f16 %a dst_sel:dword src0_sel:ubyte2
+      //! v1: %res17 = v_mul_f32 %res17_cvt, %a
+      //! p_unit_test 17, %res17
+      writeout(17, fmul(f2f32(ext_ubyte(a, 2)), a));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.output_conv.basic)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v1: %b, v1: %c, v2b: %a16, v2b: %b16 = p_startpgm
+      if (!setup_cs("v1 v1 v1 v2b v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp b = inputs[1];
+      Temp c = inputs[2];
+      Temp a16 = inputs[3];
+      Temp b16 = inputs[4];
+
+      //! v2b: %res0 = v_fma_mixlo_f16 %a, %b, -0
+      //! p_unit_test 0, %res0
+      writeout(0, f2f16(fmul(a, b)));
+
+      //! v2b: %res1 = v_fma_mixlo_f16 1.0, %a, %b
+      //! p_unit_test 1, %res1
+      writeout(1, f2f16(fadd(a, b)));
+
+      //! v2b: %res2 = v_fma_mixlo_f16 %a, %b, %c
+      //! p_unit_test 2, %res2
+      writeout(2, f2f16(fma(a, b, c)));
+
+      //! v2b: %res3 = v_fma_mixlo_f16 lo(%a16), %b, -0
+      //! p_unit_test 3, %res3
+      writeout(3, f2f16(fmul(f2f32(a16), b)));
+
+      //! v2b: %res4 = v_fma_mixlo_f16 1.0, %a, lo(%b16)
+      //! p_unit_test 4, %res4
+      writeout(4, f2f16(fadd(a, f2f32(b16))));
+
+      //! v2b: %res5 = v_fma_mixlo_f16 %a, lo(%b16), %c
+      //! p_unit_test 5, %res5
+      writeout(5, f2f16(fma(a, f2f32(b16), c)));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.output_conv.precision)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v2b: %a16 = p_startpgm
+      if (!setup_cs("v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a16 = inputs[0];
+
+      //! v2b: %res0_tmp = v_mul_f16 %a16, %a16
+      //! v1: (precise)%res0 = v_cvt_f32_f16 %res0_tmp
+      //! p_unit_test 0, %res0
+      writeout(0, f2f32(fmul(a16, a16), bld.precise()));
+
+      //! v2b: (precise)%res1_tmp = v_mul_f16 %a16, %a16
+      //! v1: %res1 = v_cvt_f32_f16 %res1_tmp
+      //! p_unit_test 1, %res1
+      writeout(1, f2f32(fmul(a16, a16, bld.precise())));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.output_conv.modifiers)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v1: %b, v2b: %a16, v2b: %b16 = p_startpgm
+      if (!setup_cs("v1 v1 v2b v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp b = inputs[1];
+      Temp a16 = inputs[2];
+      Temp b16 = inputs[3];
+
+      /* fneg/fabs */
+      //! v1: %res0_add = v_add_f32 %1, %2
+      //! v2b: %res0 = v_cvt_f16_f32 |%res0_add|
+      //! p_unit_test 0, %res0
+      writeout(0, f2f16(fabs(fadd(a, b))));
+
+      //! v1: %res1_add = v_add_f32 %1, %2
+      //! v2b: %res1 = v_cvt_f16_f32 -%res1_add
+      //! p_unit_test 1, %res1
+      writeout(1, f2f16(fneg(fadd(a, b))));
+
+      //! v2b: %res2_add = v_add_f16 %3, %4
+      //! v1: %res2 = v_cvt_f32_f16 |%res2_add|
+      //! p_unit_test 2, %res2
+      writeout(2, f2f32(fabs(fadd(a16, b16))));
+
+      //! v2b: %res3_add = v_add_f16 %3, %4
+      //! v1: %res3 = v_cvt_f32_f16 -%res3_add
+      //! p_unit_test 3, %res3
+      writeout(3, f2f32(fneg(fadd(a16, b16))));
+
+      /* sdwa */
+      //! v2b: %res4_add = v_fma_mixlo_f16 1.0, %a, %b
+      //! v2b: %res4 = p_extract %res4_add, 0, 8, 0
+      //! p_unit_test 4, %res4
+      writeout(4, ext_ubyte(f2f16(fadd(a, b)), 0));
+
+      //! v1: %res5_mul = v_add_f32 %a, %b dst_sel:uword0 src0_sel:dword src1_sel:dword
+      //! v2b: %res5 = v_cvt_f16_f32 %res5_mul
+      //! p_unit_test 5, %res5
+      writeout(5, f2f16(ext_ushort(fadd(a, b), 0)));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.fma.basic)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v1: %b, v1: %c, v2b: %a16, v2b: %c16 = p_startpgm
+      if (!setup_cs("v1 v1 v1 v2b v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp b = inputs[1];
+      Temp c = inputs[2];
+      Temp a16 = inputs[3];
+      Temp c16 = inputs[4];
+
+      //! v1: %res0 = v_fma_mix_f32 lo(%a16), %b, %c
+      //! p_unit_test 0, %res0
+      writeout(0, fadd(fmul(f2f32(a16), b), c));
+
+      //! v1: %res1 = v_fma_mix_f32 %a, %b, lo(%c16)
+      //! p_unit_test 1, %res1
+      writeout(1, fadd(fmul(a, b), f2f32(c16)));
+
+      /* omod/clamp check */
+      //! v1: %res2_mul = v_fma_mix_f32 lo(%a16), %b, -0
+      //! v1: %res2 = v_add_f32 %res2_mul, %c *2
+      //! p_unit_test 2, %res2
+      writeout(2, bld.vop2(aco_opcode::v_mul_f32, bld.def(v1), Operand::c32(0x40000000), fadd(fmul(f2f32(a16), b), c)));
+
+      /* neg/abs modifiers */
+      //! v1: %res3 = v_fma_mix_f32 -lo(%a16), %b, |lo(%c16)|
+      //! p_unit_test 3, %res3
+      writeout(3, fadd(fmul(fneg(f2f32(a16)), b), fabs(f2f32(c16))));
+
+      //! v1: %res4 = v_fma_mix_f32 |%a|, |%b|, lo(%c16)
+      //! p_unit_test 4, %res4
+      writeout(4, fadd(fabs(fmul(fneg(a), fneg(b))), f2f32(c16)));
+
+      //! v1: %res5 = v_fma_mix_f32 %a, -%b, lo(%c16)
+      //! p_unit_test 5, %res5
+      writeout(5, fadd(fneg(fmul(a, b)), f2f32(c16)));
+
+      //! v1: %res6 = v_fma_mix_f32 |%a|, -|%b|, lo(%c16)
+      //! p_unit_test 6, %res6
+      writeout(6, fadd(fneg(fabs(fmul(fneg(a), fneg(b)))), f2f32(c16)));
+
+      /* output conversions */
+      //! v2b: %res7 = v_fma_mixlo_f16 %a, %b, %c
+      //! p_unit_test 7, %res7
+      writeout(7, f2f16(fadd(fmul(a, b), c)));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.fma.precision)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v1: %b, v1: %c, v2b: %a16, v2b: %b16 = p_startpgm
+      if (!setup_cs("v1 v1 v1 v2b v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp b = inputs[1];
+      Temp c = inputs[2];
+      Temp a16 = inputs[3];
+      Temp b16 = inputs[4];
+
+      /* the optimization is precise for 32-bit on GFX9 */
+      //~gfx9! v1: %res0 = v_fma_mix_f32 lo(%a16), %b, %c
+      //~gfx10! v1: (precise)%res0_tmp = v_fma_mix_f32 lo(%a16), %b, -0
+      //~gfx10! v1: %res0 = v_add_f32 %res0_tmp, %c
+      //! p_unit_test 0, %res0
+      writeout(0, fadd(fmul(f2f32(a16), b, bld.precise()), c));
+
+      //~gfx9! v1: (precise)%res1 = v_fma_mix_f32 lo(%a16), %b, %c
+      //~gfx10! v1: %res1_tmp = v_fma_mix_f32 lo(%a16), %b, -0
+      //~gfx10! v1: (precise)%res1 = v_add_f32 %res1_tmp, %c
+      //! p_unit_test 1, %res1
+      writeout(1, fadd(fmul(f2f32(a16), b), c, bld.precise()));
+
+      /* never promote 16-bit arithmetic to 32-bit */
+      //! v2b: %res2_tmp = v_cvt_f16_f32 %a
+      //! v2b: %res2 = v_add_f16 %res2_tmp, %b16
+      //! p_unit_test 2, %res2
+      writeout(2, fadd(f2f16(a), b16));
+
+      //! v2b: %res3_tmp = v_cvt_f16_f32 %a
+      //! v2b: %res3 = v_mul_f16 %res3_tmp, %b16
+      //! p_unit_test 3, %res3
+      writeout(3, fmul(f2f16(a), b16));
+
+      //! v2b: %res4_tmp = v_mul_f16 %a16, %b16
+      //! v1: %res4 = v_cvt_f32_f16 %res4_tmp
+      //! p_unit_test 4, %res4
+      writeout(4, f2f32(fmul(a16, b16)));
+
+      //! v2b: %res5_tmp = v_add_f16 %a16, %b16
+      //! v1: %res5 = v_cvt_f32_f16 %res5_tmp
+      //! p_unit_test 5, %res5
+      writeout(5, f2f32(fadd(a16, b16)));
+
+      //! v2b: %res6_tmp = v_fma_mixlo_f16 %a, %b, -0
+      //! v2b: %res6 = v_add_f16 %res6_tmp, %a16
+      //! p_unit_test 6, %res6
+      writeout(6, fadd(f2f16(fmul(a, b)), a16));
+
+      //! v2b: %res7_tmp = v_mul_f16 %a16, %b16
+      //! v1: %res7 = v_fma_mix_f32 1.0, lo(%res7_tmp), %c
+      //! p_unit_test 7, %res7
+      writeout(7, fadd(f2f32(fmul(a16, b16)), c));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.clamp)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v2b: %a16 = p_startpgm
+      if (!setup_cs("v1 v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp a16 = inputs[1];
+
+      //! v1: %res0 = v_fma_mix_f32 lo(%a16), %a, -0 clamp
+      //! p_unit_test 0, %res0
+      writeout(0, fsat(fmul(f2f32(a16), a)));
+
+      //! v2b: %res1 = v_fma_mixlo_f16 %a, %a, -0 clamp
+      //! p_unit_test 1, %res1
+      writeout(1, f2f16(fsat(fmul(a, a))));
+
+      //! v2b: %res2 = v_fma_mixlo_f16 %a, %a, -0 clamp
+      //! p_unit_test 2, %res2
+      writeout(2, fsat(f2f16(fmul(a, a))));
+
+      finish_opt_test();
+   }
+END_TEST
+
+BEGIN_TEST(optimize.mad_mix.cast)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      //>> v1: %a, v2b: %a16 = p_startpgm
+      if (!setup_cs("v1 v2b", (amd_gfx_level)i))
+         continue;
+
+      program->blocks[0].fp_mode.denorm16_64 = fp_denorm_flush;
+
+      Temp a = inputs[0];
+      Temp a16 = inputs[1];
+
+      /* The optimizer copy-propagates v2b=p_extract_vector(v1, 0) and p_as_uniform, so the
+       * optimizer has to check compatibility.
+       */
+
+      //! v1: %res0_cvt = v_cvt_f32_f16 %a16
+      //! v2b: %res0 = v_mul_f16 %res0_cvt, %a16
+      //! p_unit_test 0, %res0
+      writeout(0, fmul(u2u16(f2f32(a16)), a16));
+
+      //! v2b: %res1_cvt = v_cvt_f16_f32 %a
+      //! v1: %res1 = v_mul_f32 %res1_cvt, %a
+      //! p_unit_test 1, %res1
+      writeout(1, fmul(bld.as_uniform(f2f16(a)), a));
+
+      //! v2b: %res2_mul = v_mul_f16 %a16, %a16
+      //! v2b: %res2 = v_cvt_f16_f32 %res2_mul
+      //! p_unit_test 2, %res2
+      writeout(2, f2f16(bld.as_uniform(fmul(a16, a16))));
+
+      //! v1: %res3_mul = v_mul_f32 %a, %a
+      //! v1: %res3 = v_cvt_f32_f16 %res3_mul
+      //! p_unit_test 3, %res3
+      writeout(3, f2f32(u2u16(fmul(a, a))));
+
+      //! v1: %res4_mul = v_fma_mix_f32 lo(%a16), %a, -0
+      //! v2b: %res4 = v_med3_f16 0, 1.0, %res4_mul
+      //! p_unit_test 4, %res4
+      writeout(4, fsat(u2u16(fmul(f2f32(a16), a))));
+
+      //! v2b: %res5_mul = v_fma_mixlo_f16 %a, %a, -0
+      //! v1: %res5 = v_med3_f32 0, 1.0, %res5_mul
+      //! p_unit_test 5, %res5
+      writeout(5, fsat(bld.as_uniform(f2f16(fmul(a, a)))));
+
+      //! v1: %res6_mul = v_mul_f32 %a, %a
+      //! v1: %res6 = v_fma_mix_f32 1.0, lo(%res6_mul), %a
+      //! p_unit_test 6, %res6
+      writeout(6, fadd(f2f32(u2u16(fmul(a, a))), a));
+
+      //! v2b: %res7_mul = v_mul_f16 %a16, %a16
+      //! v1: %res7 = v_fma_mix_f32 1.0, %res7_mul, lo(%a16)
+      //! p_unit_test 7, %res7
+      writeout(7, fadd(bld.as_uniform(fmul(a16, a16)), f2f32(a16)));
+
+      /* opsel_hi should be obtained from the original opcode, not the operand regclass */
+      //! v1: %res8 = v_fma_mix_f32 lo(%a16), %a16, -0
+      //! p_unit_test 8, %res8
+      writeout(8, fmul(f2f32(a16), a16));
+
+      finish_opt_test();
+   }
+END_TEST
+
+static void vop3p_constant(unsigned *idx, aco_opcode op, const char *swizzle, uint32_t val)
+{
+   uint32_t halves[2] = {val & 0xffff, val >> 16};
+   uint32_t expected = halves[swizzle[0] - 'x'] | (halves[swizzle[1] - 'x'] << 16);
+   fprintf(output, "Expected for %u: 0x%.8x / %u\n", *idx, expected, expected);
+
+   unsigned opsel_lo = swizzle[0] == 'x' ? 0x0 : 0x1;
+   unsigned opsel_hi = swizzle[1] == 'x' ? 0x2 : 0x3;
+   writeout((*idx)++, bld.vop3p(op, bld.def(v1), bld.copy(bld.def(v1), Operand::c32(val)),
+                                inputs[0], opsel_lo, opsel_hi));
+}
+
+BEGIN_TEST(optimize.vop3p_constants)
+   for (aco_opcode op : {aco_opcode::v_pk_add_f16, aco_opcode::v_pk_add_u16}) {
+      for (const char *swizzle : {"xx", "yy", "xy", "yx"}) {
+         char variant[16];
+         strcpy(variant, op == aco_opcode::v_pk_add_f16 ? "_f16" : "_u16");
+         strcat(variant, "_");
+         strcat(variant, swizzle);
+
+         //; for i in range(36):
+         //;    insert_pattern('Expected for %u: $_ / #expected%u' % (i, i))
+
+         //>> v1: %a = p_startpgm
+         if (!setup_cs("v1", GFX10_3, CHIP_UNKNOWN, variant))
+            continue;
+
+         //; opcode = 'v_pk_add_u16' if 'u16' in variant else 'v_pk_add_f16'
+         //; for i in range(36):
+         //;    insert_pattern('v1: %%res%u = %s $got%u %%a' % (i, opcode, i))
+         //;    insert_pattern('p_unit_test %u, %%res%u' % (i, i))
+         //! s_endpgm
+
+         //; def parse_op(op):
+         //;    is_int = opcode == 'v_pk_add_u16'
+         //;    op = op.rstrip(',')
+         //;
+         //;    mods = lambda v: v
+         //;    if op.endswith('*[1,-1]'):
+         //;       mods = lambda v: v ^ 0x80000000
+         //;       assert(not is_int)
+         //;    elif op.endswith('*[-1,1]'):
+         //;       mods = lambda v: v ^ 0x00008000
+         //;       assert(not is_int)
+         //;    op = op.split('*')[0]
+         //;
+         //;    swizzle = lambda v: v
+         //;    if op.endswith('.xx'):
+         //;       swizzle = lambda v: ((v & 0xffff) | (v << 16)) & 0xffffffff;
+         //;    elif op.endswith('.yy'):
+         //;       swizzle = lambda v: (v >> 16) | (v & 0xffff0000);
+         //;    elif op.endswith('.yx'):
+         //;       swizzle = lambda v: ((v >> 16) | (v << 16)) & 0xffffffff;
+         //;    op = op.rstrip('xy.')
+         //;
+         //;    val = None
+         //;    if op.startswith('0x'):
+         //;       val = int(op[2:], 16)
+         //;    elif op == '-1.0':
+         //;       val = 0xbf800000 if is_int else 0xbC00
+         //;    elif op == '1.0':
+         //;       val = 0x3f800000 if is_int else 0x3c00
+         //;    else:
+         //;       val = int(op) & 0xffffffff
+         //;
+         //;    return mods(swizzle(val))
+
+         //; # Check correctness
+         //; for i in range(36):
+         //;    expected = globals()['expected%u' % i]
+         //;    got = globals()['got%u' % i]
+         //;    got_parsed = parse_op(got)
+         //;    if got_parsed != expected:
+         //;       raise Exception('Check %u failed: expected 0x%.8x, got 0x%.8x ("%s")' % (i, expected, got_parsed, got))
+
+         //; # Check that all literals are ones that cannot be encoded as inline constants
+         //; allowed_literals = [0x00004242, 0x0000fffe, 0x00308030, 0x0030ffff, 0x3c00ffff,
+         //;                     0x42420000, 0x42424242, 0x4242c242, 0x4242ffff, 0x7ffefffe,
+         //;                     0x80300030, 0xbeefdead, 0xc2424242, 0xdeadbeef, 0xfffe0000,
+         //;                     0xfffe7ffe, 0xffff0030, 0xffff3c00, 0xffff4242]
+         //; if opcode == 'v_pk_add_u16':
+         //;    allowed_literals.extend([0x00003c00, 0x3c000000, 0x3c003c00, 0x3c00bc00, 0xbc003c00])
+         //; else:
+         //;    allowed_literals.extend([0x00003f80, 0x3f800000])
+         //;
+         //; for i in range(36):
+         //;    got = globals()['got%u' % i]
+         //;    if not got.startswith('0x'):
+         //;       continue;
+         //;    got = int(got[2:].rstrip(',').split('*')[0].split('.')[0], 16)
+         //;    if got not in allowed_literals:
+         //;       raise Exception('Literal check %u failed: 0x%.8x not in allowed literals' % (i, got))
+
+         unsigned idx = 0;
+         for (uint32_t constant : {0x3C00, 0x0030, 0xfffe, 0x4242}) {
+            vop3p_constant(&idx, op, swizzle, constant);
+            vop3p_constant(&idx, op, swizzle, constant | 0xffff0000);
+            vop3p_constant(&idx, op, swizzle, constant | (constant << 16));
+            vop3p_constant(&idx, op, swizzle, constant << 16);
+            vop3p_constant(&idx, op, swizzle, (constant << 16) | 0x0000ffff);
+            vop3p_constant(&idx, op, swizzle, constant | ((constant ^ 0x8000) << 16));
+            vop3p_constant(&idx, op, swizzle, (constant ^ 0x8000) | (constant << 16));
+         }
+
+         for (uint32_t constant : {0x3f800000u, 0xfffffffeu, 0x00000030u, 0xdeadbeefu}) {
+            uint32_t lo = constant & 0xffff;
+            uint32_t hi = constant >> 16;
+            vop3p_constant(&idx, op, swizzle, constant);
+            vop3p_constant(&idx, op, swizzle, hi | (lo << 16));
+         }
+
+         finish_opt_test();
+      }
+   }
+END_TEST

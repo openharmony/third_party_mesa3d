@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Raspberry Pi
+ * Copyright © 2021 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -23,14 +23,13 @@
 
 #include "v3dv_private.h"
 #include "broadcom/common/v3d_macros.h"
+#include "broadcom/common/v3d_util.h"
 #include "broadcom/cle/v3dx_pack.h"
 #include "broadcom/compiler/v3d_compiler.h"
 
 #include "util/half_float.h"
 #include "vulkan/util/vk_format.h"
 #include "util/u_pack_color.h"
-
-#include "vk_format_info.h"
 
 void
 v3dX(job_emit_binning_flush)(struct v3dv_job *job)
@@ -55,11 +54,13 @@ v3dX(job_emit_binning_prolog)(struct v3dv_job *job,
       config.number_of_layers = layers;
    }
 
+   assert(!tiling->double_buffer || !tiling->msaa);
    cl_emit(&job->bcl, TILE_BINNING_MODE_CFG, config) {
       config.width_in_pixels = tiling->width;
       config.height_in_pixels = tiling->height;
       config.number_of_render_targets = MAX2(tiling->render_target_count, 1);
       config.multisample_mode_4x = tiling->msaa;
+      config.double_buffer_in_non_ms_mode = tiling->double_buffer;
       config.maximum_bpp_of_all_render_targets = tiling->internal_bpp;
    }
 
@@ -117,7 +118,22 @@ cmd_buffer_render_pass_emit_load(struct v3dv_cmd_buffer *cmd_buffer,
       load.address = v3dv_cl_address(image->mem->bo, layer_offset);
 
       load.input_image_format = iview->format->rt_type;
+
+      /* If we create an image view with only the stencil format, we
+       * re-interpret the format as RGBA8_UINT, as it is want we want in
+       * general (see CreateImageView).
+       *
+       * However, when we are loading/storing tiles from the ZSTENCIL tile
+       * buffer, we need to use the underlying DS format.
+       */
+      if (buffer == ZSTENCIL &&
+          iview->format->rt_type == V3D_OUTPUT_IMAGE_FORMAT_RGBA8UI) {
+         assert(image->format->rt_type == V3D_OUTPUT_IMAGE_FORMAT_D24S8);
+         load.input_image_format = image->format->rt_type;
+      }
+
       load.r_b_swap = iview->swap_rb;
+      load.channel_reverse = iview->channel_reverse;
       load.memory_format = slice->tiling;
 
       if (slice->tiling == V3D_TILING_UIF_NO_XOR ||
@@ -185,7 +201,6 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
                                   uint32_t layer)
 {
    const struct v3dv_cmd_buffer_state *state = &cmd_buffer->state;
-   const struct v3dv_framebuffer *framebuffer = state->framebuffer;
    const struct v3dv_render_pass *pass = state->pass;
    const struct v3dv_subpass *subpass = &pass->subpasses[state->subpass_idx];
 
@@ -227,7 +242,8 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
                                          first_subpass,
                                          attachment->desc.loadOp);
       if (needs_load) {
-         struct v3dv_image_view *iview = framebuffer->attachments[attachment_idx];
+         struct v3dv_image_view *iview =
+            state->attachments[attachment_idx].image_view;
          cmd_buffer_render_pass_emit_load(cmd_buffer, cl, iview,
                                           layer, RENDER_TARGET_0 + i);
       }
@@ -259,7 +275,7 @@ cmd_buffer_render_pass_emit_loads(struct v3dv_cmd_buffer *cmd_buffer,
 
       if (needs_depth_load || needs_stencil_load) {
          struct v3dv_image_view *iview =
-            framebuffer->attachments[ds_attachment_idx];
+            state->attachments[ds_attachment_idx].image_view;
          /* From the Vulkan spec:
           *
           *   "When an image view of a depth/stencil image is used as a
@@ -290,7 +306,7 @@ cmd_buffer_render_pass_emit_store(struct v3dv_cmd_buffer *cmd_buffer,
                                   bool is_multisample_resolve)
 {
    const struct v3dv_image_view *iview =
-      cmd_buffer->state.framebuffer->attachments[attachment_idx];
+      cmd_buffer->state.attachments[attachment_idx].image_view;
    const struct v3dv_image *image = (struct v3dv_image *) iview->vk.image;
    const struct v3d_resource_slice *slice =
       &image->slices[iview->vk.base_mip_level];
@@ -304,7 +320,22 @@ cmd_buffer_render_pass_emit_store(struct v3dv_cmd_buffer *cmd_buffer,
       store.clear_buffer_being_stored = clear;
 
       store.output_image_format = iview->format->rt_type;
+
+      /* If we create an image view with only the stencil format, we
+       * re-interpret the format as RGBA8_UINT, as it is want we want in
+       * general (see CreateImageView).
+       *
+       * However, when we are loading/storing tiles from the ZSTENCIL tile
+       * buffer, we need to use the underlying DS format.
+       */
+      if (buffer == ZSTENCIL &&
+          iview->format->rt_type == V3D_OUTPUT_IMAGE_FORMAT_RGBA8UI) {
+         assert(image->format->rt_type == V3D_OUTPUT_IMAGE_FORMAT_D24S8);
+         store.output_image_format = image->format->rt_type;
+      }
+
       store.r_b_swap = iview->swap_rb;
+      store.channel_reverse = iview->channel_reverse;
       store.memory_format = slice->tiling;
 
       if (slice->tiling == V3D_TILING_UIF_NO_XOR ||
@@ -471,6 +502,31 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
                            ds_last_subpass,
                            ds_attachment->desc.stencilStoreOp);
 
+      /* If we have a resolve, handle it before storing the tile */
+      const struct v3dv_cmd_buffer_attachment_state *ds_att_state =
+         &state->attachments[ds_attachment_idx];
+      if (ds_att_state->use_tlb_resolve) {
+         assert(ds_att_state->has_resolve);
+         assert(subpass->resolve_depth || subpass->resolve_stencil);
+         const uint32_t resolve_attachment_idx =
+            subpass->ds_resolve_attachment.attachment;
+         assert(resolve_attachment_idx != VK_ATTACHMENT_UNUSED);
+
+         const uint32_t zs_buffer =
+            v3dv_zs_buffer(subpass->resolve_depth, subpass->resolve_stencil);
+         cmd_buffer_render_pass_emit_store(cmd_buffer, cl,
+                                           resolve_attachment_idx, layer,
+                                           zs_buffer,
+                                           false, false);
+         has_stores = true;
+      } else if (ds_att_state->has_resolve) {
+         /* If we can't use the TLB to implement the resolve we will need to
+          * store the attachment so we can implement it later using a blit.
+          */
+         needs_depth_store = subpass->resolve_depth;
+         needs_stencil_store = subpass->resolve_stencil;
+      }
+
       /* GFXH-1689: The per-buffer store command's clear buffer bit is broken
        * for depth/stencil.
        *
@@ -547,15 +603,16 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
        * color attachment store below, since the clear happens after the
        * store is completed.
        *
-       * If the attachment doesn't support TLB resolves then we will have to
-       * fallback to doing the resolve in a shader separately after this
-       * job, so we will need to store the multisampled sttachment even if that
-       * wansn't requested by the client.
+       * If the attachment doesn't support TLB resolves (or the render area
+       * is not aligned to tile boundaries) then we will have to fallback to
+       * doing the resolve in a shader separately after this job, so we will
+       * need to store the multisampled attachment even if that wasn't
+       * requested by the client.
        */
-      const bool needs_resolve =
-         subpass->resolve_attachments &&
-         subpass->resolve_attachments[i].attachment != VK_ATTACHMENT_UNUSED;
-      if (needs_resolve && attachment->use_tlb_resolve) {
+      const struct v3dv_cmd_buffer_attachment_state *att_state =
+         &state->attachments[attachment_idx];
+      if (att_state->use_tlb_resolve) {
+         assert(att_state->has_resolve);
          const uint32_t resolve_attachment_idx =
             subpass->resolve_attachments[i].attachment;
          cmd_buffer_render_pass_emit_store(cmd_buffer, cl,
@@ -563,7 +620,7 @@ cmd_buffer_render_pass_emit_stores(struct v3dv_cmd_buffer *cmd_buffer,
                                            RENDER_TARGET_0 + i,
                                            false, true);
          has_stores = true;
-      } else if (needs_resolve) {
+      } else if (att_state->has_resolve) {
          needs_store = true;
       }
 
@@ -698,11 +755,8 @@ set_rcl_early_z_config(struct v3dv_job *job,
                        bool *early_z_disable,
                        uint32_t *early_z_test_and_update_direction)
 {
-   /* If this is true then we have not emitted any draw calls in this job
-    * and we don't get any benefits form early Z.
-    */
-   if (!job->decided_global_ez_enable) {
-      assert(job->draw_count == 0);
+   /* Disable if none of the draw calls in this job enabled EZ */
+   if (!job->has_ez_draws) {
       *early_z_disable = true;
       return;
    }
@@ -738,7 +792,7 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
     * buffer.
     */
    if (!framebuffer) {
-      assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
       return;
    }
 
@@ -762,16 +816,18 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
     */
    bool do_early_zs_clear = false;
    const uint32_t ds_attachment_idx = subpass->ds_attachment.attachment;
+   assert(!tiling->msaa || !tiling->double_buffer);
    cl_emit(rcl, TILE_RENDERING_MODE_CFG_COMMON, config) {
       config.image_width_pixels = framebuffer->width;
       config.image_height_pixels = framebuffer->height;
       config.number_of_render_targets = MAX2(subpass->color_count, 1);
       config.multisample_mode_4x = tiling->msaa;
+      config.double_buffer_in_non_ms_mode = tiling->double_buffer;
       config.maximum_bpp_of_all_render_targets = tiling->internal_bpp;
 
       if (ds_attachment_idx != VK_ATTACHMENT_UNUSED) {
          const struct v3dv_image_view *iview =
-            framebuffer->attachments[ds_attachment_idx];
+            state->attachments[ds_attachment_idx].image_view;
          config.internal_depth_type = iview->internal_type;
 
          set_rcl_early_z_config(job,
@@ -805,7 +861,8 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
             check_needs_store(state,
                               ds_aspects & VK_IMAGE_ASPECT_DEPTH_BIT,
                               ds_attachment->last_subpass,
-                              ds_attachment->desc.storeOp);
+                              ds_attachment->desc.storeOp) ||
+                              subpass->resolve_depth;
 
          do_early_zs_clear = needs_depth_clear && !needs_depth_store;
          if (do_early_zs_clear &&
@@ -820,7 +877,8 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
                check_needs_store(state,
                                  ds_aspects & VK_IMAGE_ASPECT_STENCIL_BIT,
                                  ds_attachment->last_subpass,
-                                 ds_attachment->desc.stencilStoreOp);
+                                 ds_attachment->desc.stencilStoreOp) ||
+                                 subpass->resolve_stencil;
 
             do_early_zs_clear = !needs_stencil_load && !needs_stencil_store;
          }
@@ -843,7 +901,7 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
          continue;
 
       struct v3dv_image_view *iview =
-         state->framebuffer->attachments[attachment_idx];
+         state->attachments[attachment_idx].image_view;
 
       const struct v3dv_image *image = (struct v3dv_image *) iview->vk.image;
       const struct v3d_resource_slice *slice =
@@ -944,12 +1002,6 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
          tiling->frame_height_in_supertiles;
    }
 
-   /* Start by clearing the tile buffer. */
-   cl_emit(rcl, TILE_COORDINATES, coords) {
-      coords.tile_column_number = 0;
-      coords.tile_row_number = 0;
-   }
-
    /* Emit an initial clear of the tile buffers. This is necessary
     * for any buffers that should be cleared (since clearing
     * normally happens at the *end* of the generic tile list), but
@@ -964,13 +1016,13 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
     * changes on V3D 3.x, and 2 dummy stores on 4.x.
     */
    for (int i = 0; i < 2; i++) {
-      if (i > 0)
-         cl_emit(rcl, TILE_COORDINATES, coords);
+      cl_emit(rcl, TILE_COORDINATES, coords);
       cl_emit(rcl, END_OF_LOADS, end);
       cl_emit(rcl, STORE_TILE_BUFFER_GENERAL, store) {
          store.buffer_to_store = NONE;
       }
-      if (i == 0 && cmd_buffer->state.tile_aligned_render_area) {
+      if (cmd_buffer->state.tile_aligned_render_area &&
+          (i == 0 || v3dv_do_double_initial_tile_clear(tiling))) {
          cl_emit(rcl, CLEAR_TILE_BUFFERS, clear) {
             clear.clear_z_stencil_buffer = !job->early_zs_clear;
             clear.clear_all_render_targets = true;
@@ -1346,7 +1398,10 @@ v3dX(cmd_buffer_emit_varyings_state)(struct v3dv_cmd_buffer *cmd_buffer)
    }
 }
 
-static void
+/* Updates job early Z state tracking. Returns False if EZ must be disabled
+ * for the current draw call.
+ */
+static bool
 job_update_ez_state(struct v3dv_job *job,
                     struct v3dv_pipeline *pipeline,
                     struct v3dv_cmd_buffer *cmd_buffer)
@@ -1360,8 +1415,14 @@ job_update_ez_state(struct v3dv_job *job,
     */
    if (job->first_ez_state == V3D_EZ_DISABLED) {
       assert(job->ez_state == V3D_EZ_DISABLED);
-      return;
+      return false;
    }
+
+   /* If ez_state is V3D_EZ_DISABLED it means that we have already decided
+    * that EZ must be disabled for the remaining of the frame.
+    */
+   if (job->ez_state == V3D_EZ_DISABLED)
+      return false;
 
    /* This is part of the pre draw call handling, so we should be inside a
     * render pass.
@@ -1382,7 +1443,7 @@ job_update_ez_state(struct v3dv_job *job,
       if (subpass->ds_attachment.attachment == VK_ATTACHMENT_UNUSED) {
          job->first_ez_state = V3D_EZ_DISABLED;
          job->ez_state = V3D_EZ_DISABLED;
-         return;
+         return false;
       }
 
       /* GFXH-1918: the early-z buffer may load incorrect depth values
@@ -1406,12 +1467,12 @@ job_update_ez_state(struct v3dv_job *job,
          struct v3dv_framebuffer *fb = state->framebuffer;
 
          if (!fb) {
-            assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+            assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
             perf_debug("Loading depth aspect in a secondary command buffer "
                        "without framebuffer info disables early-z tests.\n");
             job->first_ez_state = V3D_EZ_DISABLED;
             job->ez_state = V3D_EZ_DISABLED;
-            return;
+            return false;
          }
 
          if (((fb->width % 2) != 0 || (fb->height % 2) != 0)) {
@@ -1419,7 +1480,7 @@ job_update_ez_state(struct v3dv_job *job,
                        "or height disables early-Z tests.\n");
             job->first_ez_state = V3D_EZ_DISABLED;
             job->ez_state = V3D_EZ_DISABLED;
-            return;
+            return false;
          }
       }
    }
@@ -1427,15 +1488,8 @@ job_update_ez_state(struct v3dv_job *job,
    /* Otherwise, we can decide to selectively enable or disable EZ for draw
     * calls using the CFG_BITS packet based on the bound pipeline state.
     */
-
-   /* If the FS writes Z, then it may update against the chosen EZ direction */
-   struct v3dv_shader_variant *fs_variant =
-      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
-   if (fs_variant->prog_data.fs->writes_z) {
-      job->ez_state = V3D_EZ_DISABLED;
-      return;
-   }
-
+   bool disable_ez = false;
+   bool incompatible_test = false;
    switch (pipeline->ez_state) {
    case V3D_EZ_UNDECIDED:
       /* If the pipeline didn't pick a direction but didn't disable, then go
@@ -1449,24 +1503,38 @@ job_update_ez_state(struct v3dv_job *job,
       /* If the pipeline picked a direction, then it needs to match the current
        * direction if we've decided on one.
        */
-      if (job->ez_state == V3D_EZ_UNDECIDED)
+      if (job->ez_state == V3D_EZ_UNDECIDED) {
          job->ez_state = pipeline->ez_state;
-      else if (job->ez_state != pipeline->ez_state)
-         job->ez_state = V3D_EZ_DISABLED;
+      } else if (job->ez_state != pipeline->ez_state) {
+         disable_ez = true;
+         incompatible_test = true;
+      }
       break;
 
    case V3D_EZ_DISABLED:
-      /* If the pipeline disables EZ because of a bad Z func or stencil
-       * operation, then we can't do any more EZ in this frame.
-       */
-      job->ez_state = V3D_EZ_DISABLED;
+         disable_ez = true;
+         incompatible_test = pipeline->incompatible_ez_test;
       break;
    }
 
-   if (job->first_ez_state == V3D_EZ_UNDECIDED &&
-       job->ez_state != V3D_EZ_DISABLED) {
+   if (job->first_ez_state == V3D_EZ_UNDECIDED && !disable_ez) {
+      assert(job->ez_state != V3D_EZ_DISABLED);
       job->first_ez_state = job->ez_state;
    }
+
+   /* If we had to disable EZ because of an incompatible test direction and
+    * and the pipeline writes depth then we need to disable EZ for the rest of
+    * the frame.
+    */
+   if (incompatible_test && pipeline->z_updates_enable) {
+      assert(disable_ez);
+      job->ez_state = V3D_EZ_DISABLED;
+   }
+
+   if (!disable_ez)
+      job->has_ez_draws = true;
+
+   return !disable_ez;
 }
 
 void
@@ -1478,13 +1546,13 @@ v3dX(cmd_buffer_emit_configuration_bits)(struct v3dv_cmd_buffer *cmd_buffer)
    struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
    assert(pipeline);
 
-   job_update_ez_state(job, pipeline, cmd_buffer);
+   bool enable_ez = job_update_ez_state(job, pipeline, cmd_buffer);
 
    v3dv_cl_ensure_space_with_branch(&job->bcl, cl_packet_length(CFG_BITS));
    v3dv_return_if_oom(cmd_buffer, NULL);
 
    cl_emit_with_prepacked(&job->bcl, CFG_BITS, pipeline->cfg_bits, config) {
-      config.early_z_enable = job->ez_state != V3D_EZ_DISABLED;
+      config.early_z_enable = enable_ez;
       config.early_z_updates_enable = config.early_z_enable &&
          pipeline->z_updates_enable;
    }
@@ -1523,7 +1591,8 @@ cmd_buffer_subpass_split_for_barrier(struct v3dv_cmd_buffer *cmd_buffer,
    if (!job)
       return NULL;
 
-   job->serialize = true;
+   /* FIXME: we can do better than all barriers */
+   job->serialize = V3DV_BARRIER_ALL;
    job->needs_bcl_sync = is_bcl_barrier;
    return job;
 }
@@ -1575,8 +1644,7 @@ v3dX(cmd_buffer_execute_inside_pass)(struct v3dv_cmd_buffer *primary,
     * pipelines used by the secondaries do, we need to re-start the primary
     * job to enable MSAA. See cmd_buffer_restart_job_for_msaa_if_needed.
     */
-   bool pending_barrier = false;
-   bool pending_bcl_barrier = false;
+   struct v3dv_barrier_state pending_barrier = { 0 };
    for (uint32_t i = 0; i < cmd_buffer_count; i++) {
       V3DV_FROM_HANDLE(v3dv_cmd_buffer, secondary, cmd_buffers[i]);
 
@@ -1610,9 +1678,13 @@ v3dX(cmd_buffer_execute_inside_pass)(struct v3dv_cmd_buffer *primary,
              * branch?
              */
             struct v3dv_job *primary_job = primary->state.job;
-            if (!primary_job || secondary_job->serialize || pending_barrier) {
+            if (!primary_job || secondary_job->serialize ||
+                pending_barrier.dst_mask) {
                const bool needs_bcl_barrier =
-                  secondary_job->needs_bcl_sync || pending_bcl_barrier;
+                  secondary_job->needs_bcl_sync ||
+                  pending_barrier.bcl_buffer_access ||
+                  pending_barrier.bcl_image_access;
+
                primary_job =
                   cmd_buffer_subpass_split_for_barrier(primary,
                                                        needs_bcl_barrier);
@@ -1652,15 +1724,21 @@ v3dX(cmd_buffer_execute_inside_pass)(struct v3dv_cmd_buffer *primary,
              */
             v3dv_cmd_buffer_finish_job(primary);
             v3dv_job_clone_in_cmd_buffer(secondary_job, primary);
-            if (pending_barrier) {
-               secondary_job->serialize = true;
-               if (pending_bcl_barrier)
+            if (pending_barrier.dst_mask) {
+               /* FIXME: do the same we do for primaries and only choose the
+                * relevant src masks.
+                */
+               secondary_job->serialize = pending_barrier.src_mask_graphics |
+                                          pending_barrier.src_mask_transfer |
+                                          pending_barrier.src_mask_compute;
+               if (pending_barrier.bcl_buffer_access ||
+                   pending_barrier.bcl_image_access) {
                   secondary_job->needs_bcl_sync = true;
+               }
             }
          }
 
-         pending_barrier = false;
-         pending_bcl_barrier = false;
+         memset(&pending_barrier, 0, sizeof(pending_barrier));
       }
 
       /* If the secondary has recorded any vkCmdEndQuery commands, we need to
@@ -1672,14 +1750,16 @@ v3dX(cmd_buffer_execute_inside_pass)(struct v3dv_cmd_buffer *primary,
       /* If this secondary had any pending barrier state we will need that
        * barrier state consumed with whatever comes next in the primary.
        */
-      assert(secondary->state.has_barrier || !secondary->state.has_bcl_barrier);
-      pending_barrier = secondary->state.has_barrier;
-      pending_bcl_barrier = secondary->state.has_bcl_barrier;
+      assert(secondary->state.barrier.dst_mask ||
+             (!secondary->state.barrier.bcl_buffer_access &&
+              !secondary->state.barrier.bcl_image_access));
+
+      pending_barrier = secondary->state.barrier;
    }
 
-   if (pending_barrier) {
-      primary->state.has_barrier = true;
-      primary->state.has_bcl_barrier |= pending_bcl_barrier;
+   if (pending_barrier.dst_mask) {
+      v3dv_cmd_buffer_merge_barrier_state(&primary->state.barrier,
+                                          &pending_barrier);
    }
 }
 
@@ -1715,14 +1795,14 @@ emit_gs_shader_state_record(struct v3dv_job *job,
 }
 
 static uint8_t
-v3d_gs_output_primitive(uint32_t prim_type)
+v3d_gs_output_primitive(enum shader_prim prim_type)
 {
     switch (prim_type) {
-    case GL_POINTS:
+    case SHADER_PRIM_POINTS:
         return GEOMETRY_SHADER_POINTS;
-    case GL_LINE_STRIP:
+    case SHADER_PRIM_LINE_STRIP:
         return GEOMETRY_SHADER_LINE_STRIP;
-    case GL_TRIANGLE_STRIP:
+    case SHADER_PRIM_TRIANGLE_STRIP:
         return GEOMETRY_SHADER_TRI_STRIP;
     default:
         unreachable("Unsupported primitive type");
@@ -2027,36 +2107,16 @@ v3dX(cmd_buffer_emit_gl_shader_state)(struct v3dv_cmd_buffer *cmd_buffer)
       }
    }
 
+   /* Clearing push constants and descriptor sets for all stages is not quite
+    * correct (some shader stages may not be used at all or they may not be
+    * consuming push constants), however this is not relevant because if we
+    * bind a different pipeline we always have to rebuild the uniform streams.
+    */
    cmd_buffer->state.dirty &= ~(V3DV_CMD_DIRTY_VERTEX_BUFFER |
                                 V3DV_CMD_DIRTY_DESCRIPTOR_SETS |
                                 V3DV_CMD_DIRTY_PUSH_CONSTANTS);
    cmd_buffer->state.dirty_descriptor_stages &= ~VK_SHADER_STAGE_ALL_GRAPHICS;
    cmd_buffer->state.dirty_push_constants_stages &= ~VK_SHADER_STAGE_ALL_GRAPHICS;
-}
-
-/* FIXME: C&P from v3dx_draw. Refactor to common place? */
-static uint32_t
-v3d_hw_prim_type(enum pipe_prim_type prim_type)
-{
-   switch (prim_type) {
-   case PIPE_PRIM_POINTS:
-   case PIPE_PRIM_LINES:
-   case PIPE_PRIM_LINE_LOOP:
-   case PIPE_PRIM_LINE_STRIP:
-   case PIPE_PRIM_TRIANGLES:
-   case PIPE_PRIM_TRIANGLE_STRIP:
-   case PIPE_PRIM_TRIANGLE_FAN:
-      return prim_type;
-
-   case PIPE_PRIM_LINES_ADJACENCY:
-   case PIPE_PRIM_LINE_STRIP_ADJACENCY:
-   case PIPE_PRIM_TRIANGLES_ADJACENCY:
-   case PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY:
-      return 8 + (prim_type - PIPE_PRIM_LINES_ADJACENCY);
-
-   default:
-      unreachable("Unsupported primitive type");
-   }
 }
 
 void
@@ -2265,16 +2325,16 @@ v3dX(cmd_buffer_render_pass_setup_render_target)(struct v3dv_cmd_buffer *cmd_buf
    if (attachment_idx == VK_ATTACHMENT_UNUSED)
       return;
 
-   const struct v3dv_framebuffer *framebuffer = state->framebuffer;
-   assert(attachment_idx < framebuffer->attachment_count);
-   struct v3dv_image_view *iview = framebuffer->attachments[attachment_idx];
-   assert(iview->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT);
+   assert(attachment_idx < state->framebuffer->attachment_count &&
+          attachment_idx < state->attachment_alloc_count);
+   struct v3dv_image_view *iview = state->attachments[attachment_idx].image_view;
+   assert(vk_format_is_color(iview->vk.format));
 
    *rt_bpp = iview->internal_bpp;
    *rt_type = iview->internal_type;
-   if (vk_format_is_int(iview->vk.format))
+   if (vk_format_is_int(iview->vk.view_format))
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_INT;
-   else if (vk_format_is_srgb(iview->vk.format))
+   else if (vk_format_is_srgb(iview->vk.view_format))
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_NORM;
    else
       *rt_clamp = V3D_RENDER_TARGET_CLAMP_NONE;

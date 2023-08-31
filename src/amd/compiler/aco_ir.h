@@ -27,7 +27,8 @@
 
 #include "aco_opcodes.h"
 #include "aco_util.h"
-
+#include "aco_interface.h"
+#include "aco_shader_info.h"
 #include "vulkan/radv_shader.h"
 
 #include "nir.h"
@@ -37,8 +38,6 @@
 #include <vector>
 
 struct radv_shader_args;
-struct radv_shader_info;
-struct radv_vs_prolog_key;
 
 namespace aco {
 
@@ -102,8 +101,9 @@ enum class Format : std::uint16_t {
    VOP3 = 1 << 11,
    /* Vector Parameter Interpolation Format */
    VINTRP = 1 << 12,
-   DPP = 1 << 13,
+   DPP16 = 1 << 13,
    SDWA = 1 << 14,
+   DPP8 = 1 << 15,
 };
 
 enum class instr_class : uint8_t {
@@ -137,9 +137,10 @@ enum storage_class : uint8_t {
    storage_image = 0x4,
    storage_shared = 0x8,       /* or TCS output */
    storage_vmem_output = 0x10, /* GS or TCS output stores using VMEM */
-   storage_scratch = 0x20,
-   storage_vgpr_spill = 0x40,
-   storage_count = 8,
+   storage_task_payload = 0x20,/* Task-Mesh payload */
+   storage_scratch = 0x40,
+   storage_vgpr_spill = 0x80,
+   storage_count = 8, /* not counting storage_none */
 };
 
 enum memory_semantics : uint8_t {
@@ -269,9 +270,9 @@ struct wait_imm {
 
    wait_imm();
    wait_imm(uint16_t vm_, uint16_t exp_, uint16_t lgkm_, uint16_t vs_);
-   wait_imm(enum chip_class chip, uint16_t packed);
+   wait_imm(enum amd_gfx_level chip, uint16_t packed);
 
-   uint16_t pack(enum chip_class chip) const;
+   uint16_t pack(enum amd_gfx_level chip) const;
 
    bool combine(const wait_imm& other);
 
@@ -294,7 +295,7 @@ asSDWA(Format format)
 constexpr Format
 withoutDPP(Format format)
 {
-   return (Format)((uint32_t)format & ~(uint32_t)Format::DPP);
+   return (Format)((uint32_t)format & ~((uint32_t)Format::DPP16 | (uint32_t)Format::DPP8));
 }
 
 enum class RegType {
@@ -450,6 +451,8 @@ struct PhysReg {
 
 /* helper expressions for special registers */
 static constexpr PhysReg m0{124};
+static constexpr PhysReg flat_scr_lo{102}; /* GFX8-GFX9, encoded differently on GFX6-7 */
+static constexpr PhysReg flat_scr_hi{103}; /* GFX8-GFX9, encoded differently on GFX6-7 */
 static constexpr PhysReg vcc{106};
 static constexpr PhysReg vcc_hi{107};
 static constexpr PhysReg tba{108}; /* GFX6-GFX8 */
@@ -643,6 +646,17 @@ public:
       return op;
    }
 
+   static Operand literal32(uint32_t v) noexcept
+   {
+      Operand op;
+      op.control_ = 0;
+      op.data_.i = v;
+      op.isConstant_ = true;
+      op.constSize = 2;
+      op.setFixed(PhysReg{255});
+      return op;
+   }
+
    explicit Operand(RegClass type) noexcept
    {
       isUndef_ = true;
@@ -667,10 +681,10 @@ public:
       return Operand::c8(0);
    }
 
-   /* This is useful over the constructors when you want to take a chip class
+   /* This is useful over the constructors when you want to take a gfx level
     * for 1/2 PI or an unknown operand size.
     */
-   static Operand get_const(enum chip_class chip, uint64_t val, unsigned bytes)
+   static Operand get_const(enum amd_gfx_level chip, uint64_t val, unsigned bytes)
    {
       if (val == 0x3e22f983 && bytes == 4 && chip >= GFX8) {
          /* 1/2 PI can be an inline constant on GFX8+ */
@@ -794,6 +808,19 @@ public:
       }
    }
 
+   /* Value if this were used with vop3/opsel or vop3p. */
+   constexpr uint16_t constantValue16(bool opsel) const noexcept
+   {
+      assert(bytes() == 2 || bytes() == 4);
+      if (opsel) {
+         if (bytes() == 2 && int16_t(data_.i) >= -16 && int16_t(data_.i) <= 64 && !isLiteral())
+            return int16_t(data_.i) >> 16; /* 16-bit inline integers are sign-extended, even with fp16 instrs */
+         else
+            return data_.i >> 16;
+      }
+      return data_.i;
+   }
+
    constexpr bool isOfType(RegType type) const noexcept
    {
       return hasRegClass() && regClass().type() == type;
@@ -893,8 +920,7 @@ private:
 class Definition final {
 public:
    constexpr Definition()
-       : temp(Temp(0, s1)), reg_(0), isFixed_(0), hasHint_(0), isKill_(0), isPrecise_(0), isNUW_(0),
-         isNoCSE_(0)
+       : temp(Temp(0, s1)), reg_(0), isFixed_(0), isKill_(0), isPrecise_(0), isNUW_(0), isNoCSE_(0)
    {}
    Definition(uint32_t index, RegClass type) noexcept : temp(index, type) {}
    explicit Definition(Temp tmp) noexcept : temp(tmp) {}
@@ -930,14 +956,6 @@ public:
       reg_ = reg;
    }
 
-   constexpr void setHint(PhysReg reg) noexcept
-   {
-      hasHint_ = 1;
-      reg_ = reg;
-   }
-
-   constexpr bool hasHint() const noexcept { return hasHint_; }
-
    constexpr void setKill(bool flag) noexcept { isKill_ = flag; }
 
    constexpr bool isKill() const noexcept { return isKill_; }
@@ -961,7 +979,6 @@ private:
    union {
       struct {
          uint8_t isFixed_ : 1;
-         uint8_t hasHint_ : 1;
          uint8_t isKill_ : 1;
          uint8_t isPrecise_ : 1;
          uint8_t isNUW_ : 1;
@@ -996,7 +1013,8 @@ struct VOP2_instruction;
 struct VOPC_instruction;
 struct VOP3_instruction;
 struct Interp_instruction;
-struct DPP_instruction;
+struct DPP16_instruction;
+struct DPP8_instruction;
 struct SDWA_instruction;
 
 struct Instruction {
@@ -1282,17 +1300,29 @@ struct Instruction {
       return *(Interp_instruction*)this;
    }
    constexpr bool isVINTRP() const noexcept { return (uint16_t)format & (uint16_t)Format::VINTRP; }
-   DPP_instruction& dpp() noexcept
+   DPP16_instruction& dpp16() noexcept
    {
-      assert(isDPP());
-      return *(DPP_instruction*)this;
+      assert(isDPP16());
+      return *(DPP16_instruction*)this;
    }
-   const DPP_instruction& dpp() const noexcept
+   const DPP16_instruction& dpp16() const noexcept
    {
-      assert(isDPP());
-      return *(DPP_instruction*)this;
+      assert(isDPP16());
+      return *(DPP16_instruction*)this;
    }
-   constexpr bool isDPP() const noexcept { return (uint16_t)format & (uint16_t)Format::DPP; }
+   constexpr bool isDPP16() const noexcept { return (uint16_t)format & (uint16_t)Format::DPP16; }
+   DPP8_instruction& dpp8() noexcept
+   {
+      assert(isDPP8());
+      return *(DPP8_instruction*)this;
+   }
+   const DPP8_instruction& dpp8() const noexcept
+   {
+      assert(isDPP8());
+      return *(DPP8_instruction*)this;
+   }
+   constexpr bool isDPP8() const noexcept { return (uint16_t)format & (uint16_t)Format::DPP8; }
+   constexpr bool isDPP() const noexcept { return isDPP16() || isDPP8(); }
    SDWA_instruction& sdwa() noexcept
    {
       assert(isSDWA());
@@ -1337,14 +1367,18 @@ struct SOPP_instruction : public Instruction {
 };
 static_assert(sizeof(SOPP_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
 
-struct SOPC_instruction : public Instruction {};
-static_assert(sizeof(SOPC_instruction) == sizeof(Instruction) + 0, "Unexpected padding");
+struct SOPC_instruction : public Instruction {
+   uint32_t padding;
+};
+static_assert(sizeof(SOPC_instruction) == sizeof(Instruction) + 4, "Unexpected padding");
 
 struct SOP1_instruction : public Instruction {};
 static_assert(sizeof(SOP1_instruction) == sizeof(Instruction) + 0, "Unexpected padding");
 
-struct SOP2_instruction : public Instruction {};
-static_assert(sizeof(SOP2_instruction) == sizeof(Instruction) + 0, "Unexpected padding");
+struct SOP2_instruction : public Instruction {
+   uint32_t padding;
+};
+static_assert(sizeof(SOP2_instruction) == sizeof(Instruction) + 4, "Unexpected padding");
 
 /**
  * Scalar Memory Format:
@@ -1390,7 +1424,7 @@ static_assert(sizeof(VOP3_instruction) == sizeof(Instruction) + 8, "Unexpected p
 
 struct VOP3P_instruction : public Instruction {
    bool neg_lo[3];
-   bool neg_hi[3];
+   bool neg_hi[3]; /* abs modifier, for v_mad_mix/v_fma_mix */
    uint8_t opsel_lo : 3;
    uint8_t opsel_hi : 3;
    bool clamp : 1;
@@ -1405,7 +1439,7 @@ static_assert(sizeof(VOP3P_instruction) == sizeof(Instruction) + 8, "Unexpected 
  * The swizzle applies to the src0 operand.
  *
  */
-struct DPP_instruction : public Instruction {
+struct DPP16_instruction : public Instruction {
    bool abs[2];
    bool neg[2];
    uint16_t dpp_ctrl;
@@ -1414,7 +1448,12 @@ struct DPP_instruction : public Instruction {
    bool bound_ctrl : 1;
    uint8_t padding : 7;
 };
-static_assert(sizeof(DPP_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
+static_assert(sizeof(DPP16_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
+
+struct DPP8_instruction : public Instruction {
+   uint8_t lane_sel[8];
+};
+static_assert(sizeof(DPP8_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
 
 struct SubdwordSel {
    enum sdwa_sel : uint8_t {
@@ -1505,8 +1544,8 @@ static_assert(sizeof(Interp_instruction) == sizeof(Instruction) + 4, "Unexpected
 struct DS_instruction : public Instruction {
    memory_sync_info sync;
    bool gds;
-   int16_t offset0;
-   int8_t offset1;
+   uint16_t offset0;
+   uint8_t offset1;
    uint8_t padding;
 };
 static_assert(sizeof(DS_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
@@ -1609,7 +1648,7 @@ struct FLAT_instruction : public Instruction {
    bool nv : 1;
    bool disable_wqm : 1; /* Require an exec mask without helper invocations */
    uint8_t padding0 : 2;
-   uint16_t offset; /* Vega/Navi only */
+   int16_t offset; /* Vega/Navi only */
    uint16_t padding1;
 };
 static_assert(sizeof(FLAT_instruction) == sizeof(Instruction) + 8, "Unexpected padding");
@@ -1757,19 +1796,20 @@ memory_sync_info get_sync_info(const Instruction* instr);
 
 bool is_dead(const std::vector<uint16_t>& uses, Instruction* instr);
 
-bool can_use_opsel(chip_class chip, aco_opcode op, int idx, bool high);
-bool instr_is_16bit(chip_class chip, aco_opcode op);
-bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr, bool pre_ra);
-bool can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra);
+bool can_use_opsel(amd_gfx_level gfx_level, aco_opcode op, int idx);
+bool instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op);
+bool can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra);
+bool can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra, bool dpp8);
 /* updates "instr" and returns the old instruction (or NULL if no update was needed) */
-aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& instr);
-aco_ptr<Instruction> convert_to_DPP(aco_ptr<Instruction>& instr);
+aco_ptr<Instruction> convert_to_SDWA(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr);
+aco_ptr<Instruction> convert_to_DPP(aco_ptr<Instruction>& instr, bool dpp8);
 bool needs_exec_mask(const Instruction* instr);
 
 aco_opcode get_ordered(aco_opcode op);
 aco_opcode get_unordered(aco_opcode op);
 aco_opcode get_inverse(aco_opcode op);
 aco_opcode get_f32_cmp(aco_opcode op);
+aco_opcode get_vcmpx(aco_opcode op);
 unsigned get_cmp_bitsize(aco_opcode op);
 bool is_cmp(aco_opcode op);
 
@@ -1792,13 +1832,11 @@ enum block_kind {
    block_kind_continue = 1 << 5,
    block_kind_break = 1 << 6,
    block_kind_continue_or_break = 1 << 7,
-   block_kind_discard = 1 << 8,
-   block_kind_branch = 1 << 9,
-   block_kind_merge = 1 << 10,
-   block_kind_invert = 1 << 11,
-   block_kind_uses_discard_if = 1 << 12,
+   block_kind_branch = 1 << 8,
+   block_kind_merge = 1 << 9,
+   block_kind_invert = 1 << 10,
+   block_kind_uses_discard = 1 << 12,
    block_kind_needs_lowering = 1 << 13,
-   block_kind_uses_demote = 1 << 14,
    block_kind_export_end = 1 << 15,
 };
 
@@ -1896,7 +1934,6 @@ struct Block {
    /* this information is needed for predecessors to blocks with phis when
     * moving out of ssa */
    bool scc_live_out = false;
-   PhysReg scratch_sgpr = PhysReg(); /* only needs to be valid if scc_live_out != false */
 
    Block() : index(0) {}
 };
@@ -1904,7 +1941,7 @@ struct Block {
 /*
  * Shader stages as provided in Vulkan by the application. Contrast this to HWStage.
  */
-enum class SWStage : uint8_t {
+enum class SWStage : uint16_t {
    None = 0,
    VS = 1 << 0,     /* Vertex Shader */
    GS = 1 << 1,     /* Geometry Shader */
@@ -1912,7 +1949,9 @@ enum class SWStage : uint8_t {
    TES = 1 << 3,    /* Tessellation Evaluation aka Domain Shader */
    FS = 1 << 4,     /* Fragment aka Pixel Shader */
    CS = 1 << 5,     /* Compute Shader */
-   GSCopy = 1 << 6, /* GS Copy Shader (internal) */
+   TS = 1 << 6,     /* Task Shader */
+   MS = 1 << 7,     /* Mesh Shader */
+   GSCopy = 1 << 8, /* GS Copy Shader (internal) */
 
    /* Stage combinations merged to run on a single HWStage */
    VS_GS = VS | GS,
@@ -1923,7 +1962,7 @@ enum class SWStage : uint8_t {
 constexpr SWStage
 operator|(SWStage a, SWStage b)
 {
-   return static_cast<SWStage>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+   return static_cast<SWStage>(static_cast<uint16_t>(a) | static_cast<uint16_t>(b));
 }
 
 /*
@@ -1956,10 +1995,10 @@ struct Stage {
    /* Check if the given SWStage is included */
    constexpr bool has(SWStage stage) const
    {
-      return (static_cast<uint8_t>(sw) & static_cast<uint8_t>(stage));
+      return (static_cast<uint16_t>(sw) & static_cast<uint16_t>(stage));
    }
 
-   unsigned num_sw_stages() const { return util_bitcount(static_cast<uint8_t>(sw)); }
+   unsigned num_sw_stages() const { return util_bitcount(static_cast<uint16_t>(sw)); }
 
    constexpr bool operator==(const Stage& other) const { return sw == other.sw && hw == other.hw; }
 
@@ -1978,6 +2017,9 @@ static constexpr Stage fragment_fs(HWStage::FS, SWStage::FS);
 static constexpr Stage compute_cs(HWStage::CS, SWStage::CS);
 static constexpr Stage tess_eval_vs(HWStage::VS, SWStage::TES);
 static constexpr Stage gs_copy_vs(HWStage::VS, SWStage::GSCopy);
+/* Mesh shading pipeline */
+static constexpr Stage task_cs(HWStage::CS, SWStage::TS);
+static constexpr Stage mesh_ngg(HWStage::NGG, SWStage::MS);
 /* GFX10/NGG */
 static constexpr Stage vertex_ngg(HWStage::NGG, SWStage::VS);
 static constexpr Stage vertex_geometry_ngg(HWStage::NGG, SWStage::VS_GS);
@@ -2023,8 +2065,13 @@ struct DeviceInfo {
    unsigned max_wave64_per_simd;
    unsigned simd_per_cu;
    bool has_fast_fma32 = false;
+   bool has_mac_legacy32 = false;
+   bool fused_mad_mix = false;
    bool xnack_enabled = false;
    bool sram_ecc_enabled = false;
+
+   int16_t scratch_global_offset_min;
+   int16_t scratch_global_offset_max;
 };
 
 enum class CompilationProgress {
@@ -2038,11 +2085,9 @@ public:
    std::vector<Block> blocks;
    std::vector<RegClass> temp_rc = {s1};
    RegisterDemand max_reg_demand = RegisterDemand();
-   uint16_t num_waves = 0;
-   uint16_t max_waves = 0; /* maximum number of waves, regardless of register usage */
    ac_shader_config* config;
-   const struct radv_shader_info* info;
-   enum chip_class chip_class;
+   struct aco_shader_info info;
+   enum amd_gfx_level gfx_level;
    enum radeon_family family;
    DeviceInfo dev;
    unsigned wave_size;
@@ -2055,13 +2100,13 @@ public:
    Temp private_segment_buffer;
    Temp scratch_offset;
 
+   uint16_t num_waves = 0;
    uint16_t min_waves = 0;
    unsigned workgroup_size; /* if known; otherwise UINT_MAX */
    bool wgp_mode;
    bool early_rast = false; /* whether rasterization can start as soon as the 1st DONE pos export */
 
    bool needs_vcc = false;
-   bool needs_flat_scr = false;
 
    CompilationProgress progress;
 
@@ -2078,7 +2123,7 @@ public:
    struct {
       FILE* output = stderr;
       bool shorten_messages = false;
-      void (*func)(void* private_data, enum radv_compiler_debug_level level, const char* message);
+      void (*func)(void* private_data, enum aco_compiler_debug_level level, const char* message);
       void* private_data;
    } debug;
 
@@ -2138,19 +2183,35 @@ struct ra_test_policy {
 
 void init();
 
-void init_program(Program* program, Stage stage, const struct radv_shader_info* info,
-                  enum chip_class chip_class, enum radeon_family family, bool wgp_mode,
+void init_program(Program* program, Stage stage, const struct aco_shader_info* info,
+                  enum amd_gfx_level gfx_level, enum radeon_family family, bool wgp_mode,
                   ac_shader_config* config);
 
 void select_program(Program* program, unsigned shader_count, struct nir_shader* const* shaders,
-                    ac_shader_config* config, const struct radv_shader_args* args);
+                    ac_shader_config* config, const struct aco_compiler_options* options,
+                    const struct aco_shader_info* info,
+                    const struct radv_shader_args* args);
 void select_gs_copy_shader(Program* program, struct nir_shader* gs_shader, ac_shader_config* config,
+                           const struct aco_compiler_options* options,
+                           const struct aco_shader_info* info,
                            const struct radv_shader_args* args);
 void select_trap_handler_shader(Program* program, struct nir_shader* shader,
-                                ac_shader_config* config, const struct radv_shader_args* args);
-void select_vs_prolog(Program* program, const struct radv_vs_prolog_key* key,
-                      ac_shader_config* config, const struct radv_shader_args* args,
+                                ac_shader_config* config,
+                                const struct aco_compiler_options* options,
+                                const struct aco_shader_info* info,
+                                const struct radv_shader_args* args);
+void select_vs_prolog(Program* program, const struct aco_vs_prolog_key* key,
+                      ac_shader_config* config,
+                      const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info,
+                      const struct radv_shader_args* args,
                       unsigned* num_preserved_sgprs);
+
+void select_ps_epilog(Program* program, const struct aco_ps_epilog_key* key,
+                      ac_shader_config* config,
+                      const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info,
+                      const struct radv_shader_args* args);
 
 void lower_phis(Program* program);
 void calc_min_waves(Program* program);
@@ -2221,6 +2282,9 @@ RegisterDemand get_demand_before(RegisterDemand demand, aco_ptr<Instruction>& in
 
 /* number of sgprs that need to be allocated but might notbe addressable as s0-s105 */
 uint16_t get_extra_sgprs(Program* program);
+
+/* adjust num_waves for workgroup size and LDS limits */
+uint16_t max_suitable_waves(Program* program, uint16_t waves);
 
 /* get number of sgprs/vgprs allocated required to address a number of sgprs/vgprs */
 uint16_t get_sgpr_alloc(Program* program, uint16_t addressable_sgprs);

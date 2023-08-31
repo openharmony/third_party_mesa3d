@@ -47,6 +47,7 @@ translate_cull_face(unsigned cull_face, unsigned front_ccw)
 {
    switch (cull_face) {
    case PIPE_FACE_NONE:
+   case PIPE_FACE_FRONT_AND_BACK: /* handled in draw_vbo */
       return VIVS_PA_CONFIG_CULL_FACE_MODE_OFF;
    case PIPE_FACE_BACK:
       return front_ccw ? VIVS_PA_CONFIG_CULL_FACE_MODE_CW
@@ -275,8 +276,6 @@ static inline uint32_t
 translate_vertex_format_normalize(enum pipe_format fmt)
 {
    const struct util_format_description *desc = util_format_description(fmt);
-   if (!desc)
-      return VIVS_FE_VERTEX_ELEMENT_CONFIG_NORMALIZE_OFF;
 
    /* assumes that normalization of channel 0 holds for all channels;
     * this holds for all vertex formats that we support */

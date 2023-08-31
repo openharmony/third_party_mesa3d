@@ -72,14 +72,30 @@ static void debug_function(void *private_data,
 static void
 clover_arg_size_align(const glsl_type *type, unsigned *size, unsigned *align)
 {
-   if (type == glsl_type::sampler_type) {
+   if (type == glsl_type::sampler_type || type->is_image()) {
       *size = 0;
       *align = 1;
-   } else if (type->is_image()) {
-      *size = *align = sizeof(cl_mem);
    } else {
       *size = type->cl_size();
       *align = type->cl_alignment();
+   }
+}
+
+static void
+clover_nir_add_image_uniforms(nir_shader *shader)
+{
+   /* Clover expects each image variable to take up a cl_mem worth of space in
+    * the arguments data.  Add uniforms as needed to match this expectation.
+    */
+   nir_foreach_image_variable_safe(var, shader) {
+      nir_variable *uniform = rzalloc(shader, nir_variable);
+      uniform->name = ralloc_strdup(uniform, var->name);
+      uniform->type = glsl_uintN_t_type(sizeof(cl_mem) * 8);
+      uniform->data.mode = nir_var_uniform;
+      uniform->data.read_only = true;
+      uniform->data.location = var->data.location;
+
+      exec_node_insert_node_before(&var->node, &uniform->node);
    }
 }
 
@@ -89,32 +105,45 @@ clover_nir_lower_images(nir_shader *shader)
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
 
    ASSERTED int last_loc = -1;
-   int num_rd_images = 0, num_wr_images = 0, num_samplers = 0;
+   int num_rd_images = 0, num_wr_images = 0;
+   nir_foreach_image_variable(var, shader) {
+      /* Assume they come in order */
+      assert(var->data.location > last_loc);
+      last_loc = var->data.location;
+
+      if (var->data.access & ACCESS_NON_WRITEABLE)
+         var->data.driver_location = num_rd_images++;
+      else
+         var->data.driver_location = num_wr_images++;
+   }
+   shader->info.num_textures = num_rd_images;
+   BITSET_ZERO(shader->info.textures_used);
+   if (num_rd_images)
+      BITSET_SET_RANGE(shader->info.textures_used, 0, num_rd_images - 1);
+
+   BITSET_ZERO(shader->info.images_used);
+   if (num_wr_images)
+      BITSET_SET_RANGE(shader->info.images_used, 0, num_wr_images - 1);
+   shader->info.num_images = num_wr_images;
+
+   last_loc = -1;
+   int num_samplers = 0;
    nir_foreach_uniform_variable(var, shader) {
-      if (glsl_type_is_image(var->type) || glsl_type_is_sampler(var->type)) {
+      if (var->type == glsl_bare_sampler_type()) {
          /* Assume they come in order */
          assert(var->data.location > last_loc);
          last_loc = var->data.location;
-      }
 
-      /* TODO: Constant samplers */
-      if (var->type == glsl_bare_sampler_type()) {
+         /* TODO: Constant samplers */
          var->data.driver_location = num_samplers++;
-      } else if (glsl_type_is_image(var->type)) {
-         if (var->data.access & ACCESS_NON_WRITEABLE)
-            var->data.driver_location = num_rd_images++;
-         else
-            var->data.driver_location = num_wr_images++;
       } else {
          /* CL shouldn't have any sampled images */
          assert(!glsl_type_is_sampler(var->type));
       }
    }
-   shader->info.num_textures = num_rd_images;
-   BITSET_ZERO(shader->info.textures_used);
-   if (num_rd_images)
-      BITSET_SET_RANGE_INSIDE_WORD(shader->info.textures_used, 0, num_rd_images - 1);
-   shader->info.num_images = num_wr_images;
+   BITSET_ZERO(shader->info.samplers_used);
+   if (num_samplers)
+      BITSET_SET_RANGE(shader->info.samplers_used, 0, num_samplers - 1);
 
    nir_builder b;
    nir_builder_init(&b, impl);
@@ -399,7 +428,9 @@ nir_shader *clover::nir::load_libclc_nir(const device &dev, std::string &r_log)
 static bool
 can_remove_var(nir_variable *var, void *data)
 {
-   return !(var->type->is_sampler() || var->type->is_image());
+   return !(var->type->is_sampler() ||
+            var->type->is_texture() ||
+            var->type->is_image());
 }
 
 binary clover::nir::spirv_to_nir(const binary &mod, const device &dev,
@@ -451,11 +482,7 @@ binary clover::nir::spirv_to_nir(const binary &mod, const device &dev,
       NIR_PASS_V(nir, nir_opt_deref);
 
       // Pick off the single entrypoint that we want.
-      foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
-         if (!func->is_entrypoint)
-            exec_node_remove(&func->node);
-      }
-      assert(exec_list_length(&nir->functions) == 1);
+      nir_remove_non_entrypoints(nir);
 
       nir_validate_shader(nir, "clover after function inlining");
 
@@ -477,6 +504,10 @@ binary clover::nir::spirv_to_nir(const binary &mod, const device &dev,
       NIR_PASS_V(nir, nir_opt_dce);
       NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
 
+      if (compiler_options->lower_to_scalar) {
+         NIR_PASS_V(nir, nir_lower_alu_to_scalar,
+                    compiler_options->lower_to_scalar_filter, NULL);
+      }
       NIR_PASS_V(nir, nir_lower_system_values);
       nir_lower_compute_system_values_options sysval_options = { 0 };
       sysval_options.has_base_global_invocation_id = true;
@@ -502,6 +533,7 @@ binary clover::nir::spirv_to_nir(const binary &mod, const device &dev,
       NIR_PASS_V(nir, clover_lower_nir, args, dev.max_block_size().size(),
                  dev.address_bits());
 
+      NIR_PASS_V(nir, clover_nir_add_image_uniforms);
       NIR_PASS_V(nir, nir_lower_vars_to_explicit_types,
                  nir_var_uniform, clover_arg_size_align);
       NIR_PASS_V(nir, nir_lower_vars_to_explicit_types,

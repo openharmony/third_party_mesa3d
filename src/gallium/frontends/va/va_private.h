@@ -293,6 +293,7 @@ typedef struct {
       struct pipe_av1_picture_desc av1;
       struct pipe_h264_enc_picture_desc h264enc;
       struct pipe_h265_enc_picture_desc h265enc;
+      struct pipe_vpp_desc vidproc;
    } desc;
 
    struct {
@@ -310,12 +311,14 @@ typedef struct {
       unsigned int slice_header_size;
    } mjpeg;
 
+   struct h264_private h264;
    struct vl_deint_filter *deint;
    vlVaBuffer *coded_buf;
    int target_id;
    bool first_single_submitted;
    int gop_coeff;
    bool needs_begin_frame;
+   bool vpp_needs_flush_on_endpic;
    void *blit_cs;
    int packed_header_type;
 } vlVaContext;
@@ -335,6 +338,8 @@ typedef struct {
    void *feedback;
    unsigned int frame_num_cnt;
    bool force_flushed;
+   struct pipe_video_buffer *obsolete_buf;
+   enum pipe_format encoder_format;
 } vlVaSurface;
 
 // Public functions:

@@ -28,7 +28,7 @@ panvk_entrypoints = custom_target(
   command : [
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'panvk',
-    '--device-prefix', 'panvk_v5', '--device-prefix', 'panvk_v6', '--device-prefix', 'panvk_v7',
+    '--device-prefix', 'panvk_v6', '--device-prefix', 'panvk_v7',
   ],
   depend_files : vk_entrypoints_gen_depend_files,
 )
@@ -47,16 +47,15 @@ libpanvk_files = files(
   'panvk_private.h',
   'panvk_query.c',
   'panvk_shader.c',
-  'panvk_sync.c',
   'panvk_util.c',
   'panvk_wsi.c',
-)
+) + [vk_cmd_enqueue_entrypoints[0], vk_common_entrypoints[0]]
 
 panvk_deps = []
 panvk_flags = []
 panvk_per_arch_libs = []
 
-foreach arch : ['5', '6', '7']
+foreach arch : ['6', '7']
   panvk_per_arch_libs += static_library(
     'panvk_v@0@'.format(arch),
     [
@@ -70,6 +69,7 @@ foreach arch : ['5', '6', '7']
       'panvk_vX_meta_blit.c',
       'panvk_vX_meta_copy.c',
       'panvk_vX_meta_clear.c',
+      'panvk_vX_nir_lower_descriptors.c',
       'panvk_vX_pipeline.c',
       'panvk_vX_shader.c',
     ],
@@ -85,6 +85,7 @@ foreach arch : ['5', '6', '7']
       idep_nir_headers,
       idep_pan_packers,
       idep_vulkan_util_headers,
+      idep_vulkan_runtime_headers,
       idep_vulkan_wsi_headers,
       dep_libdrm,
       dep_valgrind,
@@ -129,6 +130,7 @@ libvulkan_panfrost = shared_library(
     idep_pan_packers,
     panvk_deps,
     idep_vulkan_util,
+    idep_vulkan_runtime,
     idep_vulkan_wsi,
     idep_mesautil,
   ],
@@ -152,3 +154,21 @@ panfrost_icd = custom_target(
   install_dir : with_vulkan_icd_dir,
   install : true,
 )
+
+if meson.version().version_compare('>= 0.58')
+  _dev_icdname = 'panfrost_devenv_icd.@0@.json'.format(host_machine.cpu())
+  custom_target(
+    'panfrost_devenv_icd',
+    input : [vk_icd_gen, vk_api_xml],
+    output : _dev_icdname,
+    command : [
+      prog_python, '@INPUT0@',
+      '--api-version', '1.1', '--xml', '@INPUT1@',
+      '--lib-path', meson.current_build_dir() / 'libvulkan_panfrost.so',
+      '--out', '@OUTPUT@',
+    ],
+    build_by_default : true,
+  )
+
+  devenv.append('VK_ICD_FILENAMES', meson.current_build_dir() / _dev_icdname)
+endif

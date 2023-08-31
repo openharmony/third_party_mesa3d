@@ -90,7 +90,7 @@ struct pan_blend_shader_variant {
         unsigned work_reg_count;
 };
 
-#define PAN_BLEND_SHADER_MAX_VARIANTS 16
+#define PAN_BLEND_SHADER_MAX_VARIANTS 32
 
 struct pan_blend_shader {
         struct pan_blend_shader_key key;
@@ -107,6 +107,12 @@ pan_blend_can_fixed_function(const struct pan_blend_equation equation,
 
 bool
 pan_blend_is_opaque(const struct pan_blend_equation eq);
+
+bool
+pan_blend_alpha_zero_nop(const struct pan_blend_equation eq);
+
+bool
+pan_blend_alpha_one_store(const struct pan_blend_equation eq);
 
 unsigned
 pan_blend_constant_mask(const struct pan_blend_equation eq);

@@ -141,7 +141,7 @@ svga_create_stream_output(struct svga_context *svga,
    unsigned i;
    enum pipe_error ret;
    unsigned id;
-   ASSERTED unsigned maxDecls;
+   ASSERTED unsigned maxDecls = 0;
 
    assert(info->num_outputs <= PIPE_MAX_SO_OUTPUTS);
 
@@ -187,7 +187,7 @@ svga_create_stream_output(struct svga_context *svga,
       unsigned reg_idx = info->output[i].register_index;
       unsigned buf_idx = info->output[i].output_buffer;
       const enum tgsi_semantic sem_name =
-         shader->info.output_semantic_name[reg_idx];
+         shader->tgsi_info.output_semantic_name[reg_idx];
 
       assert(buf_idx <= PIPE_MAX_SO_BUFFERS);
 
@@ -238,7 +238,7 @@ svga_create_stream_output(struct svga_context *svga,
           * Check if streaming out POSITION. If so, replace the
           * register index with the index for NON_ADJUSTED POSITION.
           */
-         decls[numDecls].registerIndex = shader->info.num_outputs;
+         decls[numDecls].registerIndex = shader->tgsi_info.num_outputs;
 
          /* Save this output index, so we can tell later if this stream output
           * includes an output of a vertex position
@@ -253,8 +253,8 @@ svga_create_stream_output(struct svga_context *svga,
           * clip planes.
           */
          decls[numDecls].registerIndex =
-            shader->info.num_outputs + 1 +
-            shader->info.output_semantic_index[reg_idx];
+            shader->tgsi_info.num_outputs + 1 +
+            shader->tgsi_info.output_semantic_index[reg_idx];
       }
       else {
          decls[numDecls].registerIndex = reg_idx;
@@ -450,6 +450,7 @@ svga_set_stream_output_targets(struct pipe_context *pipe,
    for (i = 0; i < num_targets; i++) {
       struct svga_stream_output_target *sot
          = svga_stream_output_target(targets[i]);
+      struct svga_buffer *sbuf = svga_buffer(sot->base.buffer);
       unsigned size;
 
       svga->so_surfaces[i] = svga_buffer_handle(svga, sot->base.buffer,
@@ -457,6 +458,10 @@ svga_set_stream_output_targets(struct pipe_context *pipe,
 
       assert(svga_buffer(sot->base.buffer)->key.flags
              & SVGA3D_SURFACE_BIND_STREAM_OUTPUT);
+
+      /* Mark the buffer surface as RENDERED */
+      assert(sbuf->bufsurf);
+      sbuf->bufsurf->surface_state = SVGA_SURFACE_STATE_RENDERED;
 
       svga->so_targets[i] = &sot->base;
       if (offsets[i] == -1) {

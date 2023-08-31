@@ -24,10 +24,12 @@
 
 #include "c11/threads.h"
 #include "util/bitscan.h"
+#include "util/bitset.h"
 #include "util/compiler.h"
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/os_time.h"
+#include "util/simple_mtx.h"
 #include "util/u_math.h"
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
@@ -42,7 +44,8 @@
 
 #define VN_DEFAULT_ALIGN 8
 
-#define VN_DEBUG(category) (unlikely(vn_debug & VN_DEBUG_##category))
+#define VN_DEBUG(category) (unlikely(vn_env.debug & VN_DEBUG_##category))
+#define VN_PERF(category) (unlikely(vn_env.perf & VN_PERF_##category))
 
 #define vn_error(instance, error)                                            \
    (VN_DEBUG(RESULT) ? vn_log_result((instance), (error), __func__) : (error))
@@ -66,8 +69,11 @@
 
 #if __has_attribute(cleanup) && __has_attribute(unused)
 
+#define VN_TRACE_SCOPE_VAR_CONCAT(name, suffix) name##suffix
+#define VN_TRACE_SCOPE_VAR(suffix)                                           \
+   VN_TRACE_SCOPE_VAR_CONCAT(_vn_trace_scope_, suffix)
 #define VN_TRACE_SCOPE(name)                                                 \
-   int _vn_trace_scope_##__LINE__                                            \
+   int VN_TRACE_SCOPE_VAR(__LINE__)                                          \
       __attribute__((cleanup(vn_trace_scope_end), unused)) =                 \
          vn_trace_scope_begin(name)
 
@@ -133,6 +139,15 @@ enum vn_debug {
    VN_DEBUG_RESULT = 1ull << 1,
    VN_DEBUG_VTEST = 1ull << 2,
    VN_DEBUG_WSI = 1ull << 3,
+   VN_DEBUG_NO_ABORT = 1ull << 4,
+};
+
+enum vn_perf {
+   VN_PERF_NO_ASYNC_SET_ALLOC = 1ull << 0,
+   VN_PERF_NO_ASYNC_BUFFER_CREATE = 1ull << 1,
+   VN_PERF_NO_ASYNC_QUEUE_SUBMIT = 1ull << 2,
+   VN_PERF_NO_EVENT_FEEDBACK = 1ull << 3,
+   VN_PERF_NO_FENCE_FEEDBACK = 1ull << 4,
 };
 
 typedef uint64_t vn_object_id;
@@ -165,10 +180,17 @@ struct vn_refcount {
    atomic_int count;
 };
 
-extern uint64_t vn_debug;
+struct vn_env {
+   uint64_t debug;
+   uint64_t perf;
+   /* zero will be overridden to UINT32_MAX as no limit */
+   uint32_t draw_cmd_batch_limit;
+   uint32_t relax_base_sleep_us;
+};
+extern struct vn_env vn_env;
 
 void
-vn_debug_init(void);
+vn_env_init(void);
 
 void
 vn_trace_init(void);
@@ -230,6 +252,9 @@ vn_refcount_dec(struct vn_refcount *ref)
 
    return old == 1;
 }
+
+uint32_t
+vn_extension_get_spec_version(const char *name);
 
 void
 vn_relax(uint32_t *iter, const char *reason);

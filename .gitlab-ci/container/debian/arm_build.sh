@@ -9,6 +9,7 @@ echo 'deb https://deb.debian.org/debian buster main' >/etc/apt/sources.list.d/bu
 apt-get update
 
 apt-get -y install \
+	${EXTRA_LOCAL_PACKAGES} \
 	abootimg \
 	autoconf \
 	automake \
@@ -21,11 +22,13 @@ apt-get -y install \
 	flex \
 	g++ \
 	git \
+	glslang-tools \
 	kmod \
 	libasan6 \
 	libdrm-dev \
 	libelf-dev \
 	libexpat1-dev \
+	libvulkan-dev \
 	libx11-dev \
 	libx11-xcb-dev \
 	libxcb-dri2-0-dev \
@@ -57,7 +60,7 @@ apt-get -y install \
 apt-get install -y --no-remove -t buster \
         android-sdk-ext4-utils
 
-pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@6f5af7e5574509726c79109e3c147cee95e81366
+pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@ffe4d1b10aab7534489f0c4bbc4c5899df17d3f2
 
 arch=armhf
 . .gitlab-ci/container/cross_build.sh

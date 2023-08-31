@@ -126,7 +126,10 @@ instr_can_cse(const bi_instr *I)
                 break;
         }
 
-        if (bi_opcode_props[I->op].message)
+        /* Be conservative about which message-passing instructions we CSE,
+         * since most are not pure even within a thread.
+         */
+        if (bi_opcode_props[I->op].message && I->op != BI_OPCODE_LEA_BUF_IMM)
                 return false;
 
         if (I->branch_target)
@@ -139,9 +142,12 @@ instr_can_cse(const bi_instr *I)
                         return false;
         }
 
-        /* Similar refuse to CSE non-SSA sources */
+        /* Similar refuse to CSE non-SSA sources. We allow machine registers,
+         * since CSE runs before register allocation which means any registers
+         * encountered are preloaded and hence assumed constant.
+         */
         bi_foreach_src(I, s) {
-                if (I->src[s].reg || I->src[s].type == BI_INDEX_REGISTER)
+                if (I->src[s].reg)
                         return false;
         }
 
@@ -154,20 +160,20 @@ bi_opt_cse(bi_context *ctx)
         struct set *instr_set = _mesa_set_create(NULL, hash_instr, instrs_equal);
 
         bi_foreach_block(ctx, block) {
-                bi_index *replacement = calloc(sizeof(bi_index), ((ctx->ssa_alloc + 1) << 2));
+                bi_index *replacement = calloc(sizeof(bi_index), ctx->ssa_alloc);
                 _mesa_set_clear(instr_set, NULL);
 
                 bi_foreach_instr_in_block(block, instr) {
                         /* Rewrite before trying to CSE anything so we converge
                          * locally in one iteration */
                         bi_foreach_src(instr, s) {
-                                if (s == 0 && bi_opcode_props[instr->op].sr_read)
+                                if (bi_is_staging_src(instr, s))
                                         continue;
 
                                 if (!bi_is_ssa(instr->src[s]))
                                         continue;
 
-                                bi_index repl = replacement[bi_word_node(instr->src[s])];
+                                bi_index repl = replacement[instr->src[s].value];
                                 if (!bi_is_null(repl))
                                         instr->src[s] = bi_replace_index(instr->src[s], repl);
                         }
@@ -183,7 +189,7 @@ bi_opt_cse(bi_context *ctx)
 
                                 bi_foreach_dest(instr, d) {
                                         if (!bi_is_null(instr->dest[d]))
-                                                replacement[bi_word_node(instr->dest[d])] = match->dest[d];
+                                                replacement[instr->dest[d].value] = match->dest[d];
                                 }
                         }
                 }

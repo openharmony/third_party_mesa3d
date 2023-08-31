@@ -31,6 +31,7 @@
 #include "pipe/p_compiler.h"
 #include "pipe/p_format.h"
 #include "frontend/api.h"
+#include "dri_util.h"
 
 struct pipe_surface;
 struct st_framebuffer;
@@ -58,6 +59,7 @@ struct dri_drawable
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
    struct pipe_resource *msaa_textures[ST_ATTACHMENT_COUNT];
    unsigned int texture_mask, texture_stamp;
+   int swap_interval;
 
    struct pipe_fence_handle *throttle_fence;
    bool flushing; /* prevents recursion in dri_flush */

@@ -110,8 +110,8 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
    gfx7_convert_mrf_to_grf(p, &dest);
 
    if (devinfo->ver >= 12 &&
-       (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SEND ||
-        brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDC)) {
+       (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SEND ||
+        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDC)) {
       assert(dest.file == BRW_GENERAL_REGISTER_FILE ||
              dest.file == BRW_ARCHITECTURE_REGISTER_FILE);
       assert(dest.address_mode == BRW_ADDRESS_DIRECT);
@@ -123,8 +123,8 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
       brw_inst_set_dst_reg_file(devinfo, inst, dest.file);
       brw_inst_set_dst_da_reg_nr(devinfo, inst, dest.nr);
 
-   } else if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDS ||
-              brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDSC) {
+   } else if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDS ||
+              brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDSC) {
       assert(devinfo->ver < 12);
       assert(dest.file == BRW_GENERAL_REGISTER_FILE ||
              dest.file == BRW_ARCHITECTURE_REGISTER_FILE);
@@ -218,10 +218,10 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    gfx7_convert_mrf_to_grf(p, &reg);
 
    if (devinfo->ver >= 6 &&
-       (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SEND ||
-        brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDC ||
-        brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDS ||
-        brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDSC)) {
+       (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SEND ||
+        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDC ||
+        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDS ||
+        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDSC)) {
       /* Any source modifiers or regions will be ignored, since this just
        * identifies the MRF/GRF to start reading the message contents from.
        * Check for some likely failures.
@@ -232,8 +232,8 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    }
 
    if (devinfo->ver >= 12 &&
-       (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SEND ||
-        brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDC)) {
+       (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SEND ||
+        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDC)) {
       assert(reg.file != BRW_IMMEDIATE_VALUE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
       assert(reg.subnr == 0);
@@ -244,8 +244,8 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
       brw_inst_set_send_src0_reg_file(devinfo, inst, reg.file);
       brw_inst_set_src0_da_reg_nr(devinfo, inst, reg.nr);
 
-   } else if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDS ||
-              brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDSC) {
+   } else if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDS ||
+              brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDSC) {
       assert(reg.file == BRW_GENERAL_REGISTER_FILE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
       assert(reg.subnr % 16 == 0);
@@ -263,7 +263,7 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
 
       if (reg.file == BRW_IMMEDIATE_VALUE) {
          if (reg.type == BRW_REGISTER_TYPE_DF ||
-             brw_inst_opcode(devinfo, inst) == BRW_OPCODE_DIM)
+             brw_inst_opcode(p->isa, inst) == BRW_OPCODE_DIM)
             brw_inst_set_imm_df(devinfo, inst, reg.df);
          else if (reg.type == BRW_REGISTER_TYPE_UQ ||
                   reg.type == BRW_REGISTER_TYPE_Q)
@@ -349,11 +349,11 @@ brw_set_src1(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    if (reg.file == BRW_GENERAL_REGISTER_FILE)
       assert(reg.nr < 128);
 
-   if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDS ||
-       brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDSC ||
+   if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDS ||
+       brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDSC ||
        (devinfo->ver >= 12 &&
-        (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SEND ||
-         brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDC))) {
+        (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SEND ||
+         brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDC))) {
       assert(reg.file == BRW_GENERAL_REGISTER_FILE ||
              reg.file == BRW_ARCHITECTURE_REGISTER_FILE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
@@ -456,8 +456,8 @@ brw_set_desc_ex(struct brw_codegen *p, brw_inst *inst,
                 unsigned desc, unsigned ex_desc)
 {
    const struct intel_device_info *devinfo = p->devinfo;
-   assert(brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SEND ||
-          brw_inst_opcode(devinfo, inst) == BRW_OPCODE_SENDC);
+   assert(brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SEND ||
+          brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDC);
    if (devinfo->ver < 12)
       brw_inst_set_src1_file_type(devinfo, inst,
                                   BRW_IMMEDIATE_VALUE, BRW_REGISTER_TYPE_UD);
@@ -610,10 +610,12 @@ gfx7_set_dp_scratch_message(struct brw_codegen *p,
 }
 
 static void
-brw_inst_set_state(const struct intel_device_info *devinfo,
+brw_inst_set_state(const struct brw_isa_info *isa,
                    brw_inst *insn,
                    const struct brw_insn_state *state)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
    brw_inst_set_exec_size(devinfo, insn, state->exec_size);
    brw_inst_set_group(devinfo, insn, state->group);
    brw_inst_set_compression(devinfo, insn, state->compressed);
@@ -625,7 +627,7 @@ brw_inst_set_state(const struct intel_device_info *devinfo,
    brw_inst_set_pred_control(devinfo, insn, state->predicate);
    brw_inst_set_pred_inv(devinfo, insn, state->pred_inv);
 
-   if (is_3src(devinfo, brw_inst_opcode(devinfo, insn)) &&
+   if (is_3src(isa, brw_inst_opcode(isa, insn)) &&
        state->access_mode == BRW_ALIGN_16) {
       brw_inst_set_3src_a16_flag_subreg_nr(devinfo, insn, state->flag_subreg % 2);
       if (devinfo->ver >= 7)
@@ -694,14 +696,13 @@ brw_append_data(struct brw_codegen *p, void *data,
 brw_inst *
 brw_next_insn(struct brw_codegen *p, unsigned opcode)
 {
-   const struct intel_device_info *devinfo = p->devinfo;
    brw_inst *insn = brw_append_insns(p, 1, sizeof(brw_inst));
 
    memset(insn, 0, sizeof(*insn));
-   brw_inst_set_opcode(devinfo, insn, opcode);
+   brw_inst_set_opcode(p->isa, insn, opcode);
 
    /* Apply the default instruction state */
-   brw_inst_set_state(devinfo, insn, p->current);
+   brw_inst_set_state(p->isa, insn, p->current);
 
    return insn;
 }
@@ -1262,10 +1263,12 @@ brw_F32TO16(struct brw_codegen *p, struct brw_reg dst, struct brw_reg src)
    if (align16) {
       assert(dst.type == BRW_REGISTER_TYPE_UD);
    } else {
-      assert(dst.type == BRW_REGISTER_TYPE_UD ||
-             dst.type == BRW_REGISTER_TYPE_W ||
-             dst.type == BRW_REGISTER_TYPE_UW ||
-             dst.type == BRW_REGISTER_TYPE_HF);
+      if (devinfo->ver <= 7) {
+         assert(dst.type == BRW_REGISTER_TYPE_W ||
+                dst.type == BRW_REGISTER_TYPE_UW);
+      } else {
+         assert(dst.type == BRW_REGISTER_TYPE_HF);
+      }
    }
 
    brw_push_insn_state(p);
@@ -1331,7 +1334,7 @@ void brw_NOP(struct brw_codegen *p)
 {
    brw_inst *insn = next_insn(p, BRW_OPCODE_NOP);
    memset(insn, 0, sizeof(*insn));
-   brw_inst_set_opcode(p->devinfo, insn, BRW_OPCODE_NOP);
+   brw_inst_set_opcode(p->isa, insn, BRW_OPCODE_NOP);
 }
 
 void brw_SYNC(struct brw_codegen *p, enum tgl_sync_function func)
@@ -1499,8 +1502,8 @@ convert_IF_ELSE_to_ADD(struct brw_codegen *p,
    brw_inst *next_inst = &p->store[p->nr_insn];
 
    assert(p->single_program_flow);
-   assert(if_inst != NULL && brw_inst_opcode(devinfo, if_inst) == BRW_OPCODE_IF);
-   assert(else_inst == NULL || brw_inst_opcode(devinfo, else_inst) == BRW_OPCODE_ELSE);
+   assert(if_inst != NULL && brw_inst_opcode(p->isa, if_inst) == BRW_OPCODE_IF);
+   assert(else_inst == NULL || brw_inst_opcode(p->isa, else_inst) == BRW_OPCODE_ELSE);
    assert(brw_inst_exec_size(devinfo, if_inst) == BRW_EXECUTE_1);
 
    /* Convert IF to an ADD instruction that moves the instruction pointer
@@ -1511,14 +1514,14 @@ convert_IF_ELSE_to_ADD(struct brw_codegen *p,
     * stack operations, and if we're currently executing, we just want to
     * continue normally.
     */
-   brw_inst_set_opcode(devinfo, if_inst, BRW_OPCODE_ADD);
+   brw_inst_set_opcode(p->isa, if_inst, BRW_OPCODE_ADD);
    brw_inst_set_pred_inv(devinfo, if_inst, true);
 
    if (else_inst != NULL) {
       /* Convert ELSE to an ADD instruction that points where the ENDIF
        * would be.
        */
-      brw_inst_set_opcode(devinfo, else_inst, BRW_OPCODE_ADD);
+      brw_inst_set_opcode(p->isa, else_inst, BRW_OPCODE_ADD);
 
       brw_inst_set_imm_ud(devinfo, if_inst, (else_inst - if_inst + 1) * 16);
       brw_inst_set_imm_ud(devinfo, else_inst, (next_inst - else_inst) * 16);
@@ -1551,13 +1554,13 @@ patch_IF_ELSE(struct brw_codegen *p,
    if (devinfo->ver < 6)
       assert(!p->single_program_flow);
 
-   assert(if_inst != NULL && brw_inst_opcode(devinfo, if_inst) == BRW_OPCODE_IF);
+   assert(if_inst != NULL && brw_inst_opcode(p->isa, if_inst) == BRW_OPCODE_IF);
    assert(endif_inst != NULL);
-   assert(else_inst == NULL || brw_inst_opcode(devinfo, else_inst) == BRW_OPCODE_ELSE);
+   assert(else_inst == NULL || brw_inst_opcode(p->isa, else_inst) == BRW_OPCODE_ELSE);
 
    unsigned br = brw_jump_scale(devinfo);
 
-   assert(brw_inst_opcode(devinfo, endif_inst) == BRW_OPCODE_ENDIF);
+   assert(brw_inst_opcode(p->isa, endif_inst) == BRW_OPCODE_ENDIF);
    brw_inst_set_exec_size(devinfo, endif_inst, brw_inst_exec_size(devinfo, if_inst));
 
    if (else_inst == NULL) {
@@ -1566,7 +1569,7 @@ patch_IF_ELSE(struct brw_codegen *p,
 	 /* Turn it into an IFF, which means no mask stack operations for
 	  * all-false and jumping past the ENDIF.
 	  */
-         brw_inst_set_opcode(devinfo, if_inst, BRW_OPCODE_IFF);
+         brw_inst_set_opcode(p->isa, if_inst, BRW_OPCODE_IFF);
          brw_inst_set_gfx4_jump_count(devinfo, if_inst,
                                       br * (endif_inst - if_inst + 1));
          brw_inst_set_gfx4_pop_count(devinfo, if_inst, 0);
@@ -1693,7 +1696,7 @@ brw_ENDIF(struct brw_codegen *p)
    /* Pop the IF and (optional) ELSE instructions from the stack */
    p->if_depth_in_loop[p->loop_stack_depth]--;
    tmp = pop_if_stack(p);
-   if (brw_inst_opcode(devinfo, tmp) == BRW_OPCODE_ELSE) {
+   if (brw_inst_opcode(p->isa, tmp) == BRW_OPCODE_ELSE) {
       else_inst = tmp;
       tmp = pop_if_stack(p);
    }
@@ -1883,10 +1886,10 @@ brw_patch_break_cont(struct brw_codegen *p, brw_inst *while_inst)
        * been patched because it's part of a loop inside of the one we're
        * patching.
        */
-      if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_BREAK &&
+      if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_BREAK &&
           brw_inst_gfx4_jump_count(devinfo, inst) == 0) {
          brw_inst_set_gfx4_jump_count(devinfo, inst, br*((while_inst - inst) + 1));
-      } else if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_CONTINUE &&
+      } else if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_CONTINUE &&
                  brw_inst_gfx4_jump_count(devinfo, inst) == 0) {
          brw_inst_set_gfx4_jump_count(devinfo, inst, br * (while_inst - inst));
       }
@@ -1936,7 +1939,7 @@ brw_WHILE(struct brw_codegen *p)
 	 insn = next_insn(p, BRW_OPCODE_WHILE);
          do_insn = get_inner_do_insn(p);
 
-         assert(brw_inst_opcode(devinfo, do_insn) == BRW_OPCODE_DO);
+         assert(brw_inst_opcode(p->isa, do_insn) == BRW_OPCODE_DO);
 
 	 brw_set_dest(p, insn, brw_ip_reg());
 	 brw_set_src0(p, insn, brw_ip_reg());
@@ -1967,7 +1970,7 @@ void brw_land_fwd_jump(struct brw_codegen *p, int jmp_insn_idx)
    if (devinfo->ver >= 5)
       jmpi = 2;
 
-   assert(brw_inst_opcode(devinfo, jmp_insn) == BRW_OPCODE_JMPI);
+   assert(brw_inst_opcode(p->isa, jmp_insn) == BRW_OPCODE_JMPI);
    assert(brw_inst_src1_reg_file(devinfo, jmp_insn) == BRW_IMMEDIATE_VALUE);
 
    brw_inst_set_gfx4_jump_count(devinfo, jmp_insn,
@@ -2912,7 +2915,7 @@ brw_find_next_block_end(struct brw_codegen *p, int start_offset)
         offset = next_offset(devinfo, store, offset)) {
       brw_inst *insn = store + offset;
 
-      switch (brw_inst_opcode(devinfo, insn)) {
+      switch (brw_inst_opcode(p->isa, insn)) {
       case BRW_OPCODE_IF:
          depth++;
          break;
@@ -2962,7 +2965,7 @@ brw_find_loop_end(struct brw_codegen *p, int start_offset)
         offset = next_offset(devinfo, store, offset)) {
       brw_inst *insn = store + offset;
 
-      if (brw_inst_opcode(devinfo, insn) == BRW_OPCODE_WHILE) {
+      if (brw_inst_opcode(p->isa, insn) == BRW_OPCODE_WHILE) {
 	 if (while_jumps_before_offset(devinfo, insn, offset, start_offset))
 	    return offset;
       }
@@ -2990,9 +2993,9 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
       brw_inst *insn = store + offset;
       assert(brw_inst_cmpt_control(devinfo, insn) == 0);
 
-      int block_end_offset = brw_find_next_block_end(p, offset);
-      switch (brw_inst_opcode(devinfo, insn)) {
-      case BRW_OPCODE_BREAK:
+      switch (brw_inst_opcode(p->isa, insn)) {
+      case BRW_OPCODE_BREAK: {
+         int block_end_offset = brw_find_next_block_end(p, offset);
          assert(block_end_offset != 0);
          brw_inst_set_jip(devinfo, insn, (block_end_offset - offset) / scale);
 	 /* Gfx7 UIP points to WHILE; Gfx6 points just after it */
@@ -3000,7 +3003,10 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
 	    (brw_find_loop_end(p, offset) - offset +
              (devinfo->ver == 6 ? 16 : 0)) / scale);
 	 break;
-      case BRW_OPCODE_CONTINUE:
+      }
+
+      case BRW_OPCODE_CONTINUE: {
+         int block_end_offset = brw_find_next_block_end(p, offset);
          assert(block_end_offset != 0);
          brw_inst_set_jip(devinfo, insn, (block_end_offset - offset) / scale);
          brw_inst_set_uip(devinfo, insn,
@@ -3009,8 +3015,10 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
          assert(brw_inst_uip(devinfo, insn) != 0);
          assert(brw_inst_jip(devinfo, insn) != 0);
 	 break;
+      }
 
       case BRW_OPCODE_ENDIF: {
+         int block_end_offset = brw_find_next_block_end(p, offset);
          int32_t jump = (block_end_offset == 0) ?
                         1 * br : (block_end_offset - offset) / scale;
          if (devinfo->ver >= 7)
@@ -3020,7 +3028,7 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
 	 break;
       }
 
-      case BRW_OPCODE_HALT:
+      case BRW_OPCODE_HALT: {
 	 /* From the Sandy Bridge PRM (volume 4, part 2, section 8.3.19):
 	  *
 	  *    "In case of the halt instruction not inside any conditional
@@ -3032,6 +3040,7 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
 	  * The uip will have already been set by whoever set up the
 	  * instruction.
 	  */
+         int block_end_offset = brw_find_next_block_end(p, offset);
 	 if (block_end_offset == 0) {
             brw_inst_set_jip(devinfo, insn, brw_inst_uip(devinfo, insn));
 	 } else {
@@ -3040,6 +3049,7 @@ brw_set_uip_jip(struct brw_codegen *p, int start_offset)
          assert(brw_inst_uip(devinfo, insn) != 0);
          assert(brw_inst_jip(devinfo, insn) != 0);
 	 break;
+      }
 
       default:
          break;
@@ -3247,7 +3257,8 @@ brw_set_memory_fence_message(struct brw_codegen *p,
 static void
 gfx12_set_memory_fence_message(struct brw_codegen *p,
                                struct brw_inst *insn,
-                               enum brw_message_target sfid)
+                               enum brw_message_target sfid,
+                               uint32_t desc)
 {
    const unsigned mlen = 1; /* g0 header */
     /* Completion signaled by write to register. No data returned. */
@@ -3257,14 +3268,31 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
 
    if (sfid == BRW_SFID_URB) {
       brw_set_desc(p, insn, brw_urb_fence_desc(p->devinfo) |
-                            brw_message_desc(p->devinfo, mlen, rlen, false));
+                            brw_message_desc(p->devinfo, mlen, rlen, true));
    } else {
-      enum lsc_fence_scope scope = LSC_FENCE_THREADGROUP;
-      enum lsc_flush_type flush_type = LSC_FLUSH_TYPE_NONE;
+      enum lsc_fence_scope scope = lsc_fence_msg_desc_scope(p->devinfo, desc);
+      enum lsc_flush_type flush_type = lsc_fence_msg_desc_flush_type(p->devinfo, desc);
 
       if (sfid == GFX12_SFID_TGM) {
          scope = LSC_FENCE_TILE;
          flush_type = LSC_FLUSH_TYPE_EVICT;
+      }
+
+      /* Wa_14014435656:
+       *
+       *   "For any fence greater than local scope, always set flush type to
+       *    at least invalidate so that fence goes on properly."
+       *
+       *   "The bug is if flush_type is 'None', the scope is always downgraded
+       *    to 'local'."
+       *
+       * Here set scope to NONE_6 instead of NONE, which has the same effect
+       * as NONE but avoids the downgrade to scope LOCAL.
+       */
+      if (intel_device_info_is_dg2(p->devinfo) &&
+          scope > LSC_FENCE_LOCAL &&
+          flush_type == LSC_FLUSH_TYPE_NONE) {
+         flush_type = LSC_FLUSH_TYPE_NONE_6;
       }
 
       brw_set_desc(p, insn, lsc_fence_msg_desc(p->devinfo, scope,
@@ -3279,6 +3307,7 @@ brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg src,
                  enum opcode send_op,
                  enum brw_message_target sfid,
+                 uint32_t desc,
                  bool commit_enable,
                  unsigned bti)
 {
@@ -3298,7 +3327,7 @@ brw_memory_fence(struct brw_codegen *p,
 
    /* All DG2 hardware requires LSC for fence messages, even A-step */
    if (devinfo->has_lsc)
-      gfx12_set_memory_fence_message(p, insn, sfid);
+      gfx12_set_memory_fence_message(p, insn, sfid, desc);
    else
       brw_set_memory_fence_message(p, insn, sfid, commit_enable, bti);
 }
@@ -3336,16 +3365,14 @@ brw_pixel_interpolator_query(struct brw_codegen *p,
 }
 
 void
-brw_find_live_channel(struct brw_codegen *p, struct brw_reg dst,
-                      struct brw_reg mask)
+brw_find_live_channel(struct brw_codegen *p, struct brw_reg dst, bool last)
 {
    const struct intel_device_info *devinfo = p->devinfo;
    const unsigned exec_size = 1 << brw_get_default_exec_size(p);
    const unsigned qtr_control = brw_get_default_group(p) / 8;
    brw_inst *inst;
 
-   assert(devinfo->ver >= 7);
-   assert(mask.type == BRW_REGISTER_TYPE_UD);
+   assert(devinfo->ver == 7);
 
    brw_push_insn_state(p);
 
@@ -3360,99 +3387,59 @@ brw_find_live_channel(struct brw_codegen *p, struct brw_reg dst,
    if (brw_get_default_access_mode(p) == BRW_ALIGN_1) {
       brw_set_default_mask_control(p, BRW_MASK_DISABLE);
 
-      if (devinfo->ver >= 8) {
-         /* Getting the first active channel index is easy on Gfx8: Just find
-          * the first bit set in the execution mask.  The register exists on
-          * HSW already but it reads back as all ones when the current
-          * instruction has execution masking disabled, so it's kind of
-          * useless.
-          */
-         struct brw_reg exec_mask =
-            retype(brw_mask_reg(0), BRW_REGISTER_TYPE_UD);
+      const struct brw_reg flag = brw_flag_subreg(flag_subreg);
 
-         brw_set_default_exec_size(p, BRW_EXECUTE_1);
-         if (mask.file != BRW_IMMEDIATE_VALUE || mask.ud != 0xffffffff) {
-            /* Unfortunately, ce0 does not take into account the thread
-             * dispatch mask, which may be a problem in cases where it's not
-             * tightly packed (i.e. it doesn't have the form '2^n - 1' for
-             * some n).  Combine ce0 with the given dispatch (or vector) mask
-             * to mask off those channels which were never dispatched by the
-             * hardware.
-             */
-            brw_SHR(p, vec1(dst), mask, brw_imm_ud(qtr_control * 8));
-            brw_set_default_swsb(p, tgl_swsb_regdist(1));
-            brw_AND(p, vec1(dst), exec_mask, vec1(dst));
-            exec_mask = vec1(dst);
-         }
+      brw_set_default_exec_size(p, BRW_EXECUTE_1);
+      brw_MOV(p, retype(flag, BRW_REGISTER_TYPE_UD), brw_imm_ud(0));
 
-         /* Quarter control has the effect of magically shifting the value of
-          * ce0 so you'll get the first active channel relative to the
-          * specified quarter control as result.
-          */
-         inst = brw_FBL(p, vec1(dst), exec_mask);
+      /* Run enough instructions returning zero with execution masking and
+       * a conditional modifier enabled in order to get the full execution
+       * mask in f1.0.  We could use a single 32-wide move here if it
+       * weren't because of the hardware bug that causes channel enables to
+       * be applied incorrectly to the second half of 32-wide instructions
+       * on Gfx7.
+       */
+      const unsigned lower_size = MIN2(16, exec_size);
+      for (unsigned i = 0; i < exec_size / lower_size; i++) {
+         inst = brw_MOV(p, retype(brw_null_reg(), BRW_REGISTER_TYPE_UW),
+                        brw_imm_uw(0));
+         brw_inst_set_mask_control(devinfo, inst, BRW_MASK_ENABLE);
+         brw_inst_set_group(devinfo, inst, lower_size * i + 8 * qtr_control);
+         brw_inst_set_cond_modifier(devinfo, inst, BRW_CONDITIONAL_Z);
+         brw_inst_set_exec_size(devinfo, inst, cvt(lower_size) - 1);
+         brw_inst_set_flag_reg_nr(devinfo, inst, flag_subreg / 2);
+         brw_inst_set_flag_subreg_nr(devinfo, inst, flag_subreg % 2);
+      }
+
+      /* Find the first bit set in the exec_size-wide portion of the flag
+       * register that was updated by the last sequence of MOV
+       * instructions.
+       */
+      const enum brw_reg_type type = brw_int_type(exec_size / 8, false);
+      brw_set_default_exec_size(p, BRW_EXECUTE_1);
+      if (!last) {
+         inst = brw_FBL(p, vec1(dst), byte_offset(retype(flag, type), qtr_control));
       } else {
-         const struct brw_reg flag = brw_flag_subreg(flag_subreg);
-
-         brw_set_default_exec_size(p, BRW_EXECUTE_1);
-         brw_MOV(p, retype(flag, BRW_REGISTER_TYPE_UD), brw_imm_ud(0));
-
-         /* Run enough instructions returning zero with execution masking and
-          * a conditional modifier enabled in order to get the full execution
-          * mask in f1.0.  We could use a single 32-wide move here if it
-          * weren't because of the hardware bug that causes channel enables to
-          * be applied incorrectly to the second half of 32-wide instructions
-          * on Gfx7.
-          */
-         const unsigned lower_size = MIN2(16, exec_size);
-         for (unsigned i = 0; i < exec_size / lower_size; i++) {
-            inst = brw_MOV(p, retype(brw_null_reg(), BRW_REGISTER_TYPE_UW),
-                           brw_imm_uw(0));
-            brw_inst_set_mask_control(devinfo, inst, BRW_MASK_ENABLE);
-            brw_inst_set_group(devinfo, inst, lower_size * i + 8 * qtr_control);
-            brw_inst_set_cond_modifier(devinfo, inst, BRW_CONDITIONAL_Z);
-            brw_inst_set_exec_size(devinfo, inst, cvt(lower_size) - 1);
-            brw_inst_set_flag_reg_nr(devinfo, inst, flag_subreg / 2);
-            brw_inst_set_flag_subreg_nr(devinfo, inst, flag_subreg % 2);
-         }
-
-         /* Find the first bit set in the exec_size-wide portion of the flag
-          * register that was updated by the last sequence of MOV
-          * instructions.
-          */
-         const enum brw_reg_type type = brw_int_type(exec_size / 8, false);
-         brw_set_default_exec_size(p, BRW_EXECUTE_1);
-         brw_FBL(p, vec1(dst), byte_offset(retype(flag, type), qtr_control));
+         inst = brw_LZD(p, vec1(dst), byte_offset(retype(flag, type), qtr_control));
+         struct brw_reg neg = vec1(dst);
+         neg.negate = true;
+         inst = brw_ADD(p, vec1(dst), neg, brw_imm_uw(31));
       }
    } else {
       brw_set_default_mask_control(p, BRW_MASK_DISABLE);
 
-      if (devinfo->ver >= 8 &&
-          mask.file == BRW_IMMEDIATE_VALUE && mask.ud == 0xffffffff) {
-         /* In SIMD4x2 mode the first active channel index is just the
-          * negation of the first bit of the mask register.  Note that ce0
-          * doesn't take into account the dispatch mask, so the Gfx7 path
-          * should be used instead unless you have the guarantee that the
-          * dispatch mask is tightly packed (i.e. it has the form '2^n - 1'
-          * for some n).
-          */
-         inst = brw_AND(p, brw_writemask(dst, WRITEMASK_X),
-                        negate(retype(brw_mask_reg(0), BRW_REGISTER_TYPE_UD)),
-                        brw_imm_ud(1));
+      /* Overwrite the destination without and with execution masking to
+       * find out which of the channels is active.
+       */
+      brw_push_insn_state(p);
+      brw_set_default_exec_size(p, BRW_EXECUTE_4);
+      brw_MOV(p, brw_writemask(vec4(dst), WRITEMASK_X),
+              brw_imm_ud(1));
 
-      } else {
-         /* Overwrite the destination without and with execution masking to
-          * find out which of the channels is active.
-          */
-         brw_push_insn_state(p);
-         brw_set_default_exec_size(p, BRW_EXECUTE_4);
-         brw_MOV(p, brw_writemask(vec4(dst), WRITEMASK_X),
-                 brw_imm_ud(1));
-
-         inst = brw_MOV(p, brw_writemask(vec4(dst), WRITEMASK_X),
-                        brw_imm_ud(0));
-         brw_pop_insn_state(p);
-         brw_inst_set_mask_control(devinfo, inst, BRW_MASK_ENABLE);
-      }
+      inst = brw_MOV(p, brw_writemask(vec4(dst), WRITEMASK_X),
+                     brw_imm_ud(0));
+      brw_pop_insn_state(p);
+      brw_inst_set_mask_control(devinfo, inst, BRW_MASK_ENABLE);
    }
 
    brw_pop_insn_state(p);
@@ -3544,7 +3531,7 @@ brw_broadcast(struct brw_codegen *p,
 
          /* Use indirect addressing to fetch the specified component. */
          if (type_sz(src.type) > 4 &&
-             (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo) ||
+             (devinfo->platform == INTEL_PLATFORM_CHV || intel_device_info_is_9lp(devinfo) ||
               !devinfo->has_64bit_float)) {
             /* From the Cherryview PRM Vol 7. "Register Region Restrictions":
              *
@@ -3588,55 +3575,6 @@ brw_broadcast(struct brw_codegen *p,
          brw_inst_set_flag_reg_nr(devinfo, inst, 1);
       }
    }
-
-   brw_pop_insn_state(p);
-}
-
-/**
- * This instruction is generated as a single-channel align1 instruction by
- * both the VS and FS stages when using INTEL_DEBUG=shader_time.
- *
- * We can't use the typed atomic op in the FS because that has the execution
- * mask ANDed with the pixel mask, but we just want to write the one dword for
- * all the pixels.
- *
- * We don't use the SIMD4x2 atomic ops in the VS because want to just write
- * one u32.  So we use the same untyped atomic write message as the pixel
- * shader.
- *
- * The untyped atomic operation requires a BUFFER surface type with RAW
- * format, and is only accessible through the legacy DATA_CACHE dataport
- * messages.
- */
-void brw_shader_time_add(struct brw_codegen *p,
-                         struct brw_reg payload,
-                         uint32_t surf_index)
-{
-   const struct intel_device_info *devinfo = p->devinfo;
-   const unsigned sfid = (devinfo->verx10 >= 75 ?
-                          HSW_SFID_DATAPORT_DATA_CACHE_1 :
-                          GFX7_SFID_DATAPORT_DATA_CACHE);
-   assert(devinfo->ver >= 7);
-
-   brw_push_insn_state(p);
-   brw_set_default_access_mode(p, BRW_ALIGN_1);
-   brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-   brw_set_default_compression_control(p, BRW_COMPRESSION_NONE);
-   brw_inst *send = brw_next_insn(p, BRW_OPCODE_SEND);
-
-   /* We use brw_vec1_reg and unmasked because we want to increment the given
-    * offset only once.
-    */
-   brw_set_dest(p, send, brw_vec1_reg(BRW_ARCHITECTURE_REGISTER_FILE,
-                                      BRW_ARF_NULL, 0));
-   brw_set_src0(p, send, brw_vec1_reg(payload.file,
-                                      payload.nr, 0));
-   brw_set_desc(p, send, (brw_message_desc(devinfo, 2, 0, false) |
-                          brw_dp_untyped_atomic_desc(devinfo, 1, BRW_AOP_ADD,
-                                                     false)));
-
-   brw_inst_set_sfid(devinfo, send, sfid);
-   brw_inst_set_binding_table_index(devinfo, send, surf_index);
 
    brw_pop_insn_state(p);
 }
@@ -3724,12 +3662,14 @@ brw_float_controls_mode(struct brw_codegen *p,
 }
 
 void
-brw_update_reloc_imm(const struct intel_device_info *devinfo,
+brw_update_reloc_imm(const struct brw_isa_info *isa,
                      brw_inst *inst,
                      uint32_t value)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
    /* Sanity check that the instruction is a MOV of an immediate */
-   assert(brw_inst_opcode(devinfo, inst) == BRW_OPCODE_MOV);
+   assert(brw_inst_opcode(isa, inst) == BRW_OPCODE_MOV);
    assert(brw_inst_src0_reg_file(devinfo, inst) == BRW_IMMEDIATE_VALUE);
 
    /* If it was compacted, we can't safely rewrite */

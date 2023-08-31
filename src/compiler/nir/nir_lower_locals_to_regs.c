@@ -200,7 +200,17 @@ lower_locals_to_regs_block(nir_block *block,
 
          nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_mov);
          mov->src[0].src = get_deref_reg_src(deref, state);
+
+         if (mov->src[0].src.reg.reg->num_array_elems != 0 &&
+             mov->src[0].src.reg.base_offset >= mov->src[0].src.reg.reg->num_array_elems) {
+            /* out-of-bounds read, return 0 instead. */
+            mov->src[0].src = nir_src_for_ssa(nir_imm_intN_t(b, 0, mov->src[0].src.reg.reg->bit_size));
+            for (int i = 0; i < intrin->num_components; i++)
+               mov->src[0].swizzle[i] = 0;
+         }
+
          mov->dest.write_mask = (1 << intrin->num_components) - 1;
+
          if (intrin->dest.is_ssa) {
             nir_ssa_dest_init(&mov->instr, &mov->dest.dest,
                               intrin->num_components,
@@ -226,8 +236,36 @@ lower_locals_to_regs_block(nir_block *block,
 
          nir_src reg_src = get_deref_reg_src(deref, state);
 
+         if (reg_src.reg.reg->num_array_elems != 0 &&
+             reg_src.reg.base_offset >= reg_src.reg.reg->num_array_elems) {
+            /* Out of bounds write, just eliminate it. */
+            nir_instr_remove(&intrin->instr);
+            state->progress = true;
+            break;
+         }
+
          nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_mov);
+
          nir_src_copy(&mov->src[0].src, &intrin->src[1]);
+
+         /* The normal NIR SSA copy propagate pass can't happen after this pass,
+          * so do an ad-hoc copy propagate since this ALU op can do swizzles
+          * while the deref couldn't.
+          */
+         if (mov->src[0].src.is_ssa) {
+            nir_instr *parent = mov->src[0].src.ssa->parent_instr;
+            if (parent->type == nir_instr_type_alu) {
+               nir_alu_instr *parent_alu = nir_instr_as_alu(parent);
+               if (parent_alu->op == nir_op_mov && parent_alu->src[0].src.is_ssa) {
+                  for (unsigned i = 0; i < intrin->num_components; i++)
+                     mov->src[0].swizzle[i] = parent_alu->src[0].swizzle[mov->src[0].swizzle[i]];
+                  mov->src[0].abs = parent_alu->src[0].abs;
+                  mov->src[0].negate = parent_alu->src[0].negate;
+                  mov->src[0].src = parent_alu->src[0].src;
+               }
+            }
+         }
+
          mov->dest.write_mask = nir_intrinsic_write_mask(intrin);
          mov->dest.dest.is_ssa = false;
          mov->dest.dest.reg.reg = reg_src.reg.reg;

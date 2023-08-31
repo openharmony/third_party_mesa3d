@@ -26,12 +26,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "vk_format.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
 #include "vk_util.h"
 #include "wsi_common_entrypoints.h"
 #include "wsi_common_private.h"
-#include "wsi_common_win32.h"
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"      // warning: cast to pointer from integer of different size
@@ -70,40 +70,11 @@ struct wsi_win32_swapchain {
    struct wsi_win32_image     images[0];
 };
 
-VkBool32
-wsi_win32_get_presentation_support(struct wsi_device *wsi_device)
-{
-   return TRUE;
-}
-
 VKAPI_ATTR VkBool32 VKAPI_CALL
 wsi_GetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                  uint32_t queueFamilyIndex)
 {
-   VK_FROM_HANDLE(vk_physical_device, device, physicalDevice);
-
-   return wsi_win32_get_presentation_support(device->wsi_device);
-}
-
-VkResult
-wsi_create_win32_surface(VkInstance instance,
-                           const VkAllocationCallbacks *allocator,
-                           const VkWin32SurfaceCreateInfoKHR *create_info,
-                           VkSurfaceKHR *surface_khr)
-{
-   VkIcdSurfaceWin32 *surface = vk_zalloc(allocator, sizeof *surface, 8,
-                                            VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-
-   if (surface == NULL)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-   surface->base.platform = VK_ICD_WSI_PLATFORM_WIN32;
-
-   surface->hinstance = create_info->hinstance;
-   surface->hwnd = create_info->hwnd;
-
-   *surface_khr = VkIcdSurfaceBase_to_handle(&surface->base);
-   return VK_SUCCESS;
+   return TRUE;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -113,16 +84,24 @@ wsi_CreateWin32SurfaceKHR(VkInstance _instance,
                           VkSurfaceKHR *pSurface)
 {
    VK_FROM_HANDLE(vk_instance, instance, _instance);
-   const VkAllocationCallbacks *alloc;
+   VkIcdSurfaceWin32 *surface;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR);
 
-   if (pAllocator)
-      alloc = pAllocator;
-   else
-      alloc = &instance->alloc;
+   surface = vk_zalloc2(&instance->alloc, pAllocator, sizeof(*surface), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
-   return wsi_create_win32_surface(_instance, alloc, pCreateInfo, pSurface);
+   if (surface == NULL)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   surface->base.platform = VK_ICD_WSI_PLATFORM_WIN32;
+
+   surface->hinstance = pCreateInfo->hinstance;
+   surface->hwnd = pCreateInfo->hwnd;
+
+   *pSurface = VkIcdSurfaceBase_to_handle(&surface->base);
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -137,15 +116,24 @@ wsi_win32_surface_get_support(VkIcdSurfaceBase *surface,
 }
 
 static VkResult
-wsi_win32_surface_get_capabilities(VkIcdSurfaceBase *surface,
+wsi_win32_surface_get_capabilities(VkIcdSurfaceBase *surf,
                                 struct wsi_device *wsi_device,
                                 VkSurfaceCapabilitiesKHR* caps)
 {
+   VkIcdSurfaceWin32 *surface = (VkIcdSurfaceWin32 *)surf;
+
+   RECT win_rect;
+   if (!GetClientRect(surface->hwnd, &win_rect))
+      return VK_ERROR_SURFACE_LOST_KHR;
+
    caps->minImageCount = 1;
    /* There is no real maximum */
    caps->maxImageCount = 0;
 
-   caps->currentExtent = (VkExtent2D) { UINT32_MAX, UINT32_MAX };
+   caps->currentExtent = (VkExtent2D) {
+      win_rect.right - win_rect.left,
+      win_rect.bottom - win_rect.top
+   };
    caps->minImageExtent = (VkExtent2D) { 1, 1 };
    caps->maxImageExtent = (VkExtent2D) {
       wsi_device->maxImageDimension2D,
@@ -165,7 +153,8 @@ wsi_win32_surface_get_capabilities(VkIcdSurfaceBase *surface,
       VK_IMAGE_USAGE_SAMPLED_BIT |
       VK_IMAGE_USAGE_TRANSFER_DST_BIT |
       VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 
    return VK_SUCCESS;
 }
@@ -239,7 +228,7 @@ wsi_win32_surface_get_formats(VkIcdSurfaceBase *icd_surface,
    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
       vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
          f->format = sorted_formats[i];
-         f->colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         f->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
       }
    }
 
@@ -262,7 +251,7 @@ wsi_win32_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
       vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
          f->surfaceFormat.format = sorted_formats[i];
-         f->surfaceFormat.colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         f->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
       }
    }
 
@@ -312,160 +301,16 @@ wsi_win32_surface_get_present_rectangles(VkIcdSurfaceBase *surface,
    return vk_outarray_status(&out);
 }
 
-static uint32_t
-select_memory_type(const struct wsi_device *wsi,
-                   VkMemoryPropertyFlags props,
-                   uint32_t type_bits)
-{
-   for (uint32_t i = 0; i < wsi->memory_props.memoryTypeCount; i++) {
-       const VkMemoryType type = wsi->memory_props.memoryTypes[i];
-       if ((type_bits & (1 << i)) && (type.propertyFlags & props) == props)
-         return i;
-   }
-
-   unreachable("No memory type found");
-}
-
-VkResult
-wsi_create_native_image(const struct wsi_swapchain *chain,
-                        const VkSwapchainCreateInfoKHR *pCreateInfo,
-                        uint32_t num_modifier_lists,
-                        const uint32_t *num_modifiers,
-                        const uint64_t *const *modifiers,
-                        uint8_t *(alloc_shm)(struct wsi_image *image, unsigned size),
-                        struct wsi_image *image)
-{
-   const struct wsi_device *wsi = chain->wsi;
-   VkResult result;
-
-   memset(image, 0, sizeof(*image));
-   for (int i = 0; i < ARRAY_SIZE(image->fds); i++)
-      image->fds[i] = -1;
-
-   const struct wsi_image_create_info image_wsi_info = {
-      .sType = VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA,
-   };
-   VkImageCreateInfo image_info = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-      .pNext = &image_wsi_info,
-      .flags = 0,
-      .imageType = VK_IMAGE_TYPE_2D,
-      .format = pCreateInfo->imageFormat,
-      .extent = {
-         .width = pCreateInfo->imageExtent.width,
-         .height = pCreateInfo->imageExtent.height,
-         .depth = 1,
-      },
-      .mipLevels = 1,
-      .arrayLayers = 1,
-      .samples = VK_SAMPLE_COUNT_1_BIT,
-      .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = pCreateInfo->imageUsage,
-      .sharingMode = pCreateInfo->imageSharingMode,
-      .queueFamilyIndexCount = pCreateInfo->queueFamilyIndexCount,
-      .pQueueFamilyIndices = pCreateInfo->pQueueFamilyIndices,
-      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-   };
-
-   VkImageFormatListCreateInfoKHR image_format_list;
-   if (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
-      image_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
-                          VK_IMAGE_CREATE_EXTENDED_USAGE_BIT_KHR;
-
-      const VkImageFormatListCreateInfoKHR *format_list =
-         vk_find_struct_const(pCreateInfo->pNext,
-                              IMAGE_FORMAT_LIST_CREATE_INFO_KHR);
-
-#ifndef NDEBUG
-      assume(format_list && format_list->viewFormatCount > 0);
-      bool format_found = false;
-      for (int i = 0; i < format_list->viewFormatCount; i++)
-         if (pCreateInfo->imageFormat == format_list->pViewFormats[i])
-            format_found = true;
-      assert(format_found);
-#endif
-
-      image_format_list = *format_list;
-      image_format_list.pNext = NULL;
-      __vk_append_struct(&image_info, &image_format_list);
-   }
-
-
-   result = wsi->CreateImage(chain->device, &image_info,
-                             &chain->alloc, &image->image);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   VkMemoryRequirements reqs;
-   wsi->GetImageMemoryRequirements(chain->device, image->image, &reqs);
-
-   const struct wsi_memory_allocate_info memory_wsi_info = {
-      .sType = VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,
-      .pNext = NULL,
-      .implicit_sync = true,
-   };
-   const VkExportMemoryAllocateInfo memory_export_info = {
-      .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-      .pNext = &memory_wsi_info,
-      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-   };
-   const VkMemoryDedicatedAllocateInfo memory_dedicated_info = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-      .pNext = &memory_export_info,
-      .image = image->image,
-      .buffer = VK_NULL_HANDLE,
-   };
-   const VkMemoryAllocateInfo memory_info = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .pNext = &memory_dedicated_info,
-      .allocationSize = reqs.size,
-      .memoryTypeIndex = select_memory_type(wsi, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                                            reqs.memoryTypeBits),
-   };
-   result = wsi->AllocateMemory(chain->device, &memory_info,
-                                &chain->alloc, &image->memory);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   result = wsi->BindImageMemory(chain->device, image->image,
-                                 image->memory, 0);
-   if (result != VK_SUCCESS)
-      goto fail;
-
-   const VkImageSubresource image_subresource = {
-      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-      .mipLevel = 0,
-      .arrayLayer = 0,
-   };
-   VkSubresourceLayout image_layout;
-   wsi->GetImageSubresourceLayout(chain->device, image->image,
-                                  &image_subresource, &image_layout);
-
-   image->num_planes = 1;
-   image->sizes[0] = reqs.size;
-   image->row_pitches[0] = image_layout.rowPitch;
-   image->offsets[0] = 0;
-
-   return VK_SUCCESS;
-
-fail:
-   wsi_destroy_image(chain, image);
-
-   return result;
-}
-
 static VkResult
 wsi_win32_image_init(VkDevice device_h,
-                       struct wsi_swapchain *drv_chain,
-                       const VkSwapchainCreateInfoKHR *create_info,
-                       const VkAllocationCallbacks *allocator,
-                       struct wsi_win32_image *image)
+                     struct wsi_win32_swapchain *chain,
+                     const VkSwapchainCreateInfoKHR *create_info,
+                     const VkAllocationCallbacks *allocator,
+                     struct wsi_win32_image *image)
 {
-   struct wsi_win32_swapchain *chain = (struct wsi_win32_swapchain *) drv_chain;
-
-   VkResult result = wsi_create_native_image(&chain->base, create_info,
-                                             0, NULL, NULL, NULL,
-                                             &image->base);
+   assert(chain->base.use_buffer_blit);
+   VkResult result = wsi_create_image(&chain->base, &chain->base.image_info,
+                                      &image->base);
    if (result != VK_SUCCESS)
       return result;
 
@@ -500,13 +345,10 @@ wsi_win32_image_init(VkDevice device_h,
 }
 
 static void
-wsi_win32_image_finish(struct wsi_swapchain *drv_chain,
-                         const VkAllocationCallbacks *allocator,
-                         struct wsi_win32_image *image)
+wsi_win32_image_finish(struct wsi_win32_swapchain *chain,
+                       const VkAllocationCallbacks *allocator,
+                       struct wsi_win32_image *image)
 {
-   struct wsi_win32_swapchain *chain =
-      (struct wsi_win32_swapchain *) drv_chain;
-
    DeleteDC(image->dc);
    if(image->bmp)
       DeleteObject(image->bmp);
@@ -521,7 +363,7 @@ wsi_win32_swapchain_destroy(struct wsi_swapchain *drv_chain,
       (struct wsi_win32_swapchain *) drv_chain;
 
    for (uint32_t i = 0; i < chain->base.image_count; i++)
-      wsi_win32_image_finish(drv_chain, allocator, &chain->images[i]);
+      wsi_win32_image_finish(chain, allocator, &chain->images[i]);
 
    DeleteDC(chain->chain_dc);
 
@@ -564,30 +406,19 @@ wsi_win32_queue_present(struct wsi_swapchain *drv_chain,
    struct wsi_win32_swapchain *chain = (struct wsi_win32_swapchain *) drv_chain;
    assert(image_index < chain->base.image_count);
    struct wsi_win32_image *image = &chain->images[image_index];
-   VkResult result;
 
-   char *ptr;
+   assert(chain->base.use_buffer_blit);
+
+   char *ptr = image->base.cpu_map;
    char *dptr = image->ppvBits;
-   result = chain->base.wsi->MapMemory(chain->base.device,
-                                       image->base.memory,
-                                       0, image->base.sizes[0], 0, (void**)&ptr);
 
    for (unsigned h = 0; h < chain->extent.height; h++) {
       memcpy(dptr, ptr, chain->extent.width * 4);
       dptr += image->bmp_row_pitch;
       ptr += image->base.row_pitches[0];
    }
-   if(StretchBlt(chain->chain_dc, 0, 0, chain->extent.width, chain->extent.height, image->dc, 0, 0, chain->extent.width, chain->extent.height, SRCCOPY))
-      result = VK_SUCCESS;
-   else
-     result = VK_ERROR_MEMORY_MAP_FAILED;
-
-   chain->base.wsi->UnmapMemory(chain->base.device, image->base.memory);
-   if (result != VK_SUCCESS)
-      chain->status = result;
-
-   if (result != VK_SUCCESS)
-      return result;
+   if (!StretchBlt(chain->chain_dc, 0, 0, chain->extent.width, chain->extent.height, image->dc, 0, 0, chain->extent.width, chain->extent.height, SRCCOPY))
+      chain->status = VK_ERROR_MEMORY_MAP_FAILED;
 
    return chain->status;
 }
@@ -618,7 +449,7 @@ wsi_win32_surface_create_swapchain(
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    VkResult result = wsi_swapchain_init(wsi_device, &chain->base, device,
-                                        create_info, allocator);
+                                        create_info, allocator, false);
    if (result != VK_SUCCESS) {
       vk_free(allocator, chain);
       return result;
@@ -637,16 +468,26 @@ wsi_win32_surface_create_swapchain(
 
    chain->surface = surface;
 
+   assert(wsi_device->sw);
+   chain->base.use_buffer_blit = true;
+
+   result = wsi_configure_cpu_image(&chain->base, create_info, NULL /*alloc_shm*/, &chain->base.image_info);
+   if (result != VK_SUCCESS) {
+      vk_free(allocator, chain);
+      goto fail_init_images;
+   }
+
    for (uint32_t image = 0; image < chain->base.image_count; image++) {
-      result = wsi_win32_image_init(device, &chain->base,
-                                      create_info, allocator,
-                                      &chain->images[image]);
+      result = wsi_win32_image_init(device, chain,
+                                    create_info, allocator,
+                                    &chain->images[image]);
       if (result != VK_SUCCESS) {
          while (image > 0) {
             --image;
-            wsi_win32_image_finish(&chain->base, allocator,
-                                     &chain->images[image]);
+            wsi_win32_image_finish(chain, allocator,
+                                   &chain->images[image]);
          }
+         wsi_destroy_image_info(&chain->base, &chain->base.image_info);
          vk_free(allocator, chain);
          goto fail_init_images;
       }

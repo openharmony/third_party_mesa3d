@@ -1,4 +1,3 @@
-# coding=utf-8
 COPYRIGHT=u"""
 /* Copyright © 2015-2021 Intel Corporation
  *
@@ -30,7 +29,7 @@ from mako.template import Template
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
-from vk_dispatch_table_gen import get_entrypoints_from_xml
+from vk_entrypoints import get_entrypoints_from_xml
 
 TEMPLATE_H = Template(COPYRIGHT + """\
 /* This file generated from ${filename}, don't edit directly. */
@@ -129,6 +128,9 @@ TEMPLATE_C = Template(COPYRIGHT + """
       % endfor
 #else
     #pragma comment(linker, "/alternatename:${p}_${e.name}=vk_entrypoint_stub")
+#if defined(_M_ARM64EC)
+    #pragma comment(linker, "/alternatename:#${p}_${e.name}=#vk_entrypoint_stub")
+#endif
 #endif
 #else
     VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()}) __attribute__ ((weak));
@@ -237,10 +239,10 @@ def main():
     # For outputting entrypoints.h we generate a anv_EntryPoint() prototype
     # per entry point.
     try:
-        with open(args.out_h, 'w') as f:
+        with open(args.out_h, 'w', encoding='utf-8') as f:
             guard = os.path.basename(args.out_h).replace('.', '_').upper()
             f.write(TEMPLATE_H.render(guard=guard, **environment))
-        with open(args.out_c, 'w') as f:
+        with open(args.out_c, 'w', encoding='utf-8') as f:
             f.write(TEMPLATE_C.render(**environment))
 
     except Exception:
@@ -248,12 +250,10 @@ def main():
         # to print a useful stack trace and prints it, then exits with
         # status 1, if python is run with debug; otherwise it just raises
         # the exception
-        if __debug__:
-            import sys
-            from mako import exceptions
-            sys.stderr.write(exceptions.text_error_template().render() + '\n')
-            sys.exit(1)
-        raise
+        import sys
+        from mako import exceptions
+        print(exceptions.text_error_template().render(), file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

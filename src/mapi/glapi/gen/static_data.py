@@ -1689,8 +1689,12 @@ offsets = {
     "VertexAttribs2hvNV": 1653,
     "VertexAttribs3hvNV": 1654,
     "VertexAttribs4hvNV": 1655,
-    "ClearTexImageEXT": 1656,
-    "ClearTexSubImageEXT": 1657,
+    "TexPageCommitmentARB": 1656,
+    "TexturePageCommitmentEXT": 1657,
+    "ImportMemoryWin32HandleEXT": 1658,
+    "ImportSemaphoreWin32HandleEXT": 1659,
+    "ImportMemoryWin32NameEXT": 1660,
+    "ImportSemaphoreWin32NameEXT": 1661,
 }
 
 functions = [

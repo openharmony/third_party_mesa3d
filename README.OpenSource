@@ -3,9 +3,9 @@
         "Name": "mesa",
         "License": "MIT license",
         "License File": "COPYING",
-        "Version Number": "21.3.3",
+        "Version Number": "22.2.4",
         "Owner": "zhangleiyu1@huawei.com",
-        "Upstream URL": "https://docs.mesa3d.org/relnotes/21.3.3.html",
+        "Upstream URL": "https://gitlab.freedesktop.org/mesa/mesa/-/tree/mesa-22.2.4?ref_type=tags",
         "Description": "mesa is an open-source software implementation of OpenGL, Vulkan, and other graphics API specifications."
     }
 ]

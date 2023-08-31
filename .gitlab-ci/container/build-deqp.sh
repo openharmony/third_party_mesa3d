@@ -6,10 +6,17 @@ git config --global user.email "mesa@example.com"
 git config --global user.name "Mesa CI"
 git clone \
     https://github.com/KhronosGroup/VK-GL-CTS.git \
-    -b vulkan-cts-1.2.7.1 \
+    -b vulkan-cts-1.3.3.0 \
     --depth 1 \
     /VK-GL-CTS
 pushd /VK-GL-CTS
+
+# Apply a patch to update zlib link to an available version.
+# vulkan-cts-1.3.3.0 uses zlib 1.2.12 which was removed from zlib server due to
+# a CVE. See https://zlib.net/
+# FIXME: Remove this patch when uprev to 1.3.4.0+
+wget -O- https://github.com/KhronosGroup/VK-GL-CTS/commit/6bb2e7d64261bedb503947b1b251b1eeeb49be73.patch |
+    git am -
 
 # --insecure is due to SSL cert failures hitting sourceforge for zlib and
 # libpng (sigh).  The archives get their checksums checked anyway, and git
@@ -43,8 +50,8 @@ mv /deqp/modules/egl/deqp-egl-x11 /deqp/modules/egl/deqp-egl
 
 # Copy out the mustpass lists we want.
 mkdir /deqp/mustpass
-for mustpass in $(< /VK-GL-CTS/external/vulkancts/mustpass/master/vk-default.txt) ; do
-    cat /VK-GL-CTS/external/vulkancts/mustpass/master/$mustpass \
+for mustpass in $(< /VK-GL-CTS/external/vulkancts/mustpass/main/vk-default.txt) ; do
+    cat /VK-GL-CTS/external/vulkancts/mustpass/main/$mustpass \
         >> /deqp/mustpass/vk-master.txt
 done
 
@@ -68,7 +75,11 @@ cp /deqp/executor/testlog-to-* /deqp/executor.save
 rm -rf /deqp/executor
 mv /deqp/executor.save /deqp/executor
 
+# Remove other mustpass files, since we saved off the ones we wanted to conventient locations above.
 rm -rf /deqp/external/openglcts/modules/gl_cts/data/mustpass
+rm -rf /deqp/external/vulkancts/modules/vulkan/vk-master*
+rm -rf /deqp/external/vulkancts/modules/vulkan/vk-default
+
 rm -rf /deqp/external/openglcts/modules/cts-runner
 rm -rf /deqp/modules/internal
 rm -rf /deqp/execserver

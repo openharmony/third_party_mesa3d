@@ -31,7 +31,6 @@
 #ifndef EGLDISPLAY_INCLUDED
 #define EGLDISPLAY_INCLUDED
 
-#include "c99_compat.h"
 #include "c11/threads.h"
 
 #include "egltypedefs.h"
@@ -171,6 +170,7 @@ struct _egl_display
 
    /* options that affect how the driver initializes the display */
    struct {
+      EGLBoolean Zink; /**< Use kopper only */
       EGLBoolean ForceSoftware; /**< Use software path only */
       EGLAttrib *Attribs;     /**< Platform-specific options */
       int fd; /**< plaform device specific, local fd */

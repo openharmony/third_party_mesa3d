@@ -58,7 +58,7 @@ if can_check_clang
 else
   dep_clang_usable = true
 endif
-if not (dep_clang.found() and dep_clang_usable)
+if not _shared_llvm or not (dep_clang.found() and dep_clang_usable)
   dep_clang = [
     cpp.find_library('clangCodeGen', dirs : llvm_libdir),
     cpp.find_library('clangFrontendTool', dirs : llvm_libdir),
@@ -100,6 +100,7 @@ libopencl = shared_library(
     dep_clock, dep_dl, dep_unwind, dep_elf, dep_clang, dep_version
   ],
   version : '@0@.0.0'.format(opencl_version),
+  soversion : host_machine.system() == 'windows' ? '' : opencl_version,
   install : true,
 )
 
@@ -114,4 +115,12 @@ if with_opencl_icd
     install : true,
     install_dir : join_paths(get_option('sysconfdir'), 'OpenCL', 'vendors'),
   )
+
+  if meson.version().version_compare('>= 0.58')
+    # .so is hardcoded in the icd as well
+    devenv.prepend(
+      'OCL_ICD_FILENAMES',
+      meson.current_build_dir() / 'libMesaOpenCL.so.@0@'.format(opencl_version)
+    )
+  endif
 endif

@@ -570,7 +570,8 @@ has_dst_aligned_region_restriction(const intel_device_info *devinfo,
 
    if (type_sz(dst_type) > 4 || type_sz(exec_type) > 4 ||
        (type_sz(exec_type) == 4 && is_dword_multiply))
-      return devinfo->is_cherryview || intel_device_info_is_9lp(devinfo) ||
+      return devinfo->platform == INTEL_PLATFORM_CHV ||
+             intel_device_info_is_9lp(devinfo) ||
              devinfo->verx10 >= 125;
 
    else if (brw_reg_type_is_floating_point(dst_type))
@@ -687,6 +688,6 @@ is_coalescing_payload(const brw::simple_allocator &alloc, const fs_inst *inst)
 }
 
 bool
-has_bank_conflict(const intel_device_info *devinfo, const fs_inst *inst);
+has_bank_conflict(const struct brw_isa_info *isa, const fs_inst *inst);
 
 #endif

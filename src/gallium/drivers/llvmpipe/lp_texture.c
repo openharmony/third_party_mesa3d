@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,7 +22,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
  /*
   * Authors:
@@ -40,7 +40,6 @@
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/simple_list.h"
 #include "util/u_transfer.h"
 
 #include "lp_context.h"
@@ -293,7 +292,7 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   insert_at_tail(&resource_list, lpr);
+   list_addtail(&lpr->list, &resource_list.list);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -343,7 +342,7 @@ llvmpipe_memobj_create_from_handle(struct pipe_screen *pscreen,
 #ifdef PIPE_MEMORY_FD
    struct llvmpipe_memory_object *memobj = CALLOC_STRUCT(llvmpipe_memory_object);
 
-   if (handle->type == WINSYS_HANDLE_TYPE_FD && 
+   if (handle->type == WINSYS_HANDLE_TYPE_FD &&
        pscreen->import_memory_fd(pscreen, handle->handle, &memobj->data, &memobj->size)) {
       return &memobj->b;
    }
@@ -422,7 +421,7 @@ llvmpipe_resource_from_memobj(struct pipe_screen *pscreen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   insert_at_tail(&resource_list, lpr);
+   list_addtail(&lpr->list, &resource_list.list);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -461,8 +460,8 @@ llvmpipe_resource_destroy(struct pipe_screen *pscreen,
    }
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   if (lpr->next)
-      remove_from_list(lpr);
+   if (!list_is_empty(&lpr->list))
+      list_del(&lpr->list);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -601,7 +600,7 @@ llvmpipe_resource_from_handle(struct pipe_screen *_screen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   insert_at_tail(&resource_list, lpr);
+   list_addtail(&lpr->list, &resource_list.list);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -657,6 +656,11 @@ llvmpipe_resource_from_user_memory(struct pipe_screen *_screen,
    } else
       lpr->data = user_memory;
    lpr->user_ptr = true;
+#ifdef DEBUG
+   mtx_lock(&resource_list_mutex);
+   list_addtail(&lpr->list, &resource_list.list);
+   mtx_unlock(&resource_list_mutex);
+#endif
    return &lpr->base;
 fail:
    FREE(lpr);
@@ -950,7 +954,10 @@ llvmpipe_memory_barrier(struct pipe_context *pipe,
 
 static struct pipe_memory_allocation *llvmpipe_allocate_memory(struct pipe_screen *screen, uint64_t size)
 {
-   return os_malloc_aligned(size, 256);
+   uint64_t alignment;
+   if (!os_get_page_size(&alignment))
+      alignment = 256;
+   return os_malloc_aligned(size, alignment);
 }
 
 static void llvmpipe_free_memory(struct pipe_screen *screen,
@@ -965,7 +972,10 @@ static const char *driver_id = "llvmpipe" MESA_GIT_SHA1;
 
 static struct pipe_memory_allocation *llvmpipe_allocate_memory_fd(struct pipe_screen *screen, uint64_t size, int *fd)
 {
-   return os_malloc_aligned_fd(size, 256, fd, "llvmpipe memory fd", driver_id);
+   uint64_t alignment;
+   if (!os_get_page_size(&alignment))
+      alignment = 256;
+   return os_malloc_aligned_fd(size, alignment, fd, "llvmpipe memory fd", driver_id);
 }
 
 static bool llvmpipe_import_memory_fd(struct pipe_screen *screen, int fd, struct pipe_memory_allocation **ptr, uint64_t *size)
@@ -1023,7 +1033,7 @@ llvmpipe_print_resources(void)
 
    debug_printf("LLVMPIPE: current resources:\n");
    mtx_lock(&resource_list_mutex);
-   foreach(lpr, &resource_list) {
+   LIST_FOR_EACH_ENTRY(lpr, &resource_list.list, list) {
       unsigned size = llvmpipe_resource_size(&lpr->base);
       debug_printf("resource %u at %p, size %ux%ux%u: %u bytes, refcount %u\n",
                    lpr->id, (void *) lpr,
@@ -1097,7 +1107,7 @@ llvmpipe_resource_get_param(struct pipe_screen *screen,
 
       if (!llvmpipe_resource_get_handle(screen, context, resource, &whandle, handle_usage))
          return false;
-      *value = whandle.handle;
+      *value = (uint64_t)(uintptr_t)whandle.handle;
       return true;
    default:
       break;
@@ -1116,7 +1126,7 @@ llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen)
       static boolean first_call = TRUE;
       if (first_call) {
          memset(&resource_list, 0, sizeof(resource_list));
-         make_empty_list(&resource_list);
+         list_inithead(&resource_list.list);
          first_call = FALSE;
       }
    }

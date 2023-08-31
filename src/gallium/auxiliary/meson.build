@@ -120,10 +120,6 @@ files_libgallium = files(
   'hud/hud_driver_query.c',
   'hud/hud_fps.c',
   'hud/hud_private.h',
-  'indices/u_indices.h',
-  'indices/u_indices_priv.h',
-  'indices/u_primconvert.c',
-  'indices/u_primconvert.h',
   'os/os_mman.h',
   'os/os_process.c',
   'os/os_process.h',
@@ -185,8 +181,6 @@ files_libgallium = files(
   'tgsi/tgsi_dynamic_indexing.c',
   'tgsi/tgsi_exec.c',
   'tgsi/tgsi_exec.h',
-  'tgsi/tgsi_emulate.c',
-  'tgsi/tgsi_emulate.h',
   'tgsi/tgsi_from_mesa.c',
   'tgsi/tgsi_from_mesa.h',
   'tgsi/tgsi_info.c',
@@ -244,8 +238,6 @@ files_libgallium = files(
   'util/u_debug_image.h',
   'util/u_dirty_flags.h',
   'util/u_dirty_surfaces.h',
-  'util/u_dl.c',
-  'util/u_dl.h',
   'util/u_draw.c',
   'util/u_draw.h',
   'util/u_draw_quad.c',
@@ -276,7 +268,6 @@ files_libgallium = files(
   'util/u_network.c',
   'util/u_network.h',
   'util/u_pack_color.h',
-  'util/u_pointer.h',
   'util/u_prim.h',
   'util/u_prim.c',
   'util/u_prim_restart.c',
@@ -331,6 +322,8 @@ files_libgallium = files(
   'nir/nir_to_tgsi.h',
   'nir/nir_draw_helpers.c',
   'nir/nir_draw_helpers.h',
+  'nir/nir_helpers.c',
+  'nir/nir_helpers.h',
 )
 
 if dep_libdrm.found()
@@ -385,6 +378,7 @@ if draw_with_llvm
     'gallivm/lp_bld_misc.h',
     'gallivm/lp_bld_nir.h',
     'gallivm/lp_bld_nir.c',
+    'gallivm/lp_bld_nir_aos.c',
     'gallivm/lp_bld_nir_soa.c',
     'gallivm/lp_bld_pack.c',
     'gallivm/lp_bld_pack.h',
@@ -427,6 +421,8 @@ endif
 files_libgalliumvl = files(
   'vl/vl_bicubic_filter.c',
   'vl/vl_bicubic_filter.h',
+  'vl/vl_codec.c',
+  'vl/vl_codec.h',
   'vl/vl_compositor.c',
   'vl/vl_compositor.h',
   'vl/vl_compositor_gfx.c',
@@ -452,13 +448,11 @@ files_libgalliumvl = files(
   'vl/vl_mpeg12_bitstream.h',
   'vl/vl_mpeg12_decoder.c',
   'vl/vl_mpeg12_decoder.h',
-  'vl/vl_rbsp.h',
   'vl/vl_types.h',
   'vl/vl_vertex_buffers.c',
   'vl/vl_vertex_buffers.h',
   'vl/vl_video_buffer.c',
   'vl/vl_video_buffer.h',
-  'vl/vl_vlc.h',
   'vl/vl_zscan.c',
   'vl/vl_zscan.h',
   'vl/vl_probs_table.h',
@@ -477,6 +471,21 @@ if with_dri2 and with_platform_x11
     files_libgalliumvlwinsys += files('vl/vl_winsys_dri3.c')
   endif
 endif
+
+if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  files_libgalliumvlwinsys += files('vl/vl_winsys_xlib_swrast.c')
+elif with_gallium_drisw_kms
+  files_libgalliumvlwinsys += files('vl/vl_winsys_dri_vgem.c')
+endif
+
+prog_enums2names = files('driver_trace/enums2names.py')
+files_libgallium += custom_target(
+  'tr_util.[ch]',
+  input: '../include/pipe/p_defines.h',
+  output: ['tr_util.c', 'tr_util.h'],
+  command: [prog_python, prog_enums2names, '@INPUT@', '-C', '@OUTPUT0@', '-H', '@OUTPUT1@', '-I', 'tr_util.h'],
+  depend_files: prog_enums2names,
+)
 
 files_libgallium += custom_target(
   'u_tracepoints.c',
@@ -508,29 +517,10 @@ idep_u_tracepoints = declare_dependency(
   sources: files_u_tracepoints,
 )
 
-u_indices_gen_c = custom_target(
-  'u_indices_gen.c',
-  input : 'indices/u_indices_gen.py',
-  output : 'u_indices_gen.c',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
-)
-
-u_unfilled_gen_c = custom_target(
-  'u_unfilled_gen.c',
-  input : 'indices/u_unfilled_gen.py',
-  output : 'u_unfilled_gen.c',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
-)
-
 libgallium_extra_c_args = []
-if with_swrast_vk and with_gallium_zink
-  libgallium_extra_c_args += '-DZINK_WITH_SWRAST_VK'
-endif
 libgallium = static_library(
   'gallium',
-  [files_libgallium, u_indices_gen_c, u_unfilled_gen_c],
+  [files_libgallium],
   include_directories : [
     inc_loader, inc_gallium, inc_src, inc_include, include_directories('util')
   ],

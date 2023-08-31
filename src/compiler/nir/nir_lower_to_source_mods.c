@@ -78,8 +78,10 @@ nir_lower_to_source_mods_block(nir_block *block,
          case nir_type_float:
             if (!(options & nir_lower_float_source_mods))
                continue;
-            if (parent->op != nir_op_fabs && parent->op != nir_op_fneg)
+            if (!(parent->op == nir_op_fabs && (options & nir_lower_fabs_source_mods)) &&
+                !(parent->op == nir_op_fneg && (options & nir_lower_fneg_source_mods))) {
                continue;
+            }
             break;
          case nir_type_int:
             if (!(options & nir_lower_int_source_mods))
@@ -104,7 +106,8 @@ nir_lower_to_source_mods_block(nir_block *block,
             continue;
 
          if (!lower_abs && (parent->op == nir_op_fabs ||
-                            parent->op == nir_op_iabs))
+                            parent->op == nir_op_iabs ||
+                            parent->src[0].abs))
             continue;
 
          nir_instr_rewrite_src(instr, &alu->src[i].src, parent->src[0].src);

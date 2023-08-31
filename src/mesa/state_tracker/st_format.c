@@ -110,23 +110,12 @@ st_mesa_format_to_pipe_format(const struct st_context *st,
    }
 
    if (st_astc_format_fallback(st, mesaFormat)) {
-      const struct util_format_description *desc =
-         util_format_description(mesaFormat);
-
       if (_mesa_is_format_srgb(mesaFormat)) {
-         if (!st->transcode_astc)
-            return PIPE_FORMAT_R8G8B8A8_SRGB;
-         else if (desc->block.width * desc->block.height < 32)
-            return PIPE_FORMAT_DXT5_SRGBA;
-         else
-            return PIPE_FORMAT_DXT1_SRGBA;
+         return st->transcode_astc ? PIPE_FORMAT_DXT5_SRGBA :
+                                     PIPE_FORMAT_R8G8B8A8_SRGB;
       } else {
-         if (!st->transcode_astc)
-            return PIPE_FORMAT_R8G8B8A8_UNORM;
-         else if (desc->block.width * desc->block.height < 32)
-            return PIPE_FORMAT_DXT5_RGBA;
-         else
-            return PIPE_FORMAT_DXT1_RGBA;
+         return st->transcode_astc ? PIPE_FORMAT_DXT5_RGBA :
+                                     PIPE_FORMAT_R8G8B8A8_UNORM;
       }
    }
 
@@ -1207,26 +1196,6 @@ success:
 
 
 /**
- * Called by FBO code to choose a PIPE_FORMAT_ for drawing surfaces.
- */
-enum pipe_format
-st_choose_renderbuffer_format(struct st_context *st,
-                              GLenum internalFormat, unsigned sample_count,
-                              unsigned storage_sample_count)
-{
-   unsigned bindings;
-   if (_mesa_is_depth_or_stencil_format(internalFormat))
-      bindings = PIPE_BIND_DEPTH_STENCIL;
-   else
-      bindings = PIPE_BIND_RENDER_TARGET;
-   return st_choose_format(st, internalFormat, GL_NONE, GL_NONE,
-                           PIPE_TEXTURE_2D, sample_count,
-                           storage_sample_count, bindings,
-                           false, false);
-}
-
-
-/**
  * Given an OpenGL user-requested format and type, and swapBytes state,
  * return the format which exactly matches those parameters, so that
  * a memcpy-based transfer can be done.
@@ -1323,6 +1292,22 @@ st_ChooseTextureFormat(struct gl_context *ctx, GLenum target,
             internalFormat == GL_RED_SNORM ||
             internalFormat == GL_R8I ||
             internalFormat == GL_R8UI)
+      bindings |= PIPE_BIND_RENDER_TARGET;
+
+   if ((_mesa_is_desktop_gl(ctx) && ctx->Version >= 30) &&
+       (internalFormat == GL_ALPHA4 ||
+        internalFormat == GL_ALPHA8 ||
+        internalFormat == GL_ALPHA12 ||
+        internalFormat == GL_ALPHA16 ||
+        /* ARB_texture_float */
+        internalFormat == GL_ALPHA32F_ARB ||
+        internalFormat == GL_INTENSITY32F_ARB ||
+        internalFormat == GL_LUMINANCE32F_ARB ||
+        internalFormat == GL_LUMINANCE_ALPHA32F_ARB ||
+        internalFormat == GL_ALPHA16F_ARB ||
+        internalFormat == GL_INTENSITY16F_ARB ||
+        internalFormat == GL_LUMINANCE16F_ARB ||
+        internalFormat == GL_LUMINANCE_ALPHA16F_ARB))
       bindings |= PIPE_BIND_RENDER_TARGET;
 
    /* GLES allows the driver to choose any format which matches
@@ -1510,6 +1495,36 @@ st_QueryInternalFormat(struct gl_context *ctx, GLenum target,
                                               0, 0, PIPE_BIND_SAMPLER_REDUCTION_MINMAX);
       break;
    }
+   case GL_NUM_VIRTUAL_PAGE_SIZES_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_X_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Y_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Z_ARB: {
+      /* this is used only for passing CTS */
+      if (target == GL_RENDERBUFFER)
+         target = GL_TEXTURE_2D;
+      mesa_format format = st_ChooseTextureFormat(ctx, target, internalFormat, GL_NONE, GL_NONE);
+      enum pipe_format pformat = st_mesa_format_to_pipe_format(st, format);
+
+      if (pformat != PIPE_FORMAT_NONE) {
+         struct pipe_screen *screen = st->screen;
+         enum pipe_texture_target ptarget = gl_target_to_pipe(target);
+         bool multi_sample = _mesa_is_multisample_target(target);
+
+         if (pname == GL_NUM_VIRTUAL_PAGE_SIZES_ARB)
+            params[0] = screen->get_sparse_texture_virtual_page_size(
+               screen, ptarget, multi_sample, pformat, 0, 0, NULL, NULL, NULL);
+         else {
+            int *args[3] = {0};
+            args[pname - GL_VIRTUAL_PAGE_SIZE_X_ARB] = params;
+
+            /* 16 comes from the caller _mesa_GetInternalformativ() */
+            screen->get_sparse_texture_virtual_page_size(
+               screen, ptarget, multi_sample, pformat, 0, 16,
+               args[0], args[1], args[2]);
+         }
+      }
+      break;
+   }
    default:
       /* For the rest of the pnames, we call back the Mesa's default
        * function for drivers that don't implement ARB_internalformat_query2.
@@ -1558,6 +1573,8 @@ st_translate_color(union pipe_color_union *color,
       case GL_LUMINANCE_ALPHA:
          ci[1] = ci[2] = ci[0];
          break;
+      /* Stencil border is tricky on some hw. Help drivers a little here. */
+      case GL_STENCIL_INDEX:
       case GL_INTENSITY:
          ci[1] = ci[2] = ci[3] = ci[0];
          break;
@@ -1589,8 +1606,6 @@ st_translate_color(union pipe_color_union *color,
       case GL_LUMINANCE_ALPHA:
          cf[1] = cf[2] = cf[0];
          break;
-      /* Stencil border is tricky on some hw. Help drivers a little here. */
-      case GL_STENCIL_INDEX:
       case GL_INTENSITY:
          cf[1] = cf[2] = cf[3] = cf[0];
          break;
