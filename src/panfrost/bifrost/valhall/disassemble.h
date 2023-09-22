@@ -35,7 +35,7 @@ va_print_dest(FILE *fp, uint8_t dest, bool can_mask)
 void va_disasm_instr(FILE *fp, uint64_t instr);
 
 static inline void
-disassemble_valhall(FILE *fp, const uint64_t *code, unsigned size)
+disassemble_valhall(FILE *fp, const uint64_t *code, unsigned size, bool verbose)
 {
    assert((size & 7) == 0);
 
@@ -43,19 +43,36 @@ disassemble_valhall(FILE *fp, const uint64_t *code, unsigned size)
    for (unsigned i = 0; i < (size / 8); ++i) {
       uint64_t instr = code[i];
 
-      /* TODO: is there a stop-bit? or does all-0's mean stop? */
-      if (instr == 0)
+      if (instr == 0) {
+         fprintf(fp, "\n");
          return;
+      }
 
-      /* Print byte pattern */
-      for (unsigned j = 0; j < 8; ++j)
-         fprintf(fp, "%02x ", (uint8_t) (instr >> (j * 8)));
+      if (verbose) {
+         /* Print byte pattern */
+         for (unsigned j = 0; j < 8; ++j)
+            fprintf(fp, "%02x ", (uint8_t) (instr >> (j * 8)));
 
-      fprintf(fp, "   ");
+         fprintf(fp, "   ");
+      } else {
+         /* Print whitespace */
+         fprintf(fp, "   ");
+      }
 
       va_disasm_instr(fp, instr);
       fprintf(fp, "\n");
+
+      /* Detect branches */
+      uint64_t opcode = (instr >> 48) & MASK(9);
+      bool branchz = (opcode == 0x1F);
+      bool branchzi = (opcode == 0x2F);
+
+      /* Separate blocks visually by inserting whitespace after branches */
+      if (branchz || branchzi)
+         fprintf(fp, "\n");
    }
+
+   fprintf(fp, "\n");
 }
 
 #endif

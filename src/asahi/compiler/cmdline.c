@@ -107,7 +107,7 @@ compile_shader(char **argv)
    util_dynarray_init(&binary, NULL);
 
    for (unsigned i = 0; i < 2; ++i) {
-      nir[i] = glsl_to_nir(&local_ctx, prog, shader_types[i], &agx_nir_options);
+      nir[i] = glsl_to_nir(&local_ctx.Const, prog, shader_types[i], &agx_nir_options);
 
       if (i == 0) {
          nir_assign_var_locations(nir[i], nir_var_shader_in, &nir[i]->num_inputs,
@@ -207,17 +207,6 @@ disassemble(const char *filename, bool verbose)
    free(code);
 }
 
-static void
-tests()
-{
-#ifndef NDEBUG
-   agx_minifloat_tests();
-   printf("Pass.\n");
-#else
-   fprintf(stderr, "tests not compiled in NDEBUG mode");
-#endif
-}
-
 int
 main(int argc, char **argv)
 {
@@ -232,8 +221,6 @@ main(int argc, char **argv)
       disassemble(argv[2], false);
    else if (strcmp(argv[1], "disasm-verbose") == 0)
       disassemble(argv[2], true);
-   else if (strcmp(argv[1], "test") == 0)
-      tests();
    else
       unreachable("Unknown command. Valid: compile/disasm/disasm-verbose");
 

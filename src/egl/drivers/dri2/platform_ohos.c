@@ -104,7 +104,7 @@ static int get_fourcc(int native)
         case PIXEL_FMT_RGBX_8888:
             return DRM_FORMAT_XBGR8888;
         default:
-            _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%x", native);
+            _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%{public}x", native);
     }
     return -1;
 }
@@ -372,7 +372,7 @@ ohos_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
         dri2_surf->color_buffers_count = buffer_count;
 
         if (format != dri2_conf->base.NativeVisualID) {
-            _eglLog(_EGL_WARNING, "Native format mismatch: 0x%x != 0x%x",
+            _eglLog(_EGL_WARNING, "Native format mismatch: 0x%{public}x != 0x%{public}x",
                     format, dri2_conf->base.NativeVisualID);
         }
 
@@ -439,13 +439,13 @@ ohos_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
     }
 
     if (dri2_surf->dri_image_back) {
-        _eglLog(_EGL_DEBUG, "%s : %d : destroy dri_image_back", __func__, __LINE__);
+        _eglLog(_EGL_DEBUG, "%{public}s : %{public}d : destroy dri_image_back", __func__, __LINE__);
         dri2_dpy->image->destroyImage(dri2_surf->dri_image_back);
         dri2_surf->dri_image_back = NULL;
     }
 
     if (dri2_surf->dri_image_front) {
-        _eglLog(_EGL_DEBUG, "%s : %d : destroy dri_image_front", __func__, __LINE__);
+        _eglLog(_EGL_DEBUG, "%{public}s : %{public}d : destroy dri_image_front", __func__, __LINE__);
         dri2_dpy->image->destroyImage(dri2_surf->dri_image_front);
         dri2_surf->dri_image_front = NULL;
     }
@@ -656,7 +656,7 @@ ohos_swap_buffers(_EGLDisplay *disp, _EGLSurface *draw)
     if (has_mutable_rb &&
         draw->RequestedRenderBuffer == EGL_SINGLE_BUFFER &&
         draw->ActiveRenderBuffer == EGL_SINGLE_BUFFER) {
-        _eglLog(_EGL_DEBUG, "%s: remain in shared buffer mode", __func__);
+        _eglLog(_EGL_DEBUG, "%{public}s: remain in shared buffer mode", __func__);
         return EGL_TRUE;
     }
 
@@ -908,7 +908,7 @@ ohos_add_configs_for_visuals(_EGLDisplay *disp)
 
     for (int i = 0; i < ARRAY_SIZE(format_count); i++) {
         if (!format_count[i]) {
-            _eglLog(_EGL_DEBUG, "No DRI config supports native format 0x%x",
+            _eglLog(_EGL_DEBUG, "No DRI config supports native format 0x%{public}x",
                     visuals[i].format);
         }
     }
@@ -947,7 +947,7 @@ ohos_display_shared_buffer(__DRIdrawable *driDrawable, int fence_fd,
     struct ANativeWindowBuffer *old_buffer UNUSED = dri2_surf->buffer;
 
     if (!_eglSurfaceInSharedBufferMode(&dri2_surf->base)) {
-        _eglLog(_EGL_WARNING, "%s: internal error: buffer is not shared",
+        _eglLog(_EGL_WARNING, "%{public}s: internal error: buffer is not shared",
                 __func__);
         return;
     }
@@ -967,7 +967,7 @@ ohos_display_shared_buffer(__DRIdrawable *driDrawable, int fence_fd,
 
     if (ANativeWindow_queueBuffer(dri2_surf->window, dri2_surf->buffer,
                                   fence_fd)) {
-        _eglLog(_EGL_WARNING, "%s: ANativeWindow_queueBuffer failed", __func__);
+        _eglLog(_EGL_WARNING, "%{public}s: ANativeWindow_queueBuffer failed", __func__);
         close(fence_fd);
         return;
     }
@@ -980,7 +980,7 @@ ohos_display_shared_buffer(__DRIdrawable *driDrawable, int fence_fd,
         struct dri2_egl_display *dri2_dpy =
             dri2_egl_display(dri2_surf->base.Resource.Display);
 
-        _eglLog(_EGL_WARNING, "%s: ANativeWindow_dequeueBuffer failed", __func__);
+        _eglLog(_EGL_WARNING, "%{public}s: ANativeWindow_dequeueBuffer failed", __func__);
 
         dri2_surf->base.Lost = true;
         dri2_surf->buffer = NULL;
@@ -1168,7 +1168,7 @@ ohos_open_device(_EGLDisplay *disp, bool swrast)
 #endif
 
     num_devices = drmGetDevices2(0, devices, ARRAY_SIZE(devices));
-    _eglLog(_EGL_WARNING, "ohos_open_device %d", num_devices);
+    _eglLog(_EGL_WARNING, "ohos_open_device %{public}d", num_devices);
     if (num_devices < 0) {
         return EGL_FALSE;
     }
@@ -1183,7 +1183,7 @@ ohos_open_device(_EGLDisplay *disp, bool swrast)
         dri2_dpy->fd = loader_open_device(device->nodes[node_type]);
         if (dri2_dpy->fd < 0) {
             DISPLAY_LOGI();
-            _eglLog(_EGL_WARNING, "%s() Failed to open DRM device %s",
+            _eglLog(_EGL_WARNING, "%{public}s() Failed to open DRM device %{public}s",
                     __func__, device->nodes[node_type]);
             continue;
         }
@@ -1191,7 +1191,7 @@ ohos_open_device(_EGLDisplay *disp, bool swrast)
         /* If a vendor is explicitly provided, we use only that.
          * Otherwise we fall-back the first device that is supported.
          */
-        DISPLAY_LOGI("vendor_name %s", vendor_name);
+        DISPLAY_LOGI("vendor_name %{public}s", vendor_name);
         if (vendor_name) {
             if (ohos_filter_device(disp, dri2_dpy->fd, vendor_name)) {
                 /* Device does not match - try next device */
@@ -1222,7 +1222,7 @@ ohos_open_device(_EGLDisplay *disp, bool swrast)
     DISPLAY_LOGI();
     if (dri2_dpy->fd < 0) {
         DISPLAY_LOGI();
-        _eglLog(_EGL_WARNING, "Failed to open %s DRM device",
+        _eglLog(_EGL_WARNING, "Failed to open %{public}s DRM device",
                 vendor_name ? "desired" : "any");
         return EGL_FALSE;
     }

@@ -78,8 +78,6 @@ class Opcode(object):
       assert 0 <= output_size <= 5 or (output_size == 8) or (output_size == 16)
       for size in input_sizes:
          assert 0 <= size <= 5 or (size == 8) or (size == 16)
-         if output_size == 0:
-            assert size == 0
          if output_size != 0:
             assert size != 0
       self.name = name
@@ -148,6 +146,7 @@ def type_base_type(type_):
 # sources.
 _2src_commutative = "2src_commutative "
 associative = "associative "
+selection = "selection "
 
 # global dictionary of opcodes
 opcodes = {}
@@ -369,6 +368,18 @@ unpack_2x16("unorm")
 unpack_4x8("unorm")
 unpack_2x16("half")
 
+# Convert two unsigned integers into a packed unsigned short (clamp is applied).
+unop_horiz("pack_uint_2x16", 1, tuint32, 2, tuint32, """
+dst.x = _mesa_unsigned_to_unsigned(src0.x, 16);
+dst.x |= _mesa_unsigned_to_unsigned(src0.y, 16) << 16;
+""")
+
+# Convert two signed integers into a packed signed short (clamp is applied).
+unop_horiz("pack_sint_2x16", 1, tint32, 2, tint32, """
+dst.x = _mesa_signed_to_signed(src0.x, 16) & 0xffff;
+dst.x |= _mesa_signed_to_signed(src0.y, 16) << 16;
+""")
+
 unop_horiz("pack_uvec2_to_uint", 1, tuint32, 2, tuint32, """
 dst.x = (src0.x & 0xffff) | (src0.y << 16);
 """)
@@ -470,12 +481,12 @@ for (bit = bit_size - 1; bit >= 0; bit--) {
    if ((src0 & (1u << bit)) != 0)
       break;
 }
-dst = (unsigned)(31 - bit);
+dst = (unsigned)(bit_size - bit - 1);
 """)
 
 unop("ifind_msb", tint32, """
 dst = -1;
-for (int bit = 31; bit >= 0; bit--) {
+for (int bit = bit_size - 1; bit >= 0; bit--) {
    /* If src0 < 0, we're looking for the first 0 bit.
     * if src0 >= 0, we're looking for the first 1 bit.
     */
@@ -489,16 +500,12 @@ for (int bit = 31; bit >= 0; bit--) {
 
 unop_convert("ifind_msb_rev", tint32, tint, """
 dst = -1;
-if (src0 != 0 && src0 != -1) {
-   for (int bit = 0; bit < 31; bit++) {
-      /* If src0 < 0, we're looking for the first 0 bit.
-       * if src0 >= 0, we're looking for the first 1 bit.
-       */
-      if ((((src0 << bit) & 0x40000000) && (src0 >= 0)) ||
-          ((!((src0 << bit) & 0x40000000)) && (src0 < 0))) {
-         dst = bit;
-         break;
-      }
+/* We are looking for the highest bit that's not the same as the sign bit. */
+uint32_t sign = src0 & 0x80000000u;
+for (int bit = 0; bit < 32; bit++) {
+   if (((src0 << bit) & 0x80000000u) != sign) {
+      dst = bit;
+      break;
    }
 }
 """)
@@ -669,6 +676,20 @@ if (nir_is_rounding_mode_rtz(execution_mode, bit_size)) {
    dst = src0 * src1;
 }
 """)
+
+# Unlike fmul, anything (even infinity or NaN) multiplied by zero is always zero.
+# fmulz(0.0, inf) and fmulz(0.0, nan) must be +/-0.0, even if
+# SIGNED_ZERO_INF_NAN_PRESERVE is not used. If SIGNED_ZERO_INF_NAN_PRESERVE is used, then
+# the result must be a positive zero if either operand is zero.
+binop("fmulz", tfloat32, _2src_commutative + associative, """
+if (src0 == 0.0 || src1 == 0.0)
+   dst = 0.0;
+else if (nir_is_rounding_mode_rtz(execution_mode, 32))
+   dst = _mesa_double_to_float_rtz((double)src0 * (double)src1);
+else
+   dst = src0 * src1;
+""")
+
 # low 32-bits of signed/unsigned integer multiply
 binop("imul", tint, _2src_commutative + associative, """
    /* Use 64-bit multiplies to prevent overflow of signed arithmetic */
@@ -738,13 +759,13 @@ binop("fdiv", tfloat, "", "src0 / src1")
 binop("idiv", tint, "", "src1 == 0 ? 0 : (src0 / src1)")
 binop("udiv", tuint, "", "src1 == 0 ? 0 : (src0 / src1)")
 
-# returns a boolean representing the carry resulting from the addition of
-# the two unsigned arguments.
+# returns an integer (1 or 0) representing the carry resulting from the
+# addition of the two unsigned arguments.
 
 binop_convert("uadd_carry", tuint, tuint, _2src_commutative, "src0 + src1 < src0")
 
-# returns a boolean representing the borrow resulting from the subtraction
-# of the two unsigned arguments.
+# returns an integer (1 or 0) representing the borrow resulting from the
+# subtraction of the two unsigned arguments.
 
 binop_convert("usub_borrow", tuint, tuint, "", "src0 < src1")
 
@@ -830,10 +851,10 @@ binop_reduce("fany_nequal", 1, tfloat32, tfloat32, "{src0} != {src1}",
 # These comparisons for integer-less hardware return 1.0 and 0.0 for true
 # and false respectively
 
-binop("slt", tfloat32, "", "(src0 < src1) ? 1.0f : 0.0f") # Set on Less Than
+binop("slt", tfloat, "", "(src0 < src1) ? 1.0f : 0.0f") # Set on Less Than
 binop("sge", tfloat, "", "(src0 >= src1) ? 1.0f : 0.0f") # Set on Greater or Equal
-binop("seq", tfloat32, _2src_commutative, "(src0 == src1) ? 1.0f : 0.0f") # Set on Equal
-binop("sne", tfloat32, _2src_commutative, "(src0 != src1) ? 1.0f : 0.0f") # Set on Not Equal
+binop("seq", tfloat, _2src_commutative, "(src0 == src1) ? 1.0f : 0.0f") # Set on Equal
+binop("sne", tfloat, _2src_commutative, "(src0 != src1) ? 1.0f : 0.0f") # Set on Not Equal
 
 # SPIRV shifts are undefined for shift-operands >= bitsize,
 # but SM5 shifts are defined to use only the least significant bits.
@@ -870,13 +891,13 @@ binop("ixor", tuint, _2src_commutative + associative, "src0 ^ src1")
 binop_reduce("fdot", 1, tfloat, tfloat, "{src0} * {src1}", "{src0} + {src1}",
              "{src}")
 
-binop_reduce("fdot", 4, tfloat, tfloat,
+binop_reduce("fdot", 0, tfloat, tfloat,
              "{src0} * {src1}", "{src0} + {src1}", "{src}",
              suffix="_replicated")
 
 opcode("fdph", 1, tfloat, [3, 4], [tfloat, tfloat], False, "",
        "src0.x * src1.x + src0.y * src1.y + src0.z * src1.z + src1.w")
-opcode("fdph_replicated", 4, tfloat, [3, 4], [tfloat, tfloat], False, "",
+opcode("fdph_replicated", 0, tfloat, [3, 4], [tfloat, tfloat], False, "",
        "src0.x * src1.x + src0.y * src1.y + src0.z * src1.z + src1.w")
 
 binop("fmin", tfloat, _2src_commutative + associative, "fmin(src0, src1)")
@@ -960,6 +981,19 @@ if (nir_is_rounding_mode_rtz(execution_mode, bit_size)) {
 }
 """)
 
+# Unlike ffma, anything (even infinity or NaN) multiplied by zero is always zero.
+# ffmaz(0.0, inf, src2) and ffmaz(0.0, nan, src2) must be +/-0.0 + src2, even if
+# SIGNED_ZERO_INF_NAN_PRESERVE is not used. If SIGNED_ZERO_INF_NAN_PRESERVE is used, then
+# the result must be a positive zero plus src2 if either src0 or src1 is zero.
+triop("ffmaz", tfloat32, _2src_commutative, """
+if (src0 == 0.0 || src1 == 0.0)
+   dst = 0.0 + src2;
+else if (nir_is_rounding_mode_rtz(execution_mode, 32))
+   dst = _mesa_float_fma_rtz(src0, src1, src2);
+else
+   dst = fmaf(src0, src1, src2);
+""")
+
 triop("flrp", tfloat, "", "src0 * (1 - src2) + src1 * src2")
 
 # Ternary addition
@@ -971,22 +1005,22 @@ triop("iadd3", tint, _2src_commutative + associative, "src0 + src1 + src2")
 # component on vectors). There are two versions, one for floating point
 # bools (0.0 vs 1.0) and one for integer bools (0 vs ~0).
 
-triop("fcsel", tfloat32, "", "(src0 != 0.0f) ? src1 : src2")
+triop("fcsel", tfloat32, selection, "(src0 != 0.0f) ? src1 : src2")
 
 opcode("bcsel", 0, tuint, [0, 0, 0],
-       [tbool1, tuint, tuint], False, "", "src0 ? src1 : src2")
+       [tbool1, tuint, tuint], False, selection, "src0 ? src1 : src2")
 opcode("b8csel", 0, tuint, [0, 0, 0],
-       [tbool8, tuint, tuint], False, "", "src0 ? src1 : src2")
+       [tbool8, tuint, tuint], False, selection, "src0 ? src1 : src2")
 opcode("b16csel", 0, tuint, [0, 0, 0],
-       [tbool16, tuint, tuint], False, "", "src0 ? src1 : src2")
+       [tbool16, tuint, tuint], False, selection, "src0 ? src1 : src2")
 opcode("b32csel", 0, tuint, [0, 0, 0],
-       [tbool32, tuint, tuint], False, "", "src0 ? src1 : src2")
+       [tbool32, tuint, tuint], False, selection, "src0 ? src1 : src2")
 
-triop("i32csel_gt", tint32, "", "(src0 > 0.0f) ? src1 : src2")
-triop("i32csel_ge", tint32, "", "(src0 >= 0.0f) ? src1 : src2")
+triop("i32csel_gt", tint32, selection, "(src0 > 0) ? src1 : src2")
+triop("i32csel_ge", tint32, selection, "(src0 >= 0) ? src1 : src2")
 
-triop("fcsel_gt", tfloat32, "", "(src0 > 0.0f) ? src1 : src2")
-triop("fcsel_ge", tfloat32, "", "(src0 >= 0.0f) ? src1 : src2")
+triop("fcsel_gt", tfloat32, selection, "(src0 > 0.0f) ? src1 : src2")
+triop("fcsel_ge", tfloat32, selection, "(src0 >= 0.0f) ? src1 : src2")
 
 # SM5 bfi assembly
 triop("bfi", tuint32, "", """
@@ -1223,11 +1257,11 @@ unop_horiz("cube_r600", 4, tfloat32, 3, tfloat32, """
    }
 """)
 
-# r600 specific sin and cos
+# r600/gcn specific sin and cos
 # these trigeometric functions need some lowering because the supported
 # input values are expected to be normalized by dividing by (2 * pi)
-unop("fsin_r600", tfloat32, "sinf(6.2831853 * src0)")
-unop("fcos_r600", tfloat32, "cosf(6.2831853 * src0)")
+unop("fsin_amd", tfloat, "sinf(6.2831853 * src0)")
+unop("fcos_amd", tfloat, "cosf(6.2831853 * src0)")
 
 # AGX specific sin with input expressed in quadrants. Used in the lowering for
 # fsin/fcos. This corresponds to a sequence of 3 ALU ops in the backend (where
@@ -1255,7 +1289,7 @@ binop("umul24_relaxed", tuint32, _2src_commutative + associative, "src0 * src1")
 
 unop_convert("fisnormal", tbool1, tfloat, "isnormal(src0)")
 unop_convert("fisfinite", tbool1, tfloat, "isfinite(src0)")
-unop_convert("fisfinite32", tint32, tfloat, "isfinite(src0)")
+unop_convert("fisfinite32", tbool32, tfloat, "isfinite(src0)")
 
 # vc4-specific opcodes
 

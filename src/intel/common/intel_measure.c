@@ -64,8 +64,12 @@ intel_measure_init(struct intel_measure_device *device)
       if (!env)
          return;
 
+      char env_copy[1024];
+      strncpy(env_copy, env, 1024);
+      env_copy[1023] = '\0';
+
       config.file = stderr;
-      config.flags = parse_debug_string(env, debug_control);
+      config.flags = parse_debug_string(env_copy, debug_control);
       if (!config.flags)
          config.flags = INTEL_MEASURE_DRAW;
       config.enabled = true;
@@ -76,26 +80,26 @@ intel_measure_init(struct intel_measure_device *device)
        * warning on the output filehandle.
        */
 
-      /* default batch_size allows for 8k renders in a single batch */
-      const int DEFAULT_BATCH_SIZE = 16 * 1024;
+      /* default batch_size allows for 64k renders in a single batch */
+      const int DEFAULT_BATCH_SIZE = 64 * 1024;
       config.batch_size = DEFAULT_BATCH_SIZE;
 
-      /* Default buffer_size allows for 16k batches per line of output in the
+      /* Default buffer_size allows for 64k batches per line of output in the
        * csv.  Overflow may occur for offscreen workloads or large 'interval'
        * settings.
        */
-      const int DEFAULT_BUFFER_SIZE = 16 * 1024;
+      const int DEFAULT_BUFFER_SIZE = 64 * 1024;
       config.buffer_size = DEFAULT_BUFFER_SIZE;
 
-      const char *filename = strstr(env, "file=");
-      const char *start_frame_s = strstr(env, "start=");
-      const char *count_frame_s = strstr(env, "count=");
-      const char *control_path = strstr(env, "control=");
-      const char *interval_s = strstr(env, "interval=");
-      const char *batch_size_s = strstr(env, "batch_size=");
-      const char *buffer_size_s = strstr(env, "buffer_size=");
+      const char *filename = strstr(env_copy, "file=");
+      const char *start_frame_s = strstr(env_copy, "start=");
+      const char *count_frame_s = strstr(env_copy, "count=");
+      const char *control_path = strstr(env_copy, "control=");
+      const char *interval_s = strstr(env_copy, "interval=");
+      const char *batch_size_s = strstr(env_copy, "batch_size=");
+      const char *buffer_size_s = strstr(env_copy, "buffer_size=");
       while (true) {
-         char *sep = strrchr(env, ',');
+         char *sep = strrchr(env_copy, ',');
          if (sep == NULL)
             break;
          *sep = '\0';
@@ -205,12 +209,13 @@ intel_measure_init(struct intel_measure_device *device)
 
       fputs("draw_start,draw_end,frame,batch,"
             "event_index,event_count,type,count,vs,tcs,tes,"
-            "gs,fs,cs,framebuffer,idle_ns,time_ns\n",
+            "gs,fs,cs,framebuffer,idle_us,time_us\n",
             config.file);
    }
 
    device->config = NULL;
    device->frame = 0;
+   device->release_batch = NULL;
    pthread_mutex_init(&device->mutex, NULL);
    list_inithead(&device->queued_snapshots);
 
@@ -402,7 +407,7 @@ intel_measure_push_result(struct intel_measure_device *device,
 
    uint64_t *timestamps = batch->timestamps;
    assert(timestamps != NULL);
-   assert(timestamps[0] != 0);
+   assert(batch->index == 0 || timestamps[0] != 0);
 
    for (int i = 0; i < batch->index; i += 2) {
       const struct intel_measure_snapshot *begin = &batch->snapshots[i];
@@ -591,18 +596,22 @@ print_combined_results(struct intel_measure_device *measure_device,
       event_count += current_result->snapshot.event_count;
    }
 
+   uint64_t duration_idle_ns =
+      intel_device_info_timebase_scale(info, start_result->idle_duration);
+   uint64_t duration_time_ns =
+      intel_device_info_timebase_scale(info, duration_ts);
    const struct intel_measure_snapshot *begin = &start_result->snapshot;
    fprintf(config.file, "%"PRIu64",%"PRIu64",%u,%u,%u,%u,%s,%u,"
            "0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR","
-           "0x%"PRIxPTR",0x%"PRIxPTR",%"PRIu64",%"PRIu64"\n",
+           "0x%"PRIxPTR",0x%"PRIxPTR",%.3lf,%.3lf\n",
            start_result->start_ts, current_result->end_ts,
            start_result->frame, start_result->batch_count,
            start_result->event_index, event_count,
            begin->event_name, begin->count,
            begin->vs, begin->tcs, begin->tes, begin->gs, begin->fs, begin->cs,
            begin->framebuffer,
-           intel_device_info_timebase_scale(info, start_result->idle_duration),
-           intel_device_info_timebase_scale(info, duration_ts));
+           (double)duration_idle_ns / 1000.0,
+           (double)duration_time_ns / 1000.0);
 }
 
 /**
@@ -653,6 +662,8 @@ intel_measure_gather(struct intel_measure_device *measure_device,
 
       batch->index = 0;
       batch->frame = 0;
+      if (measure_device->release_batch)
+         measure_device->release_batch(batch);
    }
 
    intel_measure_print(measure_device, info);

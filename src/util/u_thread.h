@@ -1,9 +1,9 @@
 /**************************************************************************
- * 
+ *
  * Copyright 1999-2006 Brian Paul
  * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -50,6 +50,9 @@
 #if DETECT_OS_LINUX && !defined(ANDROID)
 #include <sched.h>
 #elif defined(_WIN32) && !defined(__CYGWIN__) && _WIN32_WINNT >= 0x0600
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
 #include <windows.h>
 #endif
 
@@ -75,19 +78,16 @@
  * still want to use normal TLS (which involves a function call, but not the
  * expensive pthread_getspecific() or its equivalent).
  */
-#ifdef _MSC_VER
-#define __THREAD_INITIAL_EXEC __declspec(thread)
-#elif defined(ANDROID)
-/* Android 29 gained ELF TLS support, but it doesn't support initial-exec and
- * it will throw:
- *
- *     dlopen failed: TLS symbol "(null)" in dlopened
- *     "/vendor/lib64/egl/libEGL_mesa.so" referenced from
- *     "/vendor/lib64/egl/libEGL_mesa.so" using IE access model.
+#if DETECT_OS_APPLE
+/* Apple Clang emits wrappers when using thread_local that break module linkage,
+ * but not with __thread
  */
 #define __THREAD_INITIAL_EXEC __thread
+#elif defined(__GLIBC__)
+#define __THREAD_INITIAL_EXEC thread_local __attribute__((tls_model("initial-exec")))
+#define REALLY_INITIAL_EXEC
 #else
-#define __THREAD_INITIAL_EXEC __thread __attribute__((tls_model("initial-exec")))
+#define __THREAD_INITIAL_EXEC thread_local
 #endif
 
 static inline int
@@ -104,26 +104,28 @@ util_get_current_cpu(void)
 #endif
 }
 
-static inline thrd_t u_thread_create(int (*routine)(void *), void *param)
+static inline int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *param)
 {
-   thrd_t thread;
+   int ret = thrd_error;
 #ifdef HAVE_PTHREAD
    sigset_t saved_set, new_set;
-   int ret;
 
    sigfillset(&new_set);
    sigdelset(&new_set, SIGSYS);
+
+   /* SIGSEGV is commonly used by Vulkan API tracing layers in order to track
+    * accesses in device memory mapped to user space. Blocking the signal hinders
+    * that tracking mechanism.
+    */
+   sigdelset(&new_set, SIGSEGV);
    pthread_sigmask(SIG_BLOCK, &new_set, &saved_set);
-   ret = thrd_create( &thread, routine, param );
+   ret = thrd_create(thrd, routine, param);
    pthread_sigmask(SIG_SETMASK, &saved_set, NULL);
 #else
-   int ret;
-   ret = thrd_create( &thread, routine, param );
+   ret = thrd_create(thrd, routine, param);
 #endif
-   if (ret)
-      return 0;
 
-   return thread;
+   return ret;
 }
 
 static inline void u_thread_setname( const char *name )
@@ -250,6 +252,7 @@ util_thread_get_time_nano(thrd_t thread)
    clock_gettime(cid, &ts);
    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 #else
+   (void)thread;
    return 0;
 #endif
 }
@@ -296,9 +299,9 @@ static inline void util_barrier_destroy(util_barrier *barrier)
    pthread_barrier_destroy(barrier);
 }
 
-static inline void util_barrier_wait(util_barrier *barrier)
+static inline bool util_barrier_wait(util_barrier *barrier)
 {
-   pthread_barrier_wait(barrier);
+   return pthread_barrier_wait(barrier) == PTHREAD_BARRIER_SERIAL_THREAD;
 }
 
 
@@ -328,7 +331,7 @@ static inline void util_barrier_destroy(util_barrier *barrier)
    cnd_destroy(&barrier->condvar);
 }
 
-static inline void util_barrier_wait(util_barrier *barrier)
+static inline bool util_barrier_wait(util_barrier *barrier)
 {
    mtx_lock(&barrier->mutex);
 
@@ -348,6 +351,8 @@ static inline void util_barrier_wait(util_barrier *barrier)
    }
 
    mtx_unlock(&barrier->mutex);
+
+   return true;
 }
 
 #endif

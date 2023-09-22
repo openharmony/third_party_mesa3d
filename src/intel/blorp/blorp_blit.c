@@ -84,6 +84,7 @@ blorp_blit_get_frag_coords(nir_builder *b,
       coord = nir_isub(b, coord, nir_load_var(b, v->v_dst_offset));
 
    if (key->persample_msaa_dispatch) {
+      b->shader->info.fs.uses_sample_shading = true;
       return nir_vec3(b, nir_channel(b, coord, 0), nir_channel(b, coord, 1),
                       nir_load_sample_id(b));
    } else {
@@ -144,9 +145,8 @@ blorp_create_nir_tex_instr(nir_builder *b, struct brw_blorp_blit_vars *v,
    tex->is_array = false;
    tex->is_shadow = false;
 
-   /* Blorp only has one texture and it's bound at unit 0 */
-   tex->texture_index = 0;
-   tex->sampler_index = 0;
+   tex->texture_index = BLORP_TEXTURE_BT_INDEX;
+   tex->sampler_index = BLORP_SAMPLER_INDEX;
 
    /* To properly handle 3-D and 2-D array textures, we pull the Z component
     * from an input.  TODO: This is a bit magic; we should probably make this
@@ -941,7 +941,7 @@ bit_cast_color(struct nir_builder *b, nir_ssa_def *color,
       /* Restrict to only the channels we actually have */
       const unsigned src_channels =
          isl_format_get_num_channels(key->src_format);
-      color = nir_channels(b, color, (1 << src_channels) - 1);
+      color = nir_trim_vector(b, color, src_channels);
 
       color = nir_format_bitcast_uvec_unmasked(b, color, src_bpc, dst_bpc);
    }
@@ -1395,7 +1395,7 @@ brw_blorp_build_nir_shader(struct blorp_context *blorp,
                             nir_imm_float(&b, 0.5f));
          color = blorp_nir_tex(&b, &v, key, src_pos);
       } else {
-         /* Gfx7+ hardware doesn't automaticaly blend. */
+         /* Gfx7+ hardware doesn't automatically blend. */
          color = blorp_nir_combine_samples(&b, &v, src_pos, key->src_samples,
                                            key->tex_aux_usage,
                                            key->texture_data_type,
@@ -1906,7 +1906,7 @@ try_blorp_blit(struct blorp_batch *batch,
       }
    } else if (params->dst.surf.usage & ISL_SURF_USAGE_STENCIL_BIT) {
       assert(params->dst.surf.format == ISL_FORMAT_R8_UINT);
-      if (devinfo->ver >= 9) {
+      if (devinfo->ver >= 9 && !(batch->flags & BLORP_BATCH_USE_COMPUTE)) {
          key->dst_usage = ISL_SURF_USAGE_STENCIL_BIT;
       } else {
          key->dst_usage = ISL_SURF_USAGE_RENDER_TARGET_BIT;
@@ -2115,11 +2115,11 @@ try_blorp_blit(struct blorp_batch *batch,
       /* Gfx4-5 don't support non-normalized texture coordinates */
       key->src_coords_normalized = true;
       params->wm_inputs.src_inv_size[0] =
-         1.0f / minify(params->src.surf.logical_level0_px.width,
-                       params->src.view.base_level);
+         1.0f / u_minify(params->src.surf.logical_level0_px.width,
+                         params->src.view.base_level);
       params->wm_inputs.src_inv_size[1] =
-         1.0f / minify(params->src.surf.logical_level0_px.height,
-                       params->src.view.base_level);
+         1.0f / u_minify(params->src.surf.logical_level0_px.height,
+                         params->src.view.base_level);
    }
 
    if (isl_format_get_layout(params->dst.view.format)->bpb % 3 == 0) {
@@ -2198,8 +2198,23 @@ try_blorp_blit(struct blorp_batch *batch,
 
    const bool compute =
       key->base.shader_pipeline == BLORP_SHADER_PIPELINE_COMPUTE;
-   if (compute)
+   if (compute) {
       key->local_y = blorp_get_cs_local_y(params);
+
+      unsigned workgroup_width = 16 / key->local_y;
+      unsigned workgroup_height = key->local_y;
+
+      /* If the rectangle being drawn isn't an exact multiple of the
+       * workgroup size, we'll get extra invocations that should not
+       * perform blits.  We need to set use_kill to bounds check and
+       * prevent those invocations from blitting.
+       */
+      if ((params->x0 % workgroup_width) != 0 ||
+          (params->x1 % workgroup_width) != 0 ||
+          (params->y0 % workgroup_height) != 0 ||
+          (params->y1 % workgroup_height) != 0)
+         key->use_kill = true;
+   }
 
    if (compute) {
       if (!brw_blorp_get_blit_kernel_cs(batch, params, key))
@@ -2419,8 +2434,16 @@ do_blorp_blit(struct blorp_batch *batch,
 
 bool
 blorp_blit_supports_compute(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
                             enum isl_aux_usage dst_aux_usage)
 {
+   /* Our compiler doesn't currently support typed image writes with MSAA.
+    * Also, our BLORP compute shaders don't handle multisampling cases.
+    */
+   if (dst_surf->samples > 1 || src_surf->samples > 1)
+      return false;
+
    if (blorp->isl_dev->info->ver >= 12) {
       return dst_aux_usage == ISL_AUX_USAGE_GFX12_CCS_E ||
              dst_aux_usage == ISL_AUX_USAGE_CCS_E ||
@@ -2431,6 +2454,61 @@ blorp_blit_supports_compute(struct blorp_context *blorp,
       /* No compute shader support */
       return false;
    }
+}
+
+static bool
+blitter_supports_aux(const struct intel_device_info *devinfo,
+                     enum isl_aux_usage aux_usage)
+{
+   switch (aux_usage) {
+   case ISL_AUX_USAGE_NONE:
+      return true;
+   case ISL_AUX_USAGE_CCS_E:
+   case ISL_AUX_USAGE_GFX12_CCS_E:
+      return devinfo->verx10 >= 125;
+   default:
+      return false;
+   }
+}
+
+bool
+blorp_copy_supports_blitter(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
+                            enum isl_aux_usage src_aux_usage,
+                            enum isl_aux_usage dst_aux_usage)
+{
+   const struct intel_device_info *devinfo = blorp->isl_dev->info;
+
+   if (devinfo->ver < 12)
+      return false;
+
+   if (dst_surf->samples > 1 || src_surf->samples > 1)
+      return false;
+
+   if (!blitter_supports_aux(devinfo, dst_aux_usage))
+      return false;
+
+   if (!blitter_supports_aux(devinfo, src_aux_usage))
+      return false;
+
+   const struct isl_format_layout *fmtl =
+      isl_format_get_layout(dst_surf->format);
+
+   if (fmtl->bpb == 96) {
+      /* XY_BLOCK_COPY_BLT mentions it doesn't support clear colors for 96bpp
+       * formats, but none of them support CCS anyway, so it's a moot point.
+       */
+      assert(src_aux_usage == ISL_AUX_USAGE_NONE);
+      assert(dst_aux_usage == ISL_AUX_USAGE_NONE);
+
+      /* We can only support linear mode for 96bpp. */
+      if (src_surf->tiling != ISL_TILING_LINEAR ||
+          dst_surf->tiling != ISL_TILING_LINEAR)
+         return false;
+   }
+
+   return true;
 }
 
 void
@@ -2452,8 +2530,11 @@ blorp_blit(struct blorp_batch *batch,
    blorp_params_init(&params);
    params.snapshot_type = INTEL_SNAPSHOT_BLIT;
    const bool compute = batch->flags & BLORP_BATCH_USE_COMPUTE;
-   if (compute)
-      assert(blorp_blit_supports_compute(batch->blorp, dst_surf->aux_usage));
+   if (compute) {
+      assert(blorp_blit_supports_compute(batch->blorp,
+                                         src_surf->surf, dst_surf->surf,
+                                         dst_surf->aux_usage));
+   }
 
    /* We cannot handle combined depth and stencil. */
    if (src_surf->surf->usage & ISL_SURF_USAGE_STENCIL_BIT)
@@ -2494,6 +2575,9 @@ blorp_blit(struct blorp_batch *batch,
                         isl_format_has_sint_channel(params.dst.view.format),
    };
 
+   params.shader_type = key.base.shader_type;
+   params.shader_pipeline = key.base.shader_pipeline;
+
    /* Scaling factors used for bilinear filtering in multisample scaled
     * blits.
     */
@@ -2504,10 +2588,10 @@ blorp_blit(struct blorp_batch *batch,
    key.y_scale = params.src.surf.samples / key.x_scale;
 
    params.wm_inputs.rect_grid.x1 =
-      minify(params.src.surf.logical_level0_px.width, src_level) *
+      u_minify(params.src.surf.logical_level0_px.width, src_level) *
       key.x_scale - 1.0f;
    params.wm_inputs.rect_grid.y1 =
-      minify(params.src.surf.logical_level0_px.height, src_level) *
+      u_minify(params.src.surf.logical_level0_px.height, src_level) *
       key.y_scale - 1.0f;
 
    struct blt_coords coords = {
@@ -2713,9 +2797,9 @@ blorp_surf_convert_to_uncompressed(const struct isl_device *isl_dev,
 
    if (width && height) {
       ASSERTED const uint32_t level_width =
-         minify(info->surf.logical_level0_px.width, info->view.base_level);
+         u_minify(info->surf.logical_level0_px.width, info->view.base_level);
       ASSERTED const uint32_t level_height =
-         minify(info->surf.logical_level0_px.height, info->view.base_level);
+         u_minify(info->surf.logical_level0_px.height, info->view.base_level);
       assert(*width % fmtl->bw == 0 || *x + *width == level_width);
       assert(*height % fmtl->bh == 0 || *y + *height == level_height);
       *width = DIV_ROUND_UP(*width, fmtl->bw);
@@ -2760,9 +2844,11 @@ blorp_surf_convert_to_uncompressed(const struct isl_device *isl_dev,
 
 bool
 blorp_copy_supports_compute(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
                             enum isl_aux_usage dst_aux_usage)
 {
-   return blorp_blit_supports_compute(blorp, dst_aux_usage);
+   return blorp_blit_supports_compute(blorp, src_surf, dst_surf, dst_aux_usage);
 }
 
 void
@@ -2776,6 +2862,7 @@ blorp_copy(struct blorp_batch *batch,
            uint32_t src_width, uint32_t src_height)
 {
    const struct isl_device *isl_dev = batch->blorp->isl_dev;
+   const struct intel_device_info *devinfo = isl_dev->info;
    struct blorp_params params;
 
    if (src_width == 0 || src_height == 0)
@@ -2785,8 +2872,16 @@ blorp_copy(struct blorp_batch *batch,
    params.snapshot_type = INTEL_SNAPSHOT_COPY;
 
    const bool compute = batch->flags & BLORP_BATCH_USE_COMPUTE;
-   if (compute)
-      assert(blorp_copy_supports_compute(batch->blorp, dst_surf->aux_usage));
+   if (compute) {
+      assert(blorp_copy_supports_compute(batch->blorp,
+                                         src_surf->surf, dst_surf->surf,
+                                         dst_surf->aux_usage));
+   } else if (batch->flags & BLORP_BATCH_USE_BLITTER) {
+      assert(blorp_copy_supports_blitter(batch->blorp,
+                                         src_surf->surf, dst_surf->surf,
+                                         src_surf->aux_usage,
+                                         dst_surf->aux_usage));
+   }
 
    brw_blorp_surface_info_init(batch, &params.src, src_surf, src_level,
                                src_layer, ISL_FORMAT_UNSUPPORTED, false);
@@ -2801,6 +2896,9 @@ blorp_copy(struct blorp_batch *batch,
       .need_src_offset = src_surf->tile_x_sa || src_surf->tile_y_sa,
       .need_dst_offset = dst_surf->tile_x_sa || dst_surf->tile_y_sa,
    };
+
+   params.shader_type = key.base.shader_type;
+   params.shader_pipeline = key.base.shader_pipeline;
 
    const struct isl_format_layout *src_fmtl =
       isl_format_get_layout(params.src.surf.format);
@@ -2894,6 +2992,25 @@ blorp_copy(struct blorp_batch *batch,
     */
    uint32_t dst_width = src_width;
    uint32_t dst_height = src_height;
+
+   if (batch->flags & BLORP_BATCH_USE_BLITTER) {
+      if (devinfo->verx10 < 125) {
+         blorp_surf_convert_to_single_slice(isl_dev, &params.dst);
+         blorp_surf_convert_to_single_slice(isl_dev, &params.src);
+      }
+
+      params.x0 = dst_x;
+      params.x1 = dst_x + dst_width;
+      params.y0 = dst_y;
+      params.y1 = dst_y + dst_height;
+      params.wm_inputs.coord_transform[0].offset = dst_x - (float)src_x;
+      params.wm_inputs.coord_transform[1].offset = dst_y - (float)src_y;
+      params.wm_inputs.coord_transform[0].multiplier = 1.0f;
+      params.wm_inputs.coord_transform[1].multiplier = 1.0f;
+
+      batch->blorp->exec(batch, &params);
+      return;
+   }
 
    struct blt_coords coords = {
       .x = {

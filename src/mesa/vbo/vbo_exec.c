@@ -29,7 +29,6 @@
 #include "main/glheader.h"
 #include "main/arrayobj.h"
 #include "main/api_arrayelt.h"
-#include "main/vtxfmt.h"
 #include "vbo_private.h"
 
 const GLubyte
@@ -54,7 +53,7 @@ _vbo_attribute_alias_map[VP_MODE_MAX][VERT_ATTRIB_MAX] = {
       VBO_ATTRIB_GENERIC0,            /* VERT_ATTRIB_GENERIC0 */
       VBO_ATTRIB_GENERIC1,            /* VERT_ATTRIB_GENERIC1 */
       VBO_ATTRIB_GENERIC2,            /* VERT_ATTRIB_GENERIC2 */
-      VBO_ATTRIB_GENERIC3,            /* VERT_ATTRIB_GENERIC3 */
+      VBO_ATTRIB_SELECT_RESULT_OFFSET,/* VERT_ATTRIB_GENERIC3 */
       VBO_ATTRIB_MAT_FRONT_AMBIENT,   /* VERT_ATTRIB_GENERIC4 */
       VBO_ATTRIB_MAT_BACK_AMBIENT,    /* VERT_ATTRIB_GENERIC5 */
       VBO_ATTRIB_MAT_FRONT_DIFFUSE,   /* VERT_ATTRIB_GENERIC6 */
@@ -109,11 +108,11 @@ _vbo_attribute_alias_map[VP_MODE_MAX][VERT_ATTRIB_MAX] = {
 
 
 void
-vbo_exec_init(struct gl_context *ctx, bool use_buffer_objects)
+vbo_exec_init(struct gl_context *ctx)
 {
    struct vbo_exec_context *exec = &vbo_context(ctx)->exec;
 
-   vbo_exec_vtx_init(exec, use_buffer_objects);
+   vbo_exec_vtx_init(exec);
 
    ctx->Driver.NeedFlush = 0;
    ctx->Driver.CurrentExecPrimitive = PRIM_OUTSIDE_BEGIN_END;

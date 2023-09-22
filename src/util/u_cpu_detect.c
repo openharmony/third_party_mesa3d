@@ -1,5 +1,5 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2008 Dennis Smit
  * All Rights Reserved.
  *
@@ -21,7 +21,7 @@
  * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /**
@@ -136,7 +136,7 @@ check_os_altivec_support(void)
    int sels[2] = {CTL_MACHDEP, CPU_ALTIVEC};
 #endif
    int has_vu = 0;
-   int len = sizeof (has_vu);
+   size_t len = sizeof (has_vu);
    int err;
 
    err = sysctl(sels, 2, &has_vu, &len, NULL, 0);
@@ -361,11 +361,11 @@ static inline uint64_t xgetbv(void)
 #if defined(PIPE_ARCH_X86)
 PIPE_ALIGN_STACK static inline boolean sse2_has_daz(void)
 {
-   struct {
+   alignas(16) struct {
       uint32_t pad1[7];
       uint32_t mxcsr_mask;
       uint32_t pad2[128-8];
-   } PIPE_ALIGN_VAR(16) fxarea;
+   } fxarea;
 
    fxarea.mxcsr_mask = 0;
 #if defined(PIPE_CC_GCC)
@@ -438,6 +438,7 @@ check_os_arm_support(void)
 static void
 check_os_mips64_support(void)
 {
+#if defined(PIPE_OS_LINUX)
     Elf64_auxv_t aux;
     int fd;
 
@@ -453,6 +454,7 @@ check_os_mips64_support(void)
        }
        close (fd);
     }
+#endif /* PIPE_OS_LINUX */
 }
 #endif /* PIPE_ARCH_MIPS64 */
 
@@ -623,7 +625,7 @@ util_cpu_detect_once(void)
    if (available_cpus == 0) {
       const int mib[] = { CTL_HW, HW_NCPUONLINE };
       int ncpu;
-      int len = sizeof(ncpu);
+      size_t len = sizeof(ncpu);
 
       sysctl(mib, 2, &ncpu, &len, NULL, 0);
       available_cpus = ncpu;
@@ -813,6 +815,10 @@ util_cpu_detect_once(void)
    check_os_mips64_support();
 #endif /* PIPE_ARCH_MIPS64 */
 
+#if defined(PIPE_ARCH_S390)
+   util_cpu_caps.family = CPU_S390X;
+#endif
+
    get_cpu_topology();
 
    if (debug_get_option_dump_cpu()) {
@@ -854,6 +860,9 @@ util_cpu_detect_once(void)
       printf("util_cpu_caps.num_L3_caches = %u\n", util_cpu_caps.num_L3_caches);
       printf("util_cpu_caps.num_cpu_mask_bits = %u\n", util_cpu_caps.num_cpu_mask_bits);
    }
+
+   /* This must happen at the end as it's used to guard everything else */
+   p_atomic_set(&util_cpu_caps.detect_done, 1);
 }
 
 static once_flag cpu_once_flag = ONCE_FLAG_INIT;

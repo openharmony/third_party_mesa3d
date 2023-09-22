@@ -49,17 +49,25 @@ VkPipeline
 zink_create_gfx_pipeline(struct zink_screen *screen,
                          struct zink_gfx_program *prog,
                          struct zink_gfx_pipeline_state *state,
+                         const uint8_t *binding_map,
                          VkPrimitiveTopology primitive_topology)
 {
    struct zink_rasterizer_hw_state *hw_rast_state = (void*)state;
    VkPipelineVertexInputStateCreateInfo vertex_input_state;
-   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs) {
+   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs || !state->uses_dynamic_stride) {
       memset(&vertex_input_state, 0, sizeof(vertex_input_state));
       vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
       vertex_input_state.pVertexBindingDescriptions = state->element_state->b.bindings;
       vertex_input_state.vertexBindingDescriptionCount = state->element_state->num_bindings;
       vertex_input_state.pVertexAttributeDescriptions = state->element_state->attribs;
       vertex_input_state.vertexAttributeDescriptionCount = state->element_state->num_attribs;
+      if (!screen->info.have_EXT_extended_dynamic_state || !state->uses_dynamic_stride) {
+         for (int i = 0; i < state->element_state->num_bindings; ++i) {
+            const unsigned buffer_id = binding_map[i];
+            VkVertexInputBindingDescription *binding = &state->element_state->b.bindings[i];
+            binding->stride = state->vertex_strides[buffer_id];
+         }
+      }
    }
 
    VkPipelineVertexInputDivisorStateCreateInfoEXT vdiv_state;
@@ -78,16 +86,21 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       switch (primitive_topology) {
       case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
       case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
-      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
       case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
       case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
+         if (screen->info.have_EXT_primitive_topology_list_restart) {
+            primitive_state.primitiveRestartEnable = state->dyn_state2.primitive_restart ? VK_TRUE : VK_FALSE;
+            break;
+         }
+         FALLTHROUGH;
       case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
-         if (state->primitive_restart)
-            debug_printf("restart_index set with unsupported primitive topology %u\n", primitive_topology);
+         if (state->dyn_state2.primitive_restart)
+            mesa_loge("zink: restart_index set with unsupported primitive topology %u\n", primitive_topology);
          primitive_state.primitiveRestartEnable = VK_FALSE;
          break;
       default:
-         primitive_state.primitiveRestartEnable = state->primitive_restart ? VK_TRUE : VK_FALSE;
+         primitive_state.primitiveRestartEnable = state->dyn_state2.primitive_restart ? VK_TRUE : VK_FALSE;
       }
    }
 
@@ -95,8 +108,10 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    VkPipelineColorBlendStateCreateInfo blend_state = {0};
    blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
    if (state->blend_state) {
-      unsigned num_attachments = state->render_pass->state.num_rts;
-      if (state->render_pass->state.have_zsbuf)
+      unsigned num_attachments = state->render_pass ?
+                                 state->render_pass->state.num_rts :
+                                 state->rendering_info.colorAttachmentCount;
+      if (state->render_pass && state->render_pass->state.have_zsbuf)
          num_attachments--;
       if (state->void_alpha_attachments) {
          for (unsigned i = 0; i < num_attachments; i++) {
@@ -120,30 +135,45 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    ms_state.rasterizationSamples = state->rast_samples + 1;
    if (state->blend_state) {
       ms_state.alphaToCoverageEnable = state->blend_state->alpha_to_coverage;
-      if (state->blend_state->alpha_to_one && !screen->info.feats.features.alphaToOne)
-         warn_missing_feature("alphaToOne");
+      if (state->blend_state->alpha_to_one && !screen->info.feats.features.alphaToOne) {
+         static bool warned = false;
+         warn_missing_feature(warned, "alphaToOne");
+      }
       ms_state.alphaToOneEnable = state->blend_state->alpha_to_one;
    }
-   ms_state.pSampleMask = state->sample_mask ? &state->sample_mask : NULL;
+   /* "If pSampleMask is NULL, it is treated as if the mask has all bits set to 1."
+    * - Chapter 27. Rasterization
+    * 
+    * thus it never makes sense to leave this as NULL since gallium will provide correct
+    * data here as long as sample_mask is initialized on context creation
+    */
+   ms_state.pSampleMask = &state->sample_mask;
    if (hw_rast_state->force_persample_interp) {
       ms_state.sampleShadingEnable = VK_TRUE;
       ms_state.minSampleShading = 1.0;
    }
 
    VkPipelineViewportStateCreateInfo viewport_state = {0};
+   VkPipelineViewportDepthClipControlCreateInfoEXT clip = {
+      VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT,
+      NULL,
+      VK_TRUE
+   };
    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
    viewport_state.viewportCount = screen->info.have_EXT_extended_dynamic_state ? 0 : state->dyn_state1.num_viewports;
    viewport_state.pViewports = NULL;
    viewport_state.scissorCount = screen->info.have_EXT_extended_dynamic_state ? 0 : state->dyn_state1.num_viewports;
    viewport_state.pScissors = NULL;
+   if (!screen->driver_workarounds.depth_clip_control_missing && !hw_rast_state->clip_halfz)
+      viewport_state.pNext = &clip;
 
    VkPipelineRasterizationStateCreateInfo rast_state = {0};
    rast_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 
-   rast_state.depthClampEnable = hw_rast_state->depth_clamp;
-   rast_state.rasterizerDiscardEnable = hw_rast_state->rasterizer_discard;
+   rast_state.depthClampEnable = true;
+   rast_state.rasterizerDiscardEnable = state->dyn_state2.rasterizer_discard;
    rast_state.polygonMode = hw_rast_state->polygon_mode;
-   rast_state.cullMode = hw_rast_state->cull_mode;
+   rast_state.cullMode = state->dyn_state1.cull_mode;
    rast_state.frontFace = state->dyn_state1.front_face;
 
    rast_state.depthBiasEnable = VK_TRUE;
@@ -151,6 +181,18 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    rast_state.depthBiasClamp = 0.0;
    rast_state.depthBiasSlopeFactor = 0.0;
    rast_state.lineWidth = 1.0f;
+
+   VkPipelineRasterizationDepthClipStateCreateInfoEXT depth_clip_state = {0};
+   depth_clip_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT;
+   depth_clip_state.depthClipEnable = hw_rast_state->depth_clip;
+   if (screen->info.have_EXT_depth_clip_enable) {
+      depth_clip_state.pNext = rast_state.pNext;
+      rast_state.pNext = &depth_clip_state;
+   } else {
+      static bool warned = false;
+      warn_missing_feature(warned, "VK_EXT_depth_clip_enable");
+      rast_state.depthClampEnable = !hw_rast_state->depth_clip;
+   }
 
    VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv_state;
    pv_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT;
@@ -182,19 +224,20 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    };
    unsigned state_count = 4;
    if (screen->info.have_EXT_extended_dynamic_state) {
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_BOUNDS;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_OP_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_FRONT_FACE_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_OP;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_FRONT_FACE;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_CULL_MODE;
       if (state->sample_locations_enabled)
          dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
    } else {
@@ -204,25 +247,82 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    if (state->element_state->num_attribs) {
       if (screen->info.have_EXT_vertex_input_dynamic_state)
          dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
-      else if (screen->info.have_EXT_extended_dynamic_state)
-         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
+      else if (screen->info.have_EXT_extended_dynamic_state && state->uses_dynamic_stride)
+         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    }
-   if (screen->info.have_EXT_extended_dynamic_state2)
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT;
+   if (screen->info.have_EXT_extended_dynamic_state2) {
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE;
+      if (screen->info.dynamic_state2_feats.extendedDynamicState2PatchControlPoints)
+         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT;
+   }
+   if (!screen->driver_workarounds.color_write_missing)
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT;
 
    VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
    if (screen->info.have_EXT_line_rasterization) {
       rast_line_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
       rast_line_state.pNext = rast_state.pNext;
       rast_line_state.stippledLineEnable = VK_FALSE;
-      rast_line_state.lineRasterizationMode = hw_rast_state->line_mode;
+      rast_line_state.lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_DEFAULT_EXT;
+
+      bool check_warn = false;
+      switch (primitive_topology) {
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
+      case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
+      case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
+         check_warn = true;
+         break;
+      default: break;
+      }
+      if (prog->nir[PIPE_SHADER_TESS_EVAL]) {
+         check_warn |= !prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess.point_mode &&
+                       prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES;
+      }
+      if (prog->nir[PIPE_SHADER_GEOMETRY]) {
+         switch (prog->nir[PIPE_SHADER_GEOMETRY]->info.gs.output_primitive) {
+         case SHADER_PRIM_LINES:
+         case SHADER_PRIM_LINE_LOOP:
+         case SHADER_PRIM_LINE_STRIP:
+         case SHADER_PRIM_LINES_ADJACENCY:
+         case SHADER_PRIM_LINE_STRIP_ADJACENCY:
+            check_warn = true;
+            break;
+         default: break;
+         }
+      }
+
+      if (check_warn) {
+         const char *features[4][2] = {
+            [VK_LINE_RASTERIZATION_MODE_DEFAULT_EXT] = {"",""},
+            [VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT] = {"rectangularLines", "stippledRectangularLines"},
+            [VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT] = {"bresenhamLines", "stippledBresenhamLines"},
+            [VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT] = {"smoothLines", "stippledSmoothLines"},
+         };
+         static bool warned[6] = {0};
+         const VkPhysicalDeviceLineRasterizationFeaturesEXT *line_feats = &screen->info.line_rast_feats;
+         /* line features can be represented as an array VkBool32[6],
+          * with the 3 base features preceding the 3 (matching) stippled features
+          */
+         const VkBool32 *feat = &line_feats->rectangularLines;
+         unsigned mode_idx = hw_rast_state->line_mode - VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT;
+         /* add base mode index, add 3 if stippling is enabled */
+         mode_idx += hw_rast_state->line_stipple_enable * 3;
+         if (*(feat + mode_idx))
+            rast_line_state.lineRasterizationMode = hw_rast_state->line_mode;
+         else
+            warn_missing_feature(warned[mode_idx], features[hw_rast_state->line_mode][hw_rast_state->line_stipple_enable]);
+      }
 
       if (hw_rast_state->line_stipple_enable) {
          dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_LINE_STIPPLE_EXT;
          rast_line_state.stippledLineEnable = VK_TRUE;
       }
+
       rast_state.pNext = &rast_line_state;
    }
+   assert(state_count < ARRAY_SIZE(dynamicStateEnables));
 
    VkPipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo = {0};
    pipelineDynamicStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -232,8 +332,11 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    VkGraphicsPipelineCreateInfo pci = {0};
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
    pci.layout = prog->base.layout;
-   pci.renderPass = state->render_pass->render_pass;
-   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs)
+   if (state->render_pass)
+      pci.renderPass = state->render_pass->render_pass;
+   else
+      pci.pNext = &state->rendering_info;
+   if (!screen->info.have_EXT_vertex_input_dynamic_state || !state->element_state->num_attribs || !state->uses_dynamic_stride)
       pci.pVertexInputState = &vertex_input_state;
    pci.pInputAssemblyState = &primitive_state;
    pci.pRasterizationState = &rast_state;
@@ -247,7 +350,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    VkPipelineTessellationDomainOriginStateCreateInfo tdci = {0};
    if (prog->shaders[PIPE_SHADER_TESS_CTRL] && prog->shaders[PIPE_SHADER_TESS_EVAL]) {
       tci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
-      tci.patchControlPoints = state->vertices_per_patch + 1;
+      tci.patchControlPoints = state->dyn_state2.vertices_per_patch;
       pci.pTessellationState = &tci;
       tci.pNext = &tdci;
       tdci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO;
@@ -273,9 +376,10 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    pci.stageCount = num_stages;
 
    VkPipeline pipeline;
-   if (vkCreateGraphicsPipelines(screen->dev, prog->base.pipeline_cache, 1, &pci,
-                                 NULL, &pipeline) != VK_SUCCESS) {
-      debug_printf("vkCreateGraphicsPipelines failed\n");
+   VkResult result = VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache,
+                                                    1, &pci, NULL, &pipeline);
+   if (result != VK_SUCCESS) {
+      mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
       return VK_NULL_HANDLE;
    }
 
@@ -292,7 +396,7 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
    VkPipelineShaderStageCreateInfo stage = {0};
    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-   stage.module = comp->module->shader;
+   stage.module = comp->curr->shader;
    stage.pName = "main";
 
    VkSpecializationInfo sinfo = {0};
@@ -314,9 +418,10 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
    pci.stage = stage;
 
    VkPipeline pipeline;
-   if (vkCreateComputePipelines(screen->dev, comp->base.pipeline_cache, 1, &pci,
-                                 NULL, &pipeline) != VK_SUCCESS) {
-      debug_printf("vkCreateComputePipelines failed\n");
+   VkResult result = VKSCR(CreateComputePipelines)(screen->dev, comp->base.pipeline_cache,
+                                                   1, &pci, NULL, &pipeline);
+   if (result != VK_SUCCESS) {
+      mesa_loge("ZINK: vkCreateComputePipelines failed (%s)", vk_Result_to_str(result));
       return VK_NULL_HANDLE;
    }
    zink_screen_update_pipeline_cache(screen, &comp->base);

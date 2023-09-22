@@ -28,7 +28,7 @@
 
 #include "nvc0/nvc0_context.h"
 
-#include "codegen/nv50_ir_driver.h"
+#include "nv50_ir_driver.h"
 #include "nvc0/nve4_compute.h"
 
 /* NOTE: Using a[0x270] in FP may cause an error even if we're using less than
@@ -572,7 +572,7 @@ nvc0_program_dump(struct nvc0_program *prog)
 bool
 nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
                        struct disk_cache *disk_shader_cache,
-                       struct pipe_debug_callback *debug)
+                       struct util_debug_callback *debug)
 {
    struct blob blob;
    size_t cache_size;
@@ -751,7 +751,7 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
       prog->tfb = nvc0_program_create_tfb_state(&info_out,
                                                 &prog->pipe.stream_output);
 
-   pipe_debug_message(debug, SHADER_INFO,
+   util_debug_message(debug, SHADER_INFO,
                       "type: %d, local: %d, shared: %d, gpr: %d, inst: %d, bytes: %d, cached: %zd",
                       prog->type, info_out.bin.tlsSpace, info_out.bin.smemSize,
                       prog->num_gprs, info_out.bin.instructions,

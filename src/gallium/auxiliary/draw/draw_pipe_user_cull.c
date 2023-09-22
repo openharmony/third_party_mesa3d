@@ -38,11 +38,6 @@ struct user_cull_stage {
    struct draw_stage stage;
 };
 
-static inline struct user_cull_stage *user_cull_stage( struct draw_stage *stage )
-{
-   return (struct user_cull_stage *)stage;
-}
-
 static inline boolean
 cull_distance_is_out(float dist)
 {
@@ -64,7 +59,7 @@ static void user_cull_point( struct draw_stage *stage,
       draw_current_shader_num_written_clipdistances(stage->draw);
    unsigned i;
 
-   debug_assert(num_written_culldistances);
+   assert(num_written_culldistances);
 
    for (i = 0; i < num_written_culldistances; ++i) {
       unsigned cull_idx = (num_written_clipdistances + i) / 4;
@@ -94,7 +89,7 @@ static void user_cull_line( struct draw_stage *stage,
       draw_current_shader_num_written_clipdistances(stage->draw);
    unsigned i;
 
-   debug_assert(num_written_culldistances);
+   assert(num_written_culldistances);
 
    for (i = 0; i < num_written_culldistances; ++i) {
       unsigned cull_idx = (num_written_clipdistances + i) / 4;
@@ -125,7 +120,7 @@ static void user_cull_tri( struct draw_stage *stage,
       draw_current_shader_num_written_clipdistances(stage->draw);
    unsigned i;
 
-   debug_assert(num_written_culldistances);
+   assert(num_written_culldistances);
 
    /* Do the distance culling */
    for (i = 0; i < num_written_culldistances; ++i) {

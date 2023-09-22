@@ -288,16 +288,17 @@ agx_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    struct agx_context *ctx = agx_context(pctx);
    struct agx_rasterizer *so = cso;
 
-   /* Check if scissor state has changed, since scissor enable is part of the
-    * rasterizer state but everything else needed for scissors is part of
-    * viewport/scissor states */
-   bool scissor_changed = (cso == NULL) || (ctx->rast == NULL) ||
-      (ctx->rast->base.scissor != so->base.scissor);
+   /* Check if scissor or depth bias state has changed, since scissor/depth bias
+    * enable is part of the rasterizer state but everything else needed for
+    * scissors and depth bias is part of the scissor/depth bias arrays */
+   bool scissor_zbias_changed = (cso == NULL) || (ctx->rast == NULL) ||
+      (ctx->rast->base.scissor != so->base.scissor) ||
+      (ctx->rast->base.offset_tri != so->base.offset_tri);
 
    ctx->rast = so;
 
-   if (scissor_changed)
-      ctx->dirty |= AGX_DIRTY_SCISSOR;
+   if (scissor_zbias_changed)
+      ctx->dirty |= AGX_DIRTY_SCISSOR_ZBIAS;
 }
 
 static enum agx_wrap
@@ -343,10 +344,11 @@ agx_create_sampler_state(struct pipe_context *pctx,
    struct agx_bo *bo = agx_bo_create(dev, AGX_SAMPLER_LENGTH,
                                      AGX_MEMORY_TYPE_FRAMEBUFFER);
 
-   assert(state->min_lod == 0 && "todo: lod clamps");
    assert(state->lod_bias == 0 && "todo: lod bias");
 
    agx_pack(bo->ptr.cpu, SAMPLER, cfg) {
+      cfg.minimum_lod = state->min_lod;
+      cfg.maximum_lod = state->max_lod;
       cfg.magnify_linear = (state->mag_img_filter == PIPE_TEX_FILTER_LINEAR);
       cfg.minify_linear = (state->min_img_filter == PIPE_TEX_FILTER_LINEAR);
       cfg.mip_filter = agx_mip_filter_from_pipe(state->min_mip_filter);
@@ -367,8 +369,8 @@ agx_create_sampler_state(struct pipe_context *pctx,
 static void
 agx_delete_sampler_state(struct pipe_context *ctx, void *state)
 {
-   struct agx_bo *bo = state;
-   agx_bo_unreference(bo);
+   struct agx_sampler_state *so = state;
+   agx_bo_unreference(so->desc);
 }
 
 static void
@@ -423,7 +425,10 @@ static enum agx_texture_dimension
 agx_translate_texture_dimension(enum pipe_texture_target dim)
 {
    switch (dim) {
+   case PIPE_TEXTURE_RECT:
    case PIPE_TEXTURE_2D: return AGX_TEXTURE_DIMENSION_2D;
+   case PIPE_TEXTURE_2D_ARRAY: return AGX_TEXTURE_DIMENSION_2D_ARRAY;
+   case PIPE_TEXTURE_3D: return AGX_TEXTURE_DIMENSION_3D;
    case PIPE_TEXTURE_CUBE: return AGX_TEXTURE_DIMENSION_CUBE;
    default: unreachable("Unsupported texture dimension");
    }
@@ -461,6 +466,10 @@ agx_create_sampler_view(struct pipe_context *pctx,
    unsigned level = state->u.tex.first_level;
    assert(state->u.tex.first_layer == 0);
 
+   /* Must tile array textures */
+   assert((rsrc->modifier != DRM_FORMAT_MOD_LINEAR) ||
+          (state->u.tex.last_layer == state->u.tex.first_layer));
+
    /* Pack the descriptor into GPU memory */
    agx_pack(so->desc->ptr.cpu, TEXTURE, cfg) {
       cfg.dimension = agx_translate_texture_dimension(state->target);
@@ -474,8 +483,14 @@ agx_create_sampler_view(struct pipe_context *pctx,
       cfg.height = u_minify(texture->height0, level);
       cfg.levels = state->u.tex.last_level - level + 1;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-      cfg.address = rsrc->bo->ptr.gpu + rsrc->slices[level].offset;
+      cfg.address = agx_map_texture_gpu(rsrc, level, state->u.tex.first_layer);
+      cfg.unk_mipmapped = rsrc->mipmapped;
       cfg.unk_2 = false;
+
+      if (state->target == PIPE_TEXTURE_3D)
+         cfg.depth = u_minify(texture->depth0, level);
+      else
+         cfg.depth = state->u.tex.last_layer - state->u.tex.first_layer + 1;
 
       cfg.stride = (rsrc->modifier == DRM_FORMAT_MOD_LINEAR) ?
          (rsrc->slices[level].line_stride - 16) :
@@ -593,7 +608,7 @@ agx_set_scissor_states(struct pipe_context *pctx,
    assert(num_scissors == 1 && "no geometry shaders");
 
    ctx->scissor = *scissor;
-   ctx->dirty |= AGX_DIRTY_SCISSOR;
+   ctx->dirty |= AGX_DIRTY_SCISSOR_ZBIAS;
 }
 
 static void
@@ -693,6 +708,22 @@ agx_upload_viewport_scissor(struct agx_pool *pool,
    };
 }
 
+static uint16_t
+agx_upload_depth_bias(struct agx_batch *batch,
+                      const struct pipe_rasterizer_state *rast)
+{
+   struct agx_depth_bias_packed *ptr = batch->depth_bias.bo->ptr.cpu;
+   unsigned index = (batch->depth_bias.count++);
+
+   agx_pack(ptr + index, DEPTH_BIAS, cfg) {
+      cfg.depth_bias    = rast->offset_units;
+      cfg.slope_scale   = rast->offset_scale;
+      cfg.clamp         = rast->offset_clamp;
+   }
+
+   return index;
+}
+
 /* A framebuffer state can be reused across batches, so it doesn't make sense
  * to add surfaces to the BO list here. Instead we added them when flushing.
  */
@@ -722,6 +753,10 @@ agx_set_framebuffer_state(struct pipe_context *pctx,
       struct agx_resource *tex = agx_resource(surf->texture);
       const struct util_format_description *desc =
          util_format_description(surf->format);
+      unsigned level = surf->u.tex.level;
+      unsigned layer = surf->u.tex.first_layer;
+
+      assert(surf->u.tex.last_layer == layer);
 
       agx_pack(ctx->render_target[i], RENDER_TARGET, cfg) {
          cfg.layout = agx_translate_layout(tex->modifier);
@@ -732,10 +767,15 @@ agx_set_framebuffer_state(struct pipe_context *pctx,
          cfg.swizzle_a = agx_channel_from_pipe(desc->swizzle[3]);
          cfg.width = state->width;
          cfg.height = state->height;
-         cfg.buffer = tex->bo->ptr.gpu;
+         cfg.level = surf->u.tex.level;
+         cfg.buffer = agx_map_texture_gpu(tex, 0, layer);
+
+         if (tex->mipmapped)
+            cfg.unk_55 = 0x8;
 
          cfg.stride = (tex->modifier == DRM_FORMAT_MOD_LINEAR) ?
-            (tex->slices[0].line_stride - 4) :
+            (tex->slices[level].line_stride - 4) :
+            tex->mipmapped ? AGX_RT_STRIDE_TILED_MIPMAPPED :
             AGX_RT_STRIDE_TILED;
       };
    }
@@ -867,6 +907,7 @@ agx_create_shader_state(struct pipe_context *pctx,
    return so;
 }
 
+/* Does not take ownership of key. Clones if necessary. */
 static bool
 agx_update_shader(struct agx_context *ctx, struct agx_compiled_shader **out,
                   enum pipe_shader_type stage, struct asahi_shader_key *key)
@@ -890,26 +931,19 @@ agx_update_shader(struct agx_context *ctx, struct agx_compiled_shader **out,
 
    nir_shader *nir = nir_shader_clone(NULL, so->nir);
 
-   if (key->blend.blend_enable) {
+   if (stage == PIPE_SHADER_FRAGMENT) {
       nir_lower_blend_options opts = {
          .format = { key->rt_formats[0] },
-         .scalar_blend_const = true
-      };
-
-      memcpy(opts.rt, key->blend.rt, sizeof(opts.rt));
-      NIR_PASS_V(nir, nir_lower_blend, opts);
-   } else if (key->blend.logicop_enable) {
-      nir_lower_blend_options opts = {
-         .format = { key->rt_formats[0] },
-         .logicop_enable = true,
+         .scalar_blend_const = true,
+         .logicop_enable = key->blend.logicop_enable,
          .logicop_func = key->blend.logicop_func,
       };
 
-      NIR_PASS_V(nir, nir_lower_blend, opts);
-   }
+      memcpy(opts.rt, key->blend.rt, sizeof(opts.rt));
+      NIR_PASS_V(nir, nir_lower_blend, &opts);
 
-   if (stage == PIPE_SHADER_FRAGMENT)
       NIR_PASS_V(nir, nir_lower_fragcolor, key->nr_cbufs);
+   }
 
    agx_compile_shader_nir(nir, &key->base, &binary, &compiled->info);
 
@@ -945,7 +979,13 @@ agx_update_shader(struct agx_context *ctx, struct agx_compiled_shader **out,
    ralloc_free(nir);
    util_dynarray_fini(&binary);
 
-   he = _mesa_hash_table_insert(so->variants, key, compiled);
+   /* key may be destroyed after we return, so clone it before using it as a
+    * hash table key. The clone is logically owned by the hash table.
+    */
+   struct asahi_shader_key *cloned_key = ralloc(so->variants, struct asahi_shader_key);
+   memcpy(cloned_key, key, sizeof(struct asahi_shader_key));
+
+   he = _mesa_hash_table_insert(so->variants, cloned_key, compiled);
    *out = he->data;
    return true;
 }
@@ -1101,13 +1141,16 @@ agx_build_pipeline(struct agx_context *ctx, struct agx_compiled_shader *cs, enum
 
    /* TODO: Can we prepack this? */
    if (stage == PIPE_SHADER_FRAGMENT) {
+      bool writes_sample_mask = ctx->fs->info.writes_sample_mask;
+
       agx_pack(record, SET_SHADER_EXTENDED, cfg) {
          cfg.code = cs->bo->ptr.gpu;
          cfg.register_quadwords = 0;
          cfg.unk_3 = 0x8d;
          cfg.unk_1 = 0x2010bd;
          cfg.unk_2 = 0x0d;
-         cfg.unk_2b = 1;
+         cfg.unk_2b = writes_sample_mask ? 5 : 1;
+         cfg.fragment_parameters.early_z_testing = !writes_sample_mask;
          cfg.unk_3b = 0x1;
          cfg.unk_4 = 0x800;
          cfg.preshader_unk = 0xc080;
@@ -1158,7 +1201,10 @@ agx_build_clear_pipeline(struct agx_context *ctx, uint32_t code, uint64_t clear_
       cfg.unk_3 = 0x8d;
       cfg.unk_2 = 0x0d;
       cfg.unk_2b = 4;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1191,14 +1237,22 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
       cfg.wrap_r = AGX_WRAP_CLAMP_TO_EDGE;
       cfg.pixel_coordinates = true;
       cfg.compare_func = AGX_COMPARE_FUNC_ALWAYS;
-      cfg.unk_2 = 0;
       cfg.unk_3 = 0;
    }
 
    agx_pack(texture.cpu, TEXTURE, cfg) {
       struct agx_resource *rsrc = agx_resource(surf->texture);
+      unsigned level = surf->u.tex.level;
+      unsigned layer = surf->u.tex.first_layer;
       const struct util_format_description *desc =
          util_format_description(surf->format);
+
+      /* To reduce shader variants, we always use a non-mipmapped 2D texture.
+       * For reloads of arrays, cube maps, etc -- we only logically reload a
+       * single 2D image. This does mean we need to be careful about
+       * width/height and address.
+       */
+      cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
 
       cfg.layout = agx_translate_layout(rsrc->modifier);
       cfg.format = agx_pixel_format[surf->format].hw;
@@ -1206,15 +1260,14 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
       cfg.swizzle_g = agx_channel_from_pipe(desc->swizzle[1]);
       cfg.swizzle_b = agx_channel_from_pipe(desc->swizzle[2]);
       cfg.swizzle_a = agx_channel_from_pipe(desc->swizzle[3]);
-      cfg.width = surf->width;
-      cfg.height = surf->height;
+      cfg.width = u_minify(surf->width, level);
+      cfg.height = u_minify(surf->height, level);
       cfg.levels = 1;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-      cfg.address = rsrc->bo->ptr.gpu;
-      cfg.unk_2 = false;
+      cfg.address = agx_map_texture_gpu(rsrc, level, layer);
 
       cfg.stride = (rsrc->modifier == DRM_FORMAT_MOD_LINEAR) ?
-         (rsrc->slices[0].line_stride - 16) :
+         (rsrc->slices[level].line_stride - 16) :
          AGX_RT_STRIDE_TILED;
    }
 
@@ -1242,7 +1295,10 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
       cfg.unk_2 = 0x0d;
       cfg.unk_2b = 4;
       cfg.unk_4 = 0;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1289,7 +1345,10 @@ agx_build_store_pipeline(struct agx_context *ctx, uint32_t code,
       cfg.register_quadwords = 1;
       cfg.unk_2 = 0xd;
       cfg.unk_3 = 0x8d;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1366,6 +1425,8 @@ demo_rasterizer(struct agx_context *ctx, struct agx_pool *pool, bool is_points)
        * optimize this out if the viewport is the default and the app does not
        * use the scissor test) */
       cfg.scissor_enable = true;
+
+      cfg.depth_bias_enable = rast->base.offset_tri;
    };
 
    /* Words 2-3: front */
@@ -1380,26 +1441,20 @@ demo_rasterizer(struct agx_context *ctx, struct agx_pool *pool, bool is_points)
 }
 
 static uint64_t
-demo_unk11(struct agx_pool *pool, bool prim_lines, bool prim_points, bool reads_tib)
+demo_unk11(struct agx_pool *pool, bool prim_lines, bool prim_points, bool reads_tib, bool sample_mask_from_shader)
 {
-#define UNK11_FILL_MODE_LINES_1 (1 << 26)
+   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_UNKNOWN_4A_LENGTH, 64);
 
-#define UNK11_FILL_MODE_LINES_2 (0x5004 << 16)
-#define UNK11_LINES (0x10000000)
-#define UNK11_POINTS (0x40000000)
+   agx_pack(T.cpu, UNKNOWN_4A, cfg) {
+      cfg.lines_or_points = (prim_lines || prim_points);
+      cfg.reads_tilebuffer = reads_tib;
+      cfg.sample_mask_from_shader = sample_mask_from_shader;
 
-#define UNK11_READS_TIB (0x20000000)
-
-   uint32_t unk[] = {
-      0x200004a,
-      0x200 | ((prim_lines || prim_points) ? UNK11_FILL_MODE_LINES_1 : 0) | (reads_tib ? UNK11_READS_TIB : 0),
-      0x7e00000 | (prim_lines ? UNK11_LINES : 0) | (prim_points ? UNK11_POINTS : 0),
-      0x7e00000 | (prim_lines ? UNK11_LINES : 0) | (prim_points ? UNK11_POINTS : 0),
-
-      0x1ffff
+      cfg.front.lines = cfg.back.lines = prim_lines;
+      cfg.front.points = cfg.back.points = prim_points;
    };
 
-   return agx_pool_upload(pool, unk, sizeof(unk));
+   return T.gpu;
 }
 
 static uint64_t
@@ -1415,12 +1470,13 @@ demo_unk12(struct agx_pool *pool)
 }
 
 static uint64_t
-agx_set_scissor_index(struct agx_pool *pool, unsigned index)
+agx_set_index(struct agx_pool *pool, uint16_t scissor, uint16_t zbias)
 {
-   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_SET_SCISSOR_LENGTH, 64);
+   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_SET_INDEX_LENGTH, 64);
 
-   agx_pack(T.cpu, SET_SCISSOR, cfg) {
-      cfg.index = index;
+   agx_pack(T.cpu, SET_INDEX, cfg) {
+      cfg.scissor = scissor;
+      cfg.depth_bias = zbias;
    };
 
    return T.gpu;
@@ -1432,9 +1488,13 @@ agx_push_record(uint8_t **out, unsigned size_words, uint64_t ptr)
    assert(ptr < (1ull << 40));
    assert(size_words < (1ull << 24));
 
-   uint64_t value = (size_words | (ptr << 24));
-   memcpy(*out, &value, sizeof(value));
-   *out += sizeof(value);
+   agx_pack(*out, RECORD, cfg) {
+      cfg.pointer_hi = (ptr >> 32);
+      cfg.pointer_lo = (uint32_t) ptr;
+      cfg.size_words = size_words;
+   };
+
+   *out += AGX_RECORD_LENGTH;
 }
 
 static uint8_t *
@@ -1451,36 +1511,38 @@ agx_encode_state(struct agx_context *ctx, uint8_t *out,
       cfg.texture_count = ctx->stage[PIPE_SHADER_VERTEX].texture_count;
    }
 
-   /* yes, it's really 17 bytes */
    out += AGX_BIND_PIPELINE_LENGTH;
-   *(out++) = 0x0;
 
    struct agx_pool *pool = &ctx->batch->pool;
-   struct agx_ptr zero = agx_pool_alloc_aligned(pool, 16, 256);
-   memset(zero.cpu, 0, 16);
-
    bool reads_tib = ctx->fs->info.reads_tib;
+   bool sample_mask_from_shader = ctx->fs->info.writes_sample_mask;
 
-   agx_push_record(&out, 0, zero.gpu);
    agx_push_record(&out, 5, demo_interpolation(ctx->fs, pool));
    agx_push_record(&out, 5, demo_launch_fragment(ctx, pool, pipeline_fragment, varyings, ctx->fs->info.varyings.nr_descs));
    agx_push_record(&out, 4, demo_linkage(ctx->vs, pool));
    agx_push_record(&out, 7, demo_rasterizer(ctx, pool, is_points));
-   agx_push_record(&out, 5, demo_unk11(pool, is_lines, is_points, reads_tib));
+   agx_push_record(&out, 5, demo_unk11(pool, is_lines, is_points, reads_tib, sample_mask_from_shader));
 
-   if (ctx->dirty & (AGX_DIRTY_VIEWPORT | AGX_DIRTY_SCISSOR)) {
+   unsigned zbias = 0;
+
+   if (ctx->rast->base.offset_tri) {
+      zbias = agx_upload_depth_bias(ctx->batch, &ctx->rast->base);
+      ctx->dirty |= AGX_DIRTY_SCISSOR_ZBIAS;
+   }
+
+   if (ctx->dirty & (AGX_DIRTY_VIEWPORT | AGX_DIRTY_SCISSOR_ZBIAS)) {
       struct agx_viewport_scissor vps = agx_upload_viewport_scissor(pool,
             ctx->batch, &ctx->viewport,
             ctx->rast->base.scissor ? &ctx->scissor : NULL);
 
       agx_push_record(&out, 10, vps.viewport);
-      agx_push_record(&out, 2, agx_set_scissor_index(pool, vps.scissor));
+      agx_push_record(&out, 2, agx_set_index(pool, vps.scissor, zbias));
    }
 
    agx_push_record(&out, 3, demo_unk12(pool));
    agx_push_record(&out, 2, agx_pool_upload(pool, ctx->rast->cull, sizeof(ctx->rast->cull)));
 
-   return (out - 1); // XXX: alignment fixup, or something
+   return out;
 }
 
 static enum agx_primitive
@@ -1563,6 +1625,9 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       (info->mode == PIPE_PRIM_LINES) ||
       (info->mode == PIPE_PRIM_LINE_STRIP) ||
       (info->mode == PIPE_PRIM_LINE_LOOP);
+
+   ptrdiff_t encoder_use = batch->encoder_current - (uint8_t *) batch->encoder->ptr.cpu;
+   assert((encoder_use + 1024) < batch->encoder->size && "todo: how to expand encoder?");
 
    uint8_t *out = agx_encode_state(ctx, batch->encoder_current,
                                    agx_build_pipeline(ctx, ctx->vs, PIPE_SHADER_VERTEX),

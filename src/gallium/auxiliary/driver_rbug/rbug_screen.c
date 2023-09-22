@@ -30,7 +30,6 @@
 #include "pipe/p_state.h"
 #include "util/u_memory.h"
 #include "util/u_debug.h"
-#include "util/simple_list.h"
 
 #include "rbug_public.h"
 #include "rbug_screen.h"
@@ -189,6 +188,21 @@ rbug_screen_get_dmabuf_modifier_planes(struct pipe_screen *_screen,
    struct pipe_screen *screen = rb_screen->screen;
 
    return screen->get_dmabuf_modifier_planes(screen, modifier, format);
+}
+
+static int
+rbug_screen_get_sparse_texture_virtual_page_size(struct pipe_screen *_screen,
+                                                 enum pipe_texture_target target,
+                                                 bool multi_sample,
+                                                 enum pipe_format format,
+                                                 unsigned offset, unsigned size,
+                                                 int *x, int *y, int *z)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   return screen->get_sparse_texture_virtual_page_size(screen, target, multi_sample,
+                                                       format, offset, size, x, y, z);
 }
 
 static struct pipe_context *
@@ -437,10 +451,10 @@ rbug_screen_create(struct pipe_screen *screen)
       return screen;
 
    (void) mtx_init(&rb_screen->list_mutex, mtx_plain);
-   make_empty_list(&rb_screen->contexts);
-   make_empty_list(&rb_screen->resources);
-   make_empty_list(&rb_screen->surfaces);
-   make_empty_list(&rb_screen->transfers);
+   list_inithead(&rb_screen->contexts);
+   list_inithead(&rb_screen->resources);
+   list_inithead(&rb_screen->surfaces);
+   list_inithead(&rb_screen->transfers);
 
 #define SCR_INIT(_member) \
    rb_screen->base._member = screen->_member ? rbug_screen_##_member : NULL
@@ -474,6 +488,7 @@ rbug_screen_create(struct pipe_screen *screen)
    rb_screen->base.fence_finish = rbug_screen_fence_finish;
    rb_screen->base.fence_get_fd = rbug_screen_fence_get_fd;
    SCR_INIT(finalize_nir);
+   SCR_INIT(get_sparse_texture_virtual_page_size);
 
    rb_screen->screen = screen;
 

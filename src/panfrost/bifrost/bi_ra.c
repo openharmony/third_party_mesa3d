@@ -25,6 +25,7 @@
  */
 
 #include "compiler.h"
+#include "nodearray.h"
 #include "bi_builder.h"
 #include "util/u_memory.h"
 
@@ -32,16 +33,17 @@ struct lcra_state {
         unsigned node_count;
         uint64_t *affinity;
 
-        /* Linear constraints imposed. Nested array sized upfront, organized as
-         * linear[node_left][node_right]. That is, calculate indices as:
+        /* Linear constraints imposed. For each node there there is a
+         * 'nodearray' structure, which changes between a sparse and dense
+         * array depending on the number of elements.
          *
          * Each element is itself a bit field denoting whether (c_j - c_i) bias
          * is present or not, including negative biases.
          *
-         * Note for Bifrost, there are 4 components so the bias is in range
-         * [-3, 3] so encoded by 8-bit field. */
-
-        uint8_t *linear;
+         * We support up to 8 components so the bias is in range
+         * [-7, 7] encoded by a 16-bit field
+         */
+        nodearray *linear;
 
         /* Before solving, forced registers; after solving, solutions. */
         unsigned *solutions;
@@ -63,7 +65,7 @@ lcra_alloc_equations(unsigned node_count)
 
         l->node_count = node_count;
 
-        l->linear = calloc(sizeof(l->linear[0]), node_count * node_count);
+        l->linear = calloc(sizeof(l->linear[0]), node_count);
         l->solutions = calloc(sizeof(l->solutions[0]), node_count);
         l->affinity = calloc(sizeof(l->affinity[0]), node_count);
 
@@ -75,6 +77,9 @@ lcra_alloc_equations(unsigned node_count)
 static void
 lcra_free(struct lcra_state *l)
 {
+        for (unsigned i = 0; i < l->node_count; ++i)
+                nodearray_reset(&l->linear[i]);
+
         free(l->linear);
         free(l->affinity);
         free(l->solutions);
@@ -87,40 +92,65 @@ lcra_add_node_interference(struct lcra_state *l, unsigned i, unsigned cmask_i, u
         if (i == j)
                 return;
 
-        uint8_t constraint_fw = 0;
-        uint8_t constraint_bw = 0;
+        nodearray_value constraint_fw = 0;
+        nodearray_value constraint_bw = 0;
 
-        for (unsigned D = 0; D < 4; ++D) {
+        /* The constraint bits are reversed from lcra.c so that register
+         * allocation can be done in parallel for every possible solution,
+         * with lower-order bits representing smaller registers. */
+
+        for (unsigned D = 0; D < 8; ++D) {
                 if (cmask_i & (cmask_j << D)) {
-                        constraint_bw |= (1 << (3 + D));
-                        constraint_fw |= (1 << (3 - D));
+                        constraint_fw |= (1 << (7 + D));
+                        constraint_bw |= (1 << (7 - D));
                 }
 
                 if (cmask_i & (cmask_j >> D)) {
-                        constraint_fw |= (1 << (3 + D));
-                        constraint_bw |= (1 << (3 - D));
+                        constraint_bw |= (1 << (7 + D));
+                        constraint_fw |= (1 << (7 - D));
                 }
         }
 
-        l->linear[j * l->node_count + i] |= constraint_fw;
-        l->linear[i * l->node_count + j] |= constraint_bw;
+        /* Use dense arrays after adding 256 elements */
+        nodearray_orr(&l->linear[j], i, constraint_fw, 256, l->node_count);
+        nodearray_orr(&l->linear[i], j, constraint_bw, 256, l->node_count);
 }
 
 static bool
 lcra_test_linear(struct lcra_state *l, unsigned *solutions, unsigned i)
 {
-        uint8_t *row = &l->linear[i * l->node_count];
         signed constant = solutions[i];
+
+        if (nodearray_is_sparse(&l->linear[i])) {
+                nodearray_sparse_foreach(&l->linear[i], elem) {
+                        unsigned j = nodearray_sparse_key(elem);
+                        nodearray_value constraint = nodearray_sparse_value(elem);
+
+                        if (solutions[j] == ~0) continue;
+
+                        signed lhs = constant - solutions[j];
+
+                        if (lhs < -7 || lhs > 7)
+                                continue;
+
+                        if (constraint & (1 << (lhs + 7)))
+                                return false;
+                }
+
+                return true;
+        }
+
+        nodearray_value *row = l->linear[i].dense;
 
         for (unsigned j = 0; j < l->node_count; ++j) {
                 if (solutions[j] == ~0) continue;
 
-                signed lhs = solutions[j] - constant;
+                signed lhs = constant - solutions[j];
 
-                if (lhs < -3 || lhs > 3)
+                if (lhs < -7 || lhs > 7)
                         continue;
 
-                if (row[j] & (1 << (lhs + 3)))
+                if (row[j] & (1 << (lhs + 7)))
                         return false;
         }
 
@@ -162,10 +192,15 @@ static unsigned
 lcra_count_constraints(struct lcra_state *l, unsigned i)
 {
         unsigned count = 0;
-        uint8_t *constraints = &l->linear[i * l->node_count];
+        nodearray *constraints = &l->linear[i];
 
-        for (unsigned j = 0; j < l->node_count; ++j)
-                count += util_bitcount(constraints[j]);
+        if (nodearray_is_sparse(constraints)) {
+                nodearray_sparse_foreach(constraints, elem)
+                        count += util_bitcount(nodearray_sparse_value(elem));
+        } else {
+                nodearray_dense_foreach_64(constraints, elem)
+                        count += util_bitcount64(*elem);
+        }
 
         return count;
 }
@@ -232,28 +267,52 @@ bi_mark_interference(bi_block *block, struct lcra_state *l, uint8_t *live, uint6
                          * offset, so we shift right. */
                         unsigned count = bi_count_write_registers(ins, d);
                         unsigned offset = ins->dest[d].offset;
-                        uint64_t affinity = bi_make_affinity(preload_live, count, split_file);
-
+                        uint64_t affinity = bi_make_affinity(preload_live, count, split_file) >> offset;
                         /* Valhall needs >= 64-bit staging writes to be pair-aligned */
-                        if (aligned_sr && count >= 2)
+                        if (aligned_sr && (count >= 2 || offset))
                                 affinity &= EVEN_BITS_MASK;
 
-                        l->affinity[node] &= (affinity >> offset);
+                        l->affinity[node] &= affinity;
 
                         for (unsigned i = 0; i < node_count; ++i) {
-                                if (live[i]) {
-                                        lcra_add_node_interference(l, node,
-                                                        bi_writemask(ins, d), i, live[i]);
+                                uint8_t r = live[i];
+
+                                /* Nodes only interfere if they occupy
+                                 * /different values/ at the same time
+                                 * (Boissinot). In particular, sources of
+                                 * moves do not interfere with their
+                                 * destinations. This enables a limited form of
+                                 * coalescing.
+                                 */
+                                if (ins->op == BI_OPCODE_MOV_I32 &&
+                                    i == bi_get_node(ins->src[0])) {
+
+                                        r &= ~BITFIELD_BIT(ins->src[0].offset);
                                 }
+
+                                if (r) {
+                                        lcra_add_node_interference(l, node,
+                                                        bi_writemask(ins, d), i, r);
+                                }
+                        }
+
+                        unsigned node_first = bi_get_node(ins->dest[0]);
+                        if (d == 1 && node_first < node_count) {
+                                lcra_add_node_interference(l, node, bi_writemask(ins, 1),
+                                                           node_first, bi_writemask(ins, 0));
                         }
                 }
 
-                /* Valhall needs >= 64-bit staging reads to be pair-aligned */
-                if (aligned_sr && bi_count_read_registers(ins, 0) >= 2) {
-                        unsigned node = bi_get_node(ins->src[0]);
+                /* Valhall needs >= 64-bit reads to be pair-aligned */
+                if (aligned_sr) {
+                        bi_foreach_src(ins, s) {
+                                if (bi_count_read_registers(ins, s) >= 2) {
+                                        unsigned node = bi_get_node(ins->src[s]);
 
-                        if (node < node_count)
-                                l->affinity[node] &= EVEN_BITS_MASK;
+                                        if (node < node_count)
+                                                l->affinity[node] &= EVEN_BITS_MASK;
+                                }
+                        }
                 }
 
                 if (!is_blend && ins->op == BI_OPCODE_BLEND) {
@@ -308,25 +367,90 @@ bi_allocate_registers(bi_context *ctx, bool *success, bool full_regs)
                 full_regs ? BITFIELD64_MASK(64) :
                 (BITFIELD64_MASK(16) | (BITFIELD64_MASK(16) << 48));
 
+        /* To test spilling, mimic a small register file */
+        if (bifrost_debug & BIFROST_DBG_SPILL && !ctx->inputs->is_blend)
+                default_affinity &= BITFIELD64_MASK(48) << 8;
+
         bi_foreach_instr_global(ctx, ins) {
                 bi_foreach_dest(ins, d) {
                         unsigned dest = bi_get_node(ins->dest[d]);
-
-                        /* Blend shaders expect the src colour to be in r0-r3 */
-                        if (ins->op == BI_OPCODE_BLEND &&
-                            !ctx->inputs->is_blend) {
-                                unsigned node = bi_get_node(ins->src[0]);
-                                assert(node < node_count);
-                                l->solutions[node] = 0;
-                        }
 
                         if (dest < node_count)
                                 l->affinity[dest] = default_affinity;
                 }
 
+                /* Blend shaders expect the src colour to be in r0-r3 */
+                if (ins->op == BI_OPCODE_BLEND &&
+                    !ctx->inputs->is_blend) {
+                        unsigned node = bi_get_node(ins->src[0]);
+                        assert(node < node_count);
+                        l->solutions[node] = 0;
+
+                        /* Dual source blend input in r4-r7 */
+                        node = bi_get_node(ins->src[4]);
+                        if (node < node_count)
+                                l->solutions[node] = 4;
+
+                        /* Writes to R48 */
+                        node = bi_get_node(ins->dest[0]);
+                        if (!bi_is_null(ins->dest[0])) {
+                                assert(node < node_count);
+                                l->solutions[node] = 48;
+                        }
+                }
+
+                /* Coverage mask writes stay in R60 */
+                if ((ins->op == BI_OPCODE_ATEST ||
+                     ins->op == BI_OPCODE_ZS_EMIT) &&
+                    !bi_is_null(ins->dest[0])) {
+                        unsigned node = bi_get_node(ins->dest[0]);
+                        assert(node < node_count);
+                        l->solutions[node] = 60;
+                }
+
+                /* Experimentally, it seems coverage masks inputs to ATEST must
+                 * be in R60. Otherwise coverage mask writes do not work with
+                 * early-ZS with pixel-frequency-shading (this combination of
+                 * settings is legal if depth/stencil writes are disabled).
+                 */
+                if (ins->op == BI_OPCODE_ATEST) {
+                        unsigned node = bi_get_node(ins->src[0]);
+                        assert(node < node_count);
+                        l->solutions[node] = 60;
+                }
         }
 
         bi_compute_interference(ctx, l, full_regs);
+
+        /* Coalesce register moves if we're allowed. We need to be careful due
+         * to the restricted affinity induced by the blend shader ABI.
+         */
+        bi_foreach_instr_global(ctx, I) {
+                if (I->op != BI_OPCODE_MOV_I32) continue;
+                if (I->src[0].type != BI_INDEX_REGISTER) continue;
+
+                unsigned reg = I->src[0].value;
+                unsigned node = bi_get_node(I->dest[0]);
+                assert(node < node_count);
+
+                if (l->solutions[node] != ~0) continue;
+
+                uint64_t affinity = l->affinity[node];
+
+                if (ctx->inputs->is_blend) {
+                        /* We're allowed to coalesce the moves to these */
+                        affinity |= BITFIELD64_BIT(48);
+                        affinity |= BITFIELD64_BIT(60);
+                }
+
+                /* Try to coalesce */
+                if (affinity & BITFIELD64_BIT(reg)) {
+                        l->solutions[node] = reg;
+
+                        if (!lcra_test_linear(l, l->solutions, node))
+                                l->solutions[node] = ~0;
+                }
+        }
 
         *success = lcra_solve(l);
 
@@ -364,6 +488,25 @@ bi_reg_from_index(bi_context *ctx, struct lcra_state *l, bi_index index)
         return new_index;
 }
 
+/* Dual texture instructions write to two sets of staging registers, modeled as
+ * two destinations in the IR. The first set is communicated with the usual
+ * staging register mechanism. The second set is encoded in the texture
+ * operation descriptor. This is quite unusual, and requires the following late
+ * fixup.
+ */
+static void
+bi_fixup_dual_tex_register(bi_instr *I)
+{
+        assert(I->dest[1].type == BI_INDEX_REGISTER);
+        assert(I->src[3].type == BI_INDEX_CONSTANT);
+
+        struct bifrost_dual_texture_operation desc = {
+                .secondary_register = I->dest[1].value
+        };
+
+        I->src[3].value |= bi_dual_tex_as_u32(desc);
+}
+
 static void
 bi_install_registers(bi_context *ctx, struct lcra_state *l)
 {
@@ -373,6 +516,9 @@ bi_install_registers(bi_context *ctx, struct lcra_state *l)
 
                 bi_foreach_src(ins, s)
                         ins->src[s] = bi_reg_from_index(ctx, l, ins->src[s]);
+
+                if (ins->op == BI_OPCODE_TEXC && !bi_is_null(ins->dest[1]))
+                        bi_fixup_dual_tex_register(ins);
         }
 }
 
@@ -400,26 +546,61 @@ bi_choose_spill_node(bi_context *ctx, struct lcra_state *l)
                 bi_foreach_dest(ins, d) {
                         unsigned node = bi_get_node(ins->dest[d]);
 
-                        if (node < l->node_count && ins->no_spill)
+                        if (node >= l->node_count)
+                                continue;
+
+                        /* Don't allow spilling coverage mask writes because the
+                         * register preload logic assumes it will stay in R60.
+                         * This could be optimized.
+                         */
+                        if (ins->no_spill ||
+                            ins->op == BI_OPCODE_ATEST ||
+                            ins->op == BI_OPCODE_ZS_EMIT ||
+                            (ins->op == BI_OPCODE_MOV_I32 &&
+                             ins->src[0].type == BI_INDEX_REGISTER &&
+                             ins->src[0].value == 60)) {
                                 BITSET_SET(no_spill, node);
+                        }
                 }
         }
 
         unsigned best_benefit = 0.0;
         signed best_node = -1;
 
-        for (unsigned i = 0; i < l->node_count; ++i) {
-                if (BITSET_TEST(no_spill, i)) continue;
+        if (nodearray_is_sparse(&l->linear[l->spill_node])) {
+                nodearray_sparse_foreach(&l->linear[l->spill_node], elem) {
+                        unsigned i = nodearray_sparse_key(elem);
+                        unsigned constraint = nodearray_sparse_value(elem);
 
-                /* Only spill nodes that interfere with the node failing
-                 * register allocation. It's pointless to spill anything else */
-                if (!l->linear[(l->spill_node * l->node_count) + i]) continue;
+                        /* Only spill nodes that interfere with the node failing
+                         * register allocation. It's pointless to spill anything else */
+                        if (!constraint) continue;
 
-                unsigned benefit = lcra_count_constraints(l, i);
+                        if (BITSET_TEST(no_spill, i)) continue;
 
-                if (benefit > best_benefit) {
-                        best_benefit = benefit;
-                        best_node = i;
+                        unsigned benefit = lcra_count_constraints(l, i);
+
+                        if (benefit > best_benefit) {
+                                best_benefit = benefit;
+                                best_node = i;
+                        }
+                }
+        } else {
+                nodearray_value *row = l->linear[l->spill_node].dense;
+
+                for (unsigned i = 0; i < l->node_count; ++i) {
+                        /* Only spill nodes that interfere with the node failing
+                         * register allocation. It's pointless to spill anything else */
+                        if (!row[i]) continue;
+
+                        if (BITSET_TEST(no_spill, i)) continue;
+
+                        unsigned benefit = lcra_count_constraints(l, i);
+
+                        if (benefit > best_benefit) {
+                                best_benefit = benefit;
+                                best_node = i;
+                        }
                 }
         }
 
@@ -440,6 +621,39 @@ bi_count_read_index(bi_instr *I, bi_index index)
         }
 
         return max;
+}
+
+/*
+ * Wrappers to emit loads/stores to thread-local storage in an appropriate way
+ * for the target, so the spill/fill code becomes architecture-independent.
+ */
+
+static bi_index
+bi_tls_ptr(bool hi)
+{
+        return bi_fau(BIR_FAU_TLS_PTR, hi);
+}
+
+static bi_instr *
+bi_load_tl(bi_builder *b, unsigned bits, bi_index src, unsigned offset)
+{
+        if (b->shader->arch >= 9) {
+                return bi_load_to(b, bits, src, bi_tls_ptr(false),
+                                  bi_tls_ptr(true), BI_SEG_TL, offset);
+        } else {
+                return bi_load_to(b, bits, src, bi_imm_u32(offset), bi_zero(),
+                                  BI_SEG_TL, 0);
+        }
+}
+
+static void
+bi_store_tl(bi_builder *b, unsigned bits, bi_index src, unsigned offset)
+{
+        if (b->shader->arch >= 9) {
+                bi_store(b, bits, src, bi_tls_ptr(false), bi_tls_ptr(true), BI_SEG_TL, offset);
+        } else {
+                bi_store(b, bits, src, bi_imm_u32(offset), bi_zero(), BI_SEG_TL, 0);
+        }
 }
 
 /* Once we've chosen a spill node, spill it and returns bytes spilled */
@@ -465,8 +679,7 @@ bi_spill_register(bi_context *ctx, bi_index index, uint32_t offset)
                         unsigned bits = count * 32;
 
                         b.cursor = bi_after_instr(I);
-                        bi_index loc = bi_imm_u32(offset + 4 * extra);
-                        bi_store(&b, bits, tmp, loc, bi_zero(), BI_SEG_TL);
+                        bi_store_tl(&b, bits, tmp, offset + 4 * extra);
 
                         ctx->spills++;
                         channels = MAX2(channels, extra + count);
@@ -479,14 +692,154 @@ bi_spill_register(bi_context *ctx, bi_index index, uint32_t offset)
                         unsigned bits = bi_count_read_index(I, index) * 32;
                         bi_rewrite_index_src_single(I, index, tmp);
 
-                        bi_instr *ld = bi_load_to(&b, bits, tmp,
-                                        bi_imm_u32(offset), bi_zero(), BI_SEG_TL);
+                        bi_instr *ld = bi_load_tl(&b, bits, tmp, offset);
                         ld->no_spill = true;
                         ctx->fills++;
                 }
         }
 
         return (channels * 4);
+}
+
+/*
+ * For transition, lower collects and splits before RA, rather than after RA.
+ * LCRA knows how to deal with offsets (broken SSA), but not how to coalesce
+ * these vector moves.
+ */
+static void
+bi_lower_vector(bi_context *ctx)
+{
+        bi_index *remap = calloc(ctx->ssa_alloc, sizeof(bi_index));
+
+        bi_foreach_instr_global_safe(ctx, I) {
+                bi_builder b = bi_init_builder(ctx, bi_after_instr(I));
+
+                if (I->op == BI_OPCODE_SPLIT_I32) {
+                        bi_index src = I->src[0];
+                        assert(src.offset == 0);
+
+                        for (unsigned i = 0; i < I->nr_dests; ++i) {
+                                if (bi_is_null(I->dest[i]))
+                                        continue;
+
+                                src.offset = i;
+                                bi_mov_i32_to(&b, I->dest[i], src);
+
+                                if (bi_is_ssa(I->dest[i]))
+                                        remap[I->dest[i].value] = src;
+                        }
+
+                        bi_remove_instruction(I);
+                } else if (I->op == BI_OPCODE_COLLECT_I32) {
+                        bi_index dest = I->dest[0];
+                        assert(dest.offset == 0);
+                        assert((bi_is_ssa(dest) || I->nr_srcs == 1) && "nir_lower_phis_to_scalar");
+
+                        for (unsigned i = 0; i < I->nr_srcs; ++i) {
+                                if (bi_is_null(I->src[i]))
+                                        continue;
+
+                                dest.offset = i;
+                                bi_mov_i32_to(&b, dest, I->src[i]);
+                        }
+
+                        bi_remove_instruction(I);
+                }
+        }
+
+        bi_foreach_instr_global(ctx, I) {
+                bi_foreach_src(I, s) {
+                        if (bi_is_ssa(I->src[s]) && !bi_is_null(remap[I->src[s].value]))
+                                I->src[s] = bi_replace_index(I->src[s], remap[I->src[s].value]);
+                }
+        }
+
+        free(remap);
+
+        /* After generating a pile of moves, clean up */
+        bi_opt_dead_code_eliminate(ctx);
+}
+
+/*
+ * Check if the instruction requires a "tied" operand. Such instructions MUST
+ * allocate their source and destination to the same register. This is a
+ * constraint on RA, and may require extra moves.
+ *
+ * In particular, this is the case for Bifrost instructions that both read and
+ * write with the staging register mechanism.
+ */
+static bool
+bi_is_tied(const bi_instr *I)
+{
+        if (bi_is_null(I->src[0]))
+                return false;
+
+        return (I->op == BI_OPCODE_TEXC ||
+                I->op == BI_OPCODE_ATOM_RETURN_I32 ||
+                I->op == BI_OPCODE_AXCHG_I32 ||
+                I->op == BI_OPCODE_ACMPXCHG_I32);
+}
+
+/*
+ * For transition, coalesce tied operands together, as LCRA knows how to handle
+ * non-SSA operands but doesn't know about tied operands.
+ *
+ * This breaks the SSA form of the program, but that doesn't matter for LCRA.
+ */
+static void
+bi_coalesce_tied(bi_context *ctx)
+{
+        bi_foreach_instr_global(ctx, I) {
+                if (!bi_is_tied(I)) continue;
+
+                bi_builder b = bi_init_builder(ctx, bi_before_instr(I));
+                unsigned n = bi_count_read_registers(I, 0);
+
+                for (unsigned i = 0; i < n; ++i) {
+                        bi_index dst = I->dest[0], src = I->src[0];
+
+                        assert(dst.offset == 0 && src.offset == 0);
+                        dst.offset = src.offset = i;
+
+                        bi_mov_i32_to(&b, dst, src);
+                }
+
+                I->src[0] = bi_replace_index(I->src[0], I->dest[0]);
+        }
+}
+
+static unsigned
+find_or_allocate_temp(unsigned *map, unsigned value, unsigned *alloc)
+{
+        if (!map[value])
+                map[value] = ++(*alloc);
+
+        assert(map[value]);
+        return map[value] - 1;
+}
+
+/* Reassigns numbering to get rid of gaps in the indices and to prioritize
+ * smaller register classes */
+
+static void
+squeeze_index(bi_context *ctx)
+{
+        unsigned *map = rzalloc_array(ctx, unsigned, ctx->ssa_alloc);
+        ctx->ssa_alloc = 0;
+
+        bi_foreach_instr_global(ctx, I) {
+                bi_foreach_dest(I, d) {
+                        if (I->dest[d].type == BI_INDEX_NORMAL)
+                                I->dest[d].value = find_or_allocate_temp(map, I->dest[d].value, &ctx->ssa_alloc);
+                }
+
+                bi_foreach_src(I, s) {
+                        if (I->src[s].type == BI_INDEX_NORMAL)
+                                I->src[s].value = find_or_allocate_temp(map, I->src[s].value, &ctx->ssa_alloc);
+                }
+        }
+
+        ralloc_free(map);
 }
 
 void
@@ -498,15 +851,23 @@ bi_register_allocate(bi_context *ctx)
         unsigned iter_count = 1000; /* max iterations */
 
         /* Number of bytes of memory we've spilled into */
-        unsigned spill_count = ctx->info->tls_size;
+        unsigned spill_count = ctx->info.tls_size;
 
-        /* Try with reduced register pressure to improve thread count on v7 */
-        if (ctx->arch == 7) {
-                bi_invalidate_liveness(ctx);
+        if (ctx->arch >= 9)
+                va_lower_split_64bit(ctx);
+
+        bi_lower_vector(ctx);
+
+        /* Lower tied operands. SSA is broken from here on. */
+        bi_coalesce_tied(ctx);
+        squeeze_index(ctx);
+
+        /* Try with reduced register pressure to improve thread count */
+        if (ctx->arch >= 7) {
                 l = bi_allocate_registers(ctx, &success, false);
 
                 if (success) {
-                        ctx->info->work_reg_count = 32;
+                        ctx->info.work_reg_count = 32;
                 } else {
                         lcra_free(l);
                         l = NULL;
@@ -515,11 +876,10 @@ bi_register_allocate(bi_context *ctx)
 
         /* Otherwise, use the register file and spill until we succeed */
         while (!success && ((iter_count--) > 0)) {
-                bi_invalidate_liveness(ctx);
                 l = bi_allocate_registers(ctx, &success, true);
 
                 if (success) {
-                        ctx->info->work_reg_count = 64;
+                        ctx->info.work_reg_count = 64;
                 } else {
                         signed spill_node = bi_choose_spill_node(ctx, l);
                         lcra_free(l);
@@ -528,16 +888,32 @@ bi_register_allocate(bi_context *ctx)
                         if (spill_node == -1)
                                 unreachable("Failed to choose spill node\n");
 
+                        if (ctx->inputs->is_blend)
+                                unreachable("Blend shaders may not spill");
+
+                        /* By default, we use packed TLS addressing on Valhall.
+                         * We cannot cross 16 byte boundaries with packed TLS
+                         * addressing. Align to ensure this doesn't happen. This
+                         * could be optimized a bit.
+                         */
+                        if (ctx->arch >= 9)
+                                spill_count = ALIGN_POT(spill_count, 16);
+
                         spill_count += bi_spill_register(ctx,
                                         bi_node_to_index(spill_node, bi_max_temp(ctx)),
                                         spill_count);
+
+                        /* In case the spill affected an instruction with tied
+                         * operands, we need to fix up.
+                         */
+                        bi_coalesce_tied(ctx);
                 }
         }
 
         assert(success);
         assert(l != NULL);
 
-        ctx->info->tls_size = spill_count;
+        ctx->info.tls_size = spill_count;
         bi_install_registers(ctx, l);
 
         lcra_free(l);

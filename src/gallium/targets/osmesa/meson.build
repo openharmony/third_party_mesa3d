@@ -32,11 +32,14 @@ if with_ld_version_script
   osmesa_link_deps += files('osmesa.sym')
 endif
 
-if cc.get_id() == 'gcc' and host_machine.cpu_family() != 'x86_64'
-  osmesa_def = 'osmesa.mingw.def'
-else
-  osmesa_def = 'osmesa.def'
-endif
+osmesa_def = custom_target(
+  'osmesa.def',
+  input: 'osmesa.def.in',
+  output : 'osmesa.def',
+  command : [prog_python, gen_vs_module_defs_py,
+             '--in_file', '@INPUT@', '--out_file', '@OUTPUT@',
+             '--compiler_id', cc.get_argument_syntax(), '--cpu_family', host_machine.cpu_family()]
+)
 
 libosmesa = shared_library(
   osmesa_lib_name,
@@ -51,11 +54,10 @@ libosmesa = shared_library(
   link_depends : osmesa_link_deps,
   link_whole : [libosmesa_st, libglapi_static],
   link_with : [
-    libmesa_gallium, libgallium, libws_null, osmesa_link_with,
+    libmesa, libgallium, libws_null, osmesa_link_with,
   ],
   dependencies : [
-    dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind,
-    driver_swrast, driver_swr,
+    dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind, driver_swrast
   ],
   name_prefix : host_machine.system() == 'windows' ? '' : 'lib',  # otherwise mingw will create libosmesa.dll
   soversion : host_machine.system() == 'windows' ? '' : '8',
@@ -81,6 +83,7 @@ if with_tests
       link_with: libosmesa,
       dependencies : [idep_gtest],
     ),
-    suite: 'gallium'
+    suite: 'gallium',
+    protocol : gtest_test_protocol,
   )
 endif

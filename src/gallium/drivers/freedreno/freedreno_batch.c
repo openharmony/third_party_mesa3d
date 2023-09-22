@@ -178,12 +178,6 @@ cleanup_submit(struct fd_batch *batch)
       batch->tile_fini = NULL;
    }
 
-   if (batch->tessellation) {
-      fd_bo_del(batch->tessfactor_bo);
-      fd_bo_del(batch->tessparam_bo);
-      fd_ringbuffer_del(batch->tess_addrs_constobj);
-   }
-
    fd_submit_del(batch->submit);
    batch->submit = NULL;
 }
@@ -262,7 +256,7 @@ batch_reset_resources(struct fd_batch *batch)
    set_foreach (batch->resources, entry) {
       struct fd_resource *rsc = (struct fd_resource *)entry->key;
       _mesa_set_remove(batch->resources, entry);
-      debug_assert(rsc->track->batch_mask & (1 << batch->idx));
+      assert(rsc->track->batch_mask & (1 << batch->idx));
       rsc->track->batch_mask &= ~(1 << batch->idx);
       if (rsc->track->write_batch == batch)
          fd_batch_reference_locked(&rsc->track->write_batch, NULL);
@@ -303,12 +297,12 @@ __fd_batch_destroy(struct fd_batch *batch)
    fd_bc_invalidate_batch(batch, true);
 
    batch_reset_resources(batch);
-   debug_assert(batch->resources->entries == 0);
+   assert(batch->resources->entries == 0);
    _mesa_set_destroy(batch->resources, NULL);
 
    fd_screen_unlock(ctx->screen);
    batch_reset_dependencies(batch);
-   debug_assert(batch->dependents_mask == 0);
+   assert(batch->dependents_mask == 0);
 
    util_copy_framebuffer_state(&batch->framebuffer, NULL);
    batch_fini(batch);
@@ -373,7 +367,7 @@ batch_flush(struct fd_batch *batch) assert_dt
 
    fd_gmem_render_tiles(batch);
 
-   debug_assert(batch->reference.count > 0);
+   assert(batch->reference.count > 0);
 
    cleanup_submit(batch);
    fd_batch_unlock_submit(batch);
@@ -418,7 +412,7 @@ fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep)
       return;
 
    /* a loop should not be possible */
-   debug_assert(!((1 << batch->idx) & recursive_dependents_mask(dep)));
+   assert(!((1 << batch->idx) & recursive_dependents_mask(dep)));
 
    struct fd_batch *other = NULL;
    fd_batch_reference_locked(&other, dep);
@@ -444,11 +438,11 @@ fd_batch_add_resource(struct fd_batch *batch, struct fd_resource *rsc)
 {
 
    if (likely(fd_batch_references_resource(batch, rsc))) {
-      debug_assert(_mesa_set_search_pre_hashed(batch->resources, rsc->hash, rsc));
+      assert(_mesa_set_search_pre_hashed(batch->resources, rsc->hash, rsc));
       return;
    }
 
-   debug_assert(!_mesa_set_search(batch->resources, rsc));
+   assert(!_mesa_set_search(batch->resources, rsc));
 
    _mesa_set_add_pre_hashed(batch->resources, rsc->hash, rsc);
    rsc->track->batch_mask |= (1 << batch->idx);

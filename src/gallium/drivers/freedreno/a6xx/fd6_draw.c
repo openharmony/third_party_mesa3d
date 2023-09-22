@@ -36,7 +36,6 @@
 #include "fd6_context.h"
 #include "fd6_draw.h"
 #include "fd6_emit.h"
-#include "fd6_format.h"
 #include "fd6_program.h"
 #include "fd6_vsc.h"
 #include "fd6_zsa.h"
@@ -152,10 +151,12 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
          .fs = ctx->prog.fs,
          .key = {
             .rasterflat = ctx->rasterizer->flatshade,
+            .ucp_enables = ctx->rasterizer->clip_plane_enable,
             .layer_zero = !gs_info || !(gs_info->outputs_written & VARYING_BIT_LAYER),
             .sample_shading = (ctx->min_samples > 1),
             .msaa = (ctx->framebuffer.samples > 1),
          },
+         .clip_plane_enable = ctx->rasterizer->clip_plane_enable,
       },
       .rasterflat = ctx->rasterizer->flatshade,
       .sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
@@ -175,7 +176,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
          return false;
 
       struct shader_info *ds_info = ir3_get_shader_info(emit.key.ds);
-      emit.key.key.tessellation = ir3_tess_mode(ds_info->tess.primitive_mode);
+      emit.key.key.tessellation = ir3_tess_mode(ds_info->tess._primitive_mode);
       ctx->gen_dirty |= BIT(FD6_GROUP_PRIMITIVE_PARAMS);
 
       struct shader_info *fs_info = ir3_get_shader_info(emit.key.fs);
@@ -195,7 +196,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
    ir3_fixup_shader_state(&ctx->base, &emit.key.key);
 
-   if (!(ctx->dirty & FD_DIRTY_PROG)) {
+   if (!(ctx->gen_dirty & BIT(FD6_GROUP_PROG))) {
       emit.prog = fd6_ctx->prog;
    } else {
       fd6_ctx->prog = fd6_emit_get_prog(&emit);
@@ -219,7 +220,11 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
    emit.fs = fd6_emit_get_prog(&emit)->fs;
 
    if (emit.vs->need_driver_params || fd6_ctx->has_dp_state)
-      emit.dirty_groups |= BIT(FD6_GROUP_VS_DRIVER_PARAMS);
+      emit.dirty_groups |= BIT(FD6_GROUP_DRIVER_PARAMS);
+   else if (emit.gs && emit.gs->need_driver_params)
+      emit.dirty_groups |= BIT(FD6_GROUP_DRIVER_PARAMS);
+   else if (emit.ds && emit.ds->need_driver_params)
+      emit.dirty_groups |= BIT(FD6_GROUP_DRIVER_PARAMS);
 
    /* If we are doing xfb, we need to emit the xfb state on every draw: */
    if (emit.prog->stream_output)
@@ -251,67 +256,29 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES) {
-      shader_info *ds_info = &emit.ds->shader->nir->info;
-      uint32_t factor_stride;
+      uint32_t factor_stride = ir3_tess_factor_stride(emit.key.key.tessellation);
 
-      switch (ds_info->tess.primitive_mode) {
-      case GL_ISOLINES:
-         draw0.patch_type = TESS_ISOLINES;
-         factor_stride = 12;
-         break;
-      case GL_TRIANGLES:
-         draw0.patch_type = TESS_TRIANGLES;
-         factor_stride = 20;
-         break;
-      case GL_QUADS:
-         draw0.patch_type = TESS_QUADS;
-         factor_stride = 28;
-         break;
-      default:
-         unreachable("bad tessmode");
-      }
+      STATIC_ASSERT(IR3_TESS_ISOLINES == TESS_ISOLINES + 1);
+      STATIC_ASSERT(IR3_TESS_TRIANGLES == TESS_TRIANGLES + 1);
+      STATIC_ASSERT(IR3_TESS_QUADS == TESS_QUADS + 1);
+      draw0.patch_type = emit.key.key.tessellation - 1;
 
       draw0.prim_type = DI_PT_PATCHES0 + ctx->patch_vertices;
       draw0.tess_enable = true;
 
-      const unsigned max_count = 2048;
-      unsigned count;
-
-      /**
-       * We can cap tessparam/tessfactor buffer sizes at the sub-draw
-       * limit.  But in the indirect-draw case we must assume the worst.
-       */
-      if (indirect && indirect->buffer) {
-         count = ALIGN_NPOT(max_count, ctx->patch_vertices);
-      } else {
-         count = MIN2(max_count, draw->count);
-         count = ALIGN_NPOT(count, ctx->patch_vertices);
-      }
+      /* maximum number of patches that can fit in tess factor/param buffers */
+      uint32_t subdraw_size = MIN2(FD6_TESS_FACTOR_SIZE / factor_stride,
+                                   FD6_TESS_PARAM_SIZE / (emit.hs->output_size * 4));
+      /* convert from # of patches to draw count */
+      subdraw_size *= ctx->patch_vertices;
 
       OUT_PKT7(ring, CP_SET_SUBDRAW_SIZE, 1);
-      OUT_RING(ring, count);
+      OUT_RING(ring, subdraw_size);
 
       ctx->batch->tessellation = true;
-      ctx->batch->tessparam_size =
-         MAX2(ctx->batch->tessparam_size, emit.hs->output_size * 4 * count);
-      ctx->batch->tessfactor_size =
-         MAX2(ctx->batch->tessfactor_size, factor_stride * count);
-
-      if (!ctx->batch->tess_addrs_constobj) {
-         /* Reserve space for the bo address - we'll write them later in
-          * setup_tess_buffers().  We need 2 bo address, but indirect
-          * constant upload needs at least 4 vec4s.
-          */
-         unsigned size = 4 * 16;
-
-         ctx->batch->tess_addrs_constobj = fd_submit_new_ringbuffer(
-            ctx->batch->submit, size, FD_RINGBUFFER_STREAMING);
-
-         ctx->batch->tess_addrs_constobj->cur += size;
-      }
    }
 
-	uint32_t index_start = info->index_size ? draw->index_bias : draw->start;
+   uint32_t index_start = info->index_size ? draw->index_bias : draw->start;
    if (ctx->last.dirty || (ctx->last.index_start != index_start)) {
       OUT_PKT4(ring, REG_A6XX_VFD_INDEX_OFFSET, 1);
       OUT_RING(ring, index_start); /* VFD_INDEX_OFFSET */

@@ -64,3 +64,35 @@ libasahi_decode = static_library(
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
+
+if with_tests
+  test(
+    'libasahi_tests',
+    executable(
+      'libasahi_tests',
+      files(
+        'tests/test-lod-clamps.cpp',
+      ),
+      c_args : [c_msvc_compat_args, no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_include, inc_src, inc_mesa],
+      dependencies: [idep_gtest, idep_agx_pack],
+      link_with : [],
+    ),
+    suite : ['asahi'],
+    protocol : gtest_test_protocol,
+  )
+endif
+
+if dep_iokit.found()
+  libasahi_wrap = shared_library(
+    'wrap',
+    'wrap.c',
+    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_asahi],
+    dependencies : [idep_mesautil, dep_iokit],
+    c_args : [no_override_init_args, '-Wno-missing-prototypes'],
+    gnu_symbol_visibility : 'hidden',
+    build_by_default : with_tools.contains('asahi'),
+    link_with: libasahi_decode,
+  )
+endif

@@ -28,8 +28,10 @@
 #define H_ETNAVIV_SHADER
 
 #include "mesa/main/config.h"
+#include "nir.h"
 #include "pipe/p_state.h"
 #include "util/disk_cache.h"
+#include "util/u_queue.h"
 
 struct etna_context;
 struct etna_shader_variant;
@@ -50,17 +52,25 @@ struct etna_shader_key
          /* do we need to replace glTexCoord.xy ? */
          unsigned sprite_coord_enable : MAX_TEXTURE_COORD_UNITS;
          unsigned sprite_coord_yinvert : 1;
+         /* do we need to lower sample_tex_compare */
+         unsigned has_sample_tex_compare : 1;
       };
       uint32_t global;
    };
+
+   int num_texture_states;
+   nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 };
 
 static inline bool
 etna_shader_key_equal(struct etna_shader_key *a, struct etna_shader_key *b)
 {
-   STATIC_ASSERT(sizeof(struct etna_shader_key) <= sizeof(a->global));
-
-   return a->global == b->global;
+   /* slow-path if we need to check tex_{swizzle,compare_func} */
+   if (unlikely(a->has_sample_tex_compare || b->has_sample_tex_compare))
+      return memcmp(a, b, sizeof(struct etna_shader_key)) == 0;
+   else
+      return a->global == b->global;
 }
 
 struct etna_shader {
@@ -76,6 +86,9 @@ struct etna_shader {
    struct etna_shader_variant *variants;
 
    cache_key cache_key;     /* shader disk-cache key */
+
+   /* parallel shader compiles */
+   struct util_queue_fence ready;
 };
 
 bool
@@ -86,9 +99,15 @@ etna_shader_update_vertex(struct etna_context *ctx);
 
 struct etna_shader_variant *
 etna_shader_variant(struct etna_shader *shader, struct etna_shader_key key,
-                   struct pipe_debug_callback *debug);
+                   struct util_debug_callback *debug);
 
 void
 etna_shader_init(struct pipe_context *pctx);
+
+bool
+etna_shader_screen_init(struct pipe_screen *pscreen);
+
+void
+etna_shader_screen_fini(struct pipe_screen *pscreen);
 
 #endif

@@ -67,7 +67,7 @@ struct gl_buffer_object;
 #define PIPE_MAX_SHADER_OUTPUTS   80 /* 32 GENERIC + 32 PATCH + 16 others */
 #define PIPE_MAX_SHADER_SAMPLER_VIEWS 128
 #define PIPE_MAX_SHADER_BUFFERS   32
-#define PIPE_MAX_SHADER_IMAGES    32
+#define PIPE_MAX_SHADER_IMAGES    64
 #define PIPE_MAX_TEXTURE_LEVELS   16
 #define PIPE_MAX_SO_BUFFERS        4
 #define PIPE_MAX_SO_OUTPUTS       64
@@ -183,6 +183,14 @@ struct pipe_rasterizer_state
     * This depends on PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED.
     */
    unsigned offset_units_unscaled:1;
+
+   /**
+    * Depth values output from fragment shader may be outside 0..1.
+    * These have to be clamped for use with UNORM buffers.
+    * Vulkan can allow this with an extension,
+    * GL could with NV_depth_buffer_float, but GLES doesn't.
+    */
+   unsigned unclamped_fragment_depth_values:1;
 
    /**
     * Enable bits for clipping half-spaces.
@@ -426,6 +434,7 @@ struct pipe_sampler_state
    float lod_bias;               /**< LOD/lambda bias */
    float min_lod, max_lod;       /**< LOD clamp range, after bias */
    union pipe_color_union border_color;
+   enum pipe_format border_color_format;      /**< only with PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_FREEDRENO, must be last */
 };
 
 union pipe_surface_desc {
@@ -568,6 +577,8 @@ struct pipe_resource
     *  nr_samples.
     */
    unsigned nr_storage_samples:8;
+
+   unsigned nr_sparse_levels:8; /**< Mipmap levels support partial resident */
 
    unsigned usage:8;         /**< PIPE_USAGE_x (not a bitmask) */
    unsigned bind;            /**< bitmask of PIPE_BIND_x */
@@ -843,7 +854,8 @@ struct pipe_draw_info
    bool take_index_buffer_ownership:1; /**< callee inherits caller's refcount
          (no need to reference indexbuf, but still needs to unreference it) */
    bool index_bias_varies:1;   /**< true if index_bias varies between draws */
-   uint8_t _pad:2;
+   bool was_line_loop:1; /**< true if pipe_prim_type was LINE_LOOP before translation */
+   uint8_t _pad:1;
 
    unsigned start_instance; /**< first instance id */
    unsigned instance_count; /**< number of instances */
@@ -891,6 +903,7 @@ struct pipe_blit_info
 
    unsigned mask; /**< bitmask of PIPE_MASK_R/G/B/A/Z/S */
    unsigned filter; /**< PIPE_TEX_FILTER_* */
+   uint8_t dst_sample; /**< if non-zero, set sample_mask to (1 << (dst_sample - 1)) */
    bool sample0_only;
    bool scissor_enable;
    struct pipe_scissor_state scissor;
@@ -903,7 +916,6 @@ struct pipe_blit_info
    bool render_condition_enable; /**< whether the blit should honor the
                                  current render condition */
    bool alpha_blend; /* dst.rgb = src.rgb * src.a + dst.rgb * (1 - src.a) */
-   bool is_dri_blit_image;
 };
 
 /**
@@ -996,37 +1008,6 @@ struct pipe_compute_state
    unsigned req_local_mem; /**< Required size of the LOCAL resource. */
    unsigned req_private_mem; /**< Required size of the PRIVATE resource. */
    unsigned req_input_mem; /**< Required size of the INPUT resource. */
-};
-
-/**
- * Structure that contains a callback for debug messages from the driver back
- * to the gallium frontend.
- */
-struct pipe_debug_callback
-{
-   /**
-    * When set to \c true, the callback may be called asynchronously from a
-    * driver-created thread.
-    */
-   bool async;
-
-   /**
-    * Callback for the driver to report debug/performance/etc information back
-    * to the gallium frontend.
-    *
-    * \param data       user-supplied data pointer
-    * \param id         message type identifier, if pointed value is 0, then a
-    *                   new id is assigned
-    * \param type       PIPE_DEBUG_TYPE_*
-    * \param format     printf-style format string
-    * \param args       args for format string
-    */
-   void (*debug_message)(void *data,
-                         unsigned *id,
-                         enum pipe_debug_type type,
-                         const char *fmt,
-                         va_list args);
-   void *data;
 };
 
 /**

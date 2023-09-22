@@ -390,6 +390,7 @@ PIPE_FORMAT_R32G32B32A32_FIXED      , plain, 1, 1, 1, h32 , h32 , h32 , h32 , xy
 PIPE_FORMAT_R10G10B10X2_USCALED     , plain, 1, 1, 1, u10 , u10 , u10  , x2 , xyz1, rgb
 # A.k.a. D3DDECLTYPE_DEC3N
 PIPE_FORMAT_R10G10B10X2_SNORM       , plain, 1, 1, 1, sn10, sn10, sn10 , x2 , xyz1, rgb
+PIPE_FORMAT_R10G10B10X2_SINT        , plain, 1, 1, 1, sp10, sp10, sp10 , x2 , xyz1, rgb
 
 PIPE_FORMAT_YV12                  , planar3, 1, 1, 1,     ,     ,     ,     , xyzw, yuv
 PIPE_FORMAT_YV16                  , planar3, 1, 1, 1,     ,     ,     ,     , xyzw, yuv
@@ -400,7 +401,12 @@ PIPE_FORMAT_NV21                  , planar2, 1, 1, 1,     ,     ,     ,     , xy
 # RGB version of NV12 and YV12 for hardware that supports sampling from
 # multiplane textures but needs color-space conversion in the shader.
 PIPE_FORMAT_R8_G8B8_420_UNORM     , planar2, 1, 1, 1,  un8,     ,     ,     , xyzw, rgb
-PIPE_FORMAT_R8_G8_B8_420_UNORM    , planar3, 1, 1, 1,  un8,     ,     ,     , xyzw, rgb
+PIPE_FORMAT_G8_B8R8_420_UNORM     , planar2, 1, 1, 1,  un8,     ,     ,     , xyzw, rgb
+PIPE_FORMAT_G8_B8_R8_420_UNORM    , planar3, 1, 1, 1,  un8,     ,     ,     , xyzw, rgb
+
+# While most of Mesa uses R8 for Y, U, and V planes, freedreno requires distinguishing
+# between tiled Y8 data and tiled R8 data.
+PIPE_FORMAT_Y8_UNORM              , other,   1, 1, 1,  un8,     ,     ,     , x001, yuv
 
 PIPE_FORMAT_Y8_U8_V8_422_UNORM    , planar3, 1, 1, 1,     ,     ,     ,     , xyzw, yuv
 PIPE_FORMAT_Y8_U8V8_422_UNORM     , planar2, 1, 1, 1,     ,     ,     ,     , xyzw, yuv
@@ -535,6 +541,7 @@ PIPE_FORMAT_R8G8B8X8_UINT           , plain, 1, 1, 1, up8,  up8,  up8,  x8,  xyz
 PIPE_FORMAT_R8G8B8X8_SINT           , plain, 1, 1, 1, sp8,  sp8,  sp8,  x8,  xyz1, rgb
 PIPE_FORMAT_B10G10R10X2_UNORM       , plain, 1, 1, 1, un10, un10, un10, x2,  zyx1, rgb
 PIPE_FORMAT_B10G10R10X2_SNORM       , plain, 1, 1, 1, sn10, sn10, sn10, x2,  zyx1, rgb
+PIPE_FORMAT_B10G10R10X2_SINT        , plain, 1, 1, 1, sp10, sp10, sp10, x2,  zyx1, rgb
 PIPE_FORMAT_R16G16B16X16_UNORM      , plain, 1, 1, 1, un16, un16, un16, x16, xyz1, rgb
 PIPE_FORMAT_R16G16B16X16_SNORM      , plain, 1, 1, 1, sn16, sn16, sn16, x16, xyz1, rgb
 PIPE_FORMAT_R16G16B16X16_FLOAT      , plain, 1, 1, 1, f16,  f16,  f16,  x16, xyz1, rgb
@@ -566,6 +573,7 @@ PIPE_FORMAT_G8R8_SNORM              , plain, 1, 1, 1, sn8 , sn8 , , , yx01, rgb
 PIPE_FORMAT_G8R8_SINT               , plain, 1, 1, 1, sp8 , sp8 , , , yx01, rgb
 PIPE_FORMAT_G16R16_UNORM            , plain, 1, 1, 1, un16, un16, , , yx01, rgb
 PIPE_FORMAT_G16R16_SNORM            , plain, 1, 1, 1, sn16, sn16, , , yx01, rgb
+PIPE_FORMAT_G16R16_SINT             , plain, 1, 1, 1, sp16, sp16, , , yx01, rgb
 
 PIPE_FORMAT_A8B8G8R8_SNORM          , plain, 1, 1, 1, sn8 , sn8 , sn8 , sn8 , wzyx, rgb
 PIPE_FORMAT_A8B8G8R8_SINT           , plain, 1, 1, 1, sp8 , sp8 , sp8 , sp8 , wzyx, rgb

@@ -248,7 +248,7 @@ lower_immed(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr, unsigned n,
 static void
 unuse(struct ir3_instruction *instr)
 {
-   debug_assert(instr->use_count > 0);
+   assert(instr->use_count > 0);
 
    if (--instr->use_count == 0) {
       struct ir3_block *block = instr->block;
@@ -260,7 +260,7 @@ unuse(struct ir3_instruction *instr)
        * be things like array store's)
        */
       for (unsigned i = 0; i < block->keeps_count; i++) {
-         debug_assert(block->keeps[i] != instr);
+         assert(block->keeps[i] != instr);
       }
    }
 }
@@ -276,10 +276,13 @@ try_swap_mad_two_srcs(struct ir3_instruction *instr, unsigned new_flags)
    if (!is_mad(instr->opc))
       return false;
 
-   /* NOTE: pre-swap first two src's before valid_flags(),
-    * which might try to dereference the n'th src:
+   /* If we've already tried, nothing more to gain.. we will only
+    * have previously swapped if the original 2nd src was const or
+    * immed.  So swapping back won't improve anything and could
+    * result in an infinite "progress" loop.
     */
-   swap(instr->srcs[0], instr->srcs[1]);
+   if (instr->cat3.swapped)
+      return false;
 
    /* cat3 doesn't encode immediate, but we can lower immediate
     * to const if that helps:
@@ -288,6 +291,19 @@ try_swap_mad_two_srcs(struct ir3_instruction *instr, unsigned new_flags)
       new_flags &= ~IR3_REG_IMMED;
       new_flags |= IR3_REG_CONST;
    }
+
+   /* If the reason we couldn't fold without swapping is something
+    * other than const source, then swapping won't help:
+    */
+   if (!(new_flags & IR3_REG_CONST))
+      return false;
+
+   instr->cat3.swapped = true;
+
+   /* NOTE: pre-swap first two src's before valid_flags(),
+    * which might try to dereference the n'th src:
+    */
+   swap(instr->srcs[0], instr->srcs[1]);
 
    bool valid_swap =
       /* can we propagate mov if we move 2nd src to first? */
@@ -303,6 +319,22 @@ try_swap_mad_two_srcs(struct ir3_instruction *instr, unsigned new_flags)
    return valid_swap;
 }
 
+/* Values that are uniform inside a loop can become divergent outside
+ * it if the loop has a divergent trip count. This means that we can't
+ * propagate a copy of a shared to non-shared register if it would
+ * make the shared reg's live range extend outside of its loop. Users
+ * outside the loop would see the value for the thread(s) that last
+ * exited the loop, rather than for their own thread.
+ */
+static bool
+is_valid_shared_copy(struct ir3_instruction *dst_instr,
+                     struct ir3_instruction *src_instr,
+                     struct ir3_register *src_reg)
+{
+   return !(src_reg->flags & IR3_REG_SHARED) ||
+      dst_instr->block->loop_id == src_instr->block->loop_id;
+}
+
 /**
  * Handle cp for a given src register.  This additionally handles
  * the cases of collapsing immedate/const (which replace the src
@@ -316,27 +348,19 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
 {
    struct ir3_instruction *src = ssa(reg);
 
-   /* Values that are uniform inside a loop can become divergent outside
-    * it if the loop has a divergent trip count. This means that we can't
-    * propagate a copy of a shared to non-shared register if it would
-    * make the shared reg's live range extend outside of its loop. Users
-    * outside the loop would see the value for the thread(s) that last
-    * exited the loop, rather than for their own thread.
-    */
-   if ((src->dsts[0]->flags & IR3_REG_SHARED) &&
-       src->block->loop_id != instr->block->loop_id)
-      return false;
-
    if (is_eligible_mov(src, instr, true)) {
       /* simple case, no immed/const/relativ, only mov's w/ ssa src: */
       struct ir3_register *src_reg = src->srcs[0];
       unsigned new_flags = reg->flags;
 
+      if (!is_valid_shared_copy(instr, src, src_reg))
+         return false;
+
       combine_flags(&new_flags, src);
 
       if (ir3_valid_flags(instr, n, new_flags)) {
          if (new_flags & IR3_REG_ARRAY) {
-            debug_assert(!(reg->flags & IR3_REG_ARRAY));
+            assert(!(reg->flags & IR3_REG_ARRAY));
             reg->array = src_reg->array;
          }
          reg->flags = new_flags;
@@ -356,6 +380,9 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
       /* immed/const/etc cases, which require some special handling: */
       struct ir3_register *src_reg = src->srcs[0];
       unsigned new_flags = reg->flags;
+
+      if (!is_valid_shared_copy(instr, src, src_reg))
+         return false;
 
       if (src_reg->flags & IR3_REG_ARRAY)
          return false;
@@ -395,6 +422,11 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
           */
          if ((src_reg->flags & IR3_REG_RELATIV) &&
              conflicts(instr->address, reg->def->instr->address))
+            return false;
+
+         /* These macros expand to a mov in an if statement */
+         if ((src_reg->flags & IR3_REG_RELATIV) &&
+             is_subgroup_cond_mov_macro(instr))
             return false;
 
          /* This seems to be a hw bug, or something where the timings
@@ -443,7 +475,7 @@ reg_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr,
       if (src_reg->flags & IR3_REG_IMMED) {
          int32_t iim_val = src_reg->iim_val;
 
-         debug_assert((opc_cat(instr->opc) == 1) ||
+         assert((opc_cat(instr->opc) == 1) ||
                       (opc_cat(instr->opc) == 2) ||
                       (opc_cat(instr->opc) == 6) ||
                       is_meta(instr) ||
@@ -498,7 +530,7 @@ eliminate_output_mov(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr)
       struct ir3_register *reg = instr->srcs[0];
       if (!(reg->flags & IR3_REG_ARRAY)) {
          struct ir3_instruction *src_instr = ssa(reg);
-         debug_assert(src_instr);
+         assert(src_instr);
          ctx->progress = true;
          return src_instr;
       }
@@ -616,12 +648,13 @@ instr_cp(struct ir3_cp_ctx *ctx, struct ir3_instruction *instr)
        */
       struct ir3_instruction *samp_tex = ssa(instr->srcs[0]);
 
-      debug_assert(samp_tex->opc == OPC_META_COLLECT);
+      assert(samp_tex->opc == OPC_META_COLLECT);
 
       struct ir3_register *samp = samp_tex->srcs[0];
       struct ir3_register *tex = samp_tex->srcs[1];
 
-      if ((samp->flags & IR3_REG_IMMED) && (tex->flags & IR3_REG_IMMED)) {
+      if ((samp->flags & IR3_REG_IMMED) && (tex->flags & IR3_REG_IMMED) &&
+          (samp->iim_val < 16) && (tex->iim_val < 16)) {
          instr->flags &= ~IR3_INSTR_S2EN;
          instr->cat5.samp = samp->iim_val;
          instr->cat5.tex = tex->iim_val;
@@ -657,7 +690,7 @@ ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so)
          /* by the way, we don't account for false-dep's, so the CP
           * pass should always happen before false-dep's are inserted
           */
-         debug_assert(instr->deps_count == 0);
+         assert(instr->deps_count == 0);
 
          foreach_ssa_src (src, instr) {
             src->use_count++;

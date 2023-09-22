@@ -93,7 +93,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "c99_compat.h"
 #include "c11/threads.h"
 #include "util/debug.h"
 #include "util/macros.h"
@@ -268,22 +267,17 @@ static EGLBoolean
 _eglSetFuncName(const char *funcName, _EGLDisplay *disp, EGLenum objectType, _EGLResource *object)
 {
    _EGLThreadInfo *thr = _eglGetCurrentThread();
-   if (!_eglIsCurrentThreadDummy()) {
-      thr->CurrentFuncName = funcName;
-      thr->CurrentObjectLabel = NULL;
+   thr->CurrentFuncName = funcName;
+   thr->CurrentObjectLabel = NULL;
 
-      if (objectType == EGL_OBJECT_THREAD_KHR)
-         thr->CurrentObjectLabel = thr->Label;
-      else if (objectType == EGL_OBJECT_DISPLAY_KHR && disp)
-         thr->CurrentObjectLabel = disp->Label;
-      else if (object)
-         thr->CurrentObjectLabel = object->Label;
+   if (objectType == EGL_OBJECT_THREAD_KHR)
+      thr->CurrentObjectLabel = thr->Label;
+   else if (objectType == EGL_OBJECT_DISPLAY_KHR && disp)
+      thr->CurrentObjectLabel = disp->Label;
+   else if (object)
+      thr->CurrentObjectLabel = object->Label;
 
-      return EGL_TRUE;
-   }
-
-   _eglDebugReport(EGL_BAD_ALLOC, funcName, EGL_DEBUG_MSG_CRITICAL_KHR, NULL);
-   return EGL_FALSE;
+   return EGL_TRUE;
 }
 
 #define _EGL_FUNC_START(disp, objectType, object, ret) \
@@ -414,9 +408,9 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
       break;
 #endif
 #ifdef HAVE_OHOS_PLATFORM
-   case EGL_PLATFORM_OHOS_KHR:
-      disp = _eglGetOHOSDisplay(native_display, attrib_list);
-      break;
+    case EGL_PLATFORM_OHOS_KHR:
+        disp = _eglGetOHOSDisplay(native_display, attrib_list);
+        break;
 #endif
    case EGL_PLATFORM_DEVICE_EXT:
       disp = _eglGetDeviceDisplay(native_display, attrib_list);
@@ -633,6 +627,10 @@ eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
          env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false);
       if (disp->Options.ForceSoftware)
          _eglLog(_EGL_DEBUG, "Found 'LIBGL_ALWAYS_SOFTWARE' set, will use a CPU renderer");
+
+      const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+      disp->Options.Zink = env && !strcmp(env, "zink");
+      disp->Options.ForceSoftware |= disp->Options.Zink;
 
       /**
        * Initialize the display using the driver's function.
@@ -1032,6 +1030,15 @@ _fixupNativeWindow(_EGLDisplay *disp, void *native_window)
       return (void *)(* (Window*) native_window);
    }
 #endif
+#ifdef HAVE_XCB_PLATFORM
+   if (disp && disp->Platform == _EGL_PLATFORM_XCB && native_window != NULL) {
+      /* Similar to with X11, we need to convert (xcb_window_t *)
+       * (i.e., uint32_t *) to xcb_window_t. We have to do an intermediate cast
+       * to uintptr_t, since uint32_t may be smaller than a pointer.
+       */
+      return (void *)(uintptr_t) (* (uint32_t*) native_window);
+   }
+#endif
    return native_window;
 }
 
@@ -1085,6 +1092,15 @@ _fixupNativePixmap(_EGLDisplay *disp, void *native_pixmap)
     */
    if (disp && disp->Platform == _EGL_PLATFORM_X11 && native_pixmap != NULL)
       return (void *)(* (Pixmap*) native_pixmap);
+#endif
+#ifdef HAVE_XCB_PLATFORM
+   if (disp && disp->Platform == _EGL_PLATFORM_XCB && native_pixmap != NULL) {
+      /* Similar to with X11, we need to convert (xcb_pixmap_t *)
+       * (i.e., uint32_t *) to xcb_pixmap_t. We have to do an intermediate cast
+       * to uintptr_t, since uint32_t may be smaller than a pointer.
+       */
+      return (void *)(uintptr_t) (* (uint32_t*) native_pixmap);
+   }
 #endif
    return native_pixmap;
 }
@@ -1629,8 +1645,7 @@ eglGetError(void)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
    EGLint e = t->LastError;
-   if (!_eglIsCurrentThreadDummy())
-      t->LastError = EGL_SUCCESS;
+   t->LastError = EGL_SUCCESS;
    return e;
 }
 
@@ -1658,8 +1673,6 @@ eglBindAPI(EGLenum api)
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL, EGL_FALSE);
 
    t = _eglGetCurrentThread();
-   if (_eglIsCurrentThreadDummy())
-      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_FALSE);
 
    if (!_eglIsApiValid(api))
       RETURN_EGL_ERROR(NULL, EGL_BAD_PARAMETER, EGL_FALSE);
@@ -1707,19 +1720,17 @@ EGLBoolean EGLAPIENTRY
 eglReleaseThread(void)
 {
    /* unbind current contexts */
-   if (!_eglIsCurrentThreadDummy()) {
-      _EGLThreadInfo *t = _eglGetCurrentThread();
-      _EGLContext *ctx = t->CurrentContext;
+   _EGLThreadInfo *t = _eglGetCurrentThread();
+   _EGLContext *ctx = t->CurrentContext;
 
-      _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL, EGL_FALSE);
 
-      if (ctx) {
-         _EGLDisplay *disp = ctx->Resource.Display;
+   if (ctx) {
+      _EGLDisplay *disp = ctx->Resource.Display;
 
-         mtx_lock(&disp->Mutex);
-         (void) disp->Driver->MakeCurrent(disp, NULL, NULL, NULL);
-         mtx_unlock(&disp->Mutex);
-      }
+      mtx_lock(&disp->Mutex);
+      (void) disp->Driver->MakeCurrent(disp, NULL, NULL, NULL);
+      mtx_unlock(&disp->Mutex);
    }
 
    _eglDestroyCurrentThread();
@@ -1889,7 +1900,7 @@ static EGLSync EGLAPIENTRY
 eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *int_list)
 {
    _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, NULL);
 
    EGLSync sync;
    EGLAttrib *attrib_list;
@@ -1918,7 +1929,7 @@ static EGLSync EGLAPIENTRY
 eglCreateSync64KHR(EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)
 {
    _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, NULL);
    return _eglCreateSync(disp, type, attrib_list, EGL_TRUE,
                          EGL_BAD_ATTRIBUTE);
 }
@@ -1928,7 +1939,7 @@ EGLSync EGLAPIENTRY
 eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)
 {
    _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, NULL);
    return _eglCreateSync(disp, type, attrib_list, EGL_TRUE,
                          EGL_BAD_PARAMETER);
 }
@@ -2202,7 +2213,7 @@ eglCreateDRMImageMESA(EGLDisplay dpy, const EGLint *attr_list)
    _EGLImage *img;
    EGLImage ret;
 
-   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, NULL);
 
    _EGL_CHECK_DISPLAY(disp, EGL_NO_IMAGE_KHR);
    if (!disp->Extensions.MESA_drm_image)
@@ -2304,7 +2315,7 @@ eglCreateWaylandBufferFromImageWL(EGLDisplay dpy, EGLImage image)
    _EGLImage *img;
    struct wl_buffer *ret;
 
-   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, EGL_FALSE);
+   _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL, NULL);
 
    _EGL_CHECK_DISPLAY(disp, NULL);
    if (!disp->Extensions.WL_create_wayland_buffer_from_image)
@@ -2418,12 +2429,8 @@ eglLabelObjectKHR(EGLDisplay dpy, EGLenum objectType, EGLObjectKHR object,
    if (objectType == EGL_OBJECT_THREAD_KHR) {
       _EGLThreadInfo *t = _eglGetCurrentThread();
 
-      if (!_eglIsCurrentThreadDummy()) {
-         t->Label = label;
-         return EGL_SUCCESS;
-      }
-
-      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_BAD_ALLOC);
+     t->Label = label;
+     return EGL_SUCCESS;
    }
 
    disp = _eglLockDisplay(dpy);

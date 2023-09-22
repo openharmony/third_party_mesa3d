@@ -82,4 +82,30 @@ st_draw_quad(struct st_context *st,
              const float *color,
              unsigned num_instances);
 
+void
+st_draw_transform_feedback(struct gl_context *ctx, GLenum mode,
+                           unsigned num_instances, unsigned stream,
+                           struct gl_transform_feedback_object *tfb_vertcount);
+
+void
+st_indirect_draw_vbo(struct gl_context *ctx,
+                     GLuint mode,
+                     struct gl_buffer_object *indirect_data,
+                     GLsizeiptr indirect_offset,
+                     unsigned draw_count,
+                     unsigned stride,
+                     struct gl_buffer_object *indirect_draw_count,
+                     GLsizeiptr indirect_draw_count_offset,
+                     const struct _mesa_index_buffer *ib,
+                     bool primitive_restart,
+                     unsigned restart_index);
+
+bool
+st_draw_hw_select_prepare_common(struct gl_context *ctx);
+bool
+st_draw_hw_select_prepare_mode(struct gl_context *ctx, struct pipe_draw_info *info);
+void
+st_init_hw_select_draw_functions(struct pipe_screen *screen,
+                                 struct dd_function_table *functions);
+
 #endif

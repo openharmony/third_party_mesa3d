@@ -189,7 +189,7 @@ plb_pp_stream_compare(const void *key1, const void *key2)
 
 static void
 lima_set_debug_callback(struct pipe_context *pctx,
-                        const struct pipe_debug_callback *cb)
+                        const struct util_debug_callback *cb)
 {
    struct lima_context *ctx = lima_context(pctx);
 
@@ -205,7 +205,7 @@ lima_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    struct lima_screen *screen = lima_screen(pscreen);
    struct lima_context *ctx;
 
-   ctx = rzalloc(screen, struct lima_context);
+   ctx = rzalloc(NULL, struct lima_context);
    if (!ctx)
       return NULL;
 
@@ -214,6 +214,8 @@ lima_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       ralloc_free(ctx);
       return NULL;
    }
+
+   ctx->sample_mask = (1 << LIMA_MAX_SAMPLES) - 1;
 
    ctx->base.screen = pscreen;
    ctx->base.destroy = lima_context_destroy;

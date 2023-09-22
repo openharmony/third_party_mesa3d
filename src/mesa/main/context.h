@@ -64,40 +64,31 @@ extern "C" {
 struct _glapi_table;
 
 
-/** \name Visual-related functions */
-/*@{*/
-
-extern void
-_mesa_initialize_visual( struct gl_config *v,
-                         GLboolean dbFlag,
-                         GLboolean stereoFlag,
-                         GLint redBits,
-                         GLint greenBits,
-                         GLint blueBits,
-                         GLint alphaBits,
-                         GLint depthBits,
-                         GLint stencilBits,
-                         GLint accumRedBits,
-                         GLint accumGreenBits,
-                         GLint accumBlueBits,
-                         GLint accumAlphaBits,
-                         GLuint numSamples );
-
-/*@}*/
-
-
 /** \name Context-related functions */
 /*@{*/
 
 extern void
-_mesa_initialize(void);
+_mesa_initialize(const char *extensions_override);
 
 extern GLboolean
 _mesa_initialize_context( struct gl_context *ctx,
                           gl_api api,
+                          bool no_error,
                           const struct gl_config *visual,
                           struct gl_context *share_list,
                           const struct dd_function_table *driverFunctions);
+
+extern struct _glapi_table *
+_mesa_alloc_dispatch_table(bool glthread);
+
+extern void
+_mesa_initialize_exec_table(struct gl_context *ctx);
+
+extern void
+_mesa_initialize_dispatch_tables(struct gl_context *ctx);
+
+extern struct _glapi_table *
+_mesa_new_nop_table(unsigned numEntries, bool glthread);
 
 extern void
 _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output);
@@ -133,12 +124,6 @@ _mesa_set_context_lost_dispatch(struct gl_context *ctx);
 
 extern void
 _mesa_flush(struct gl_context *ctx);
-
-extern void GLAPIENTRY
-_mesa_Finish( void );
-
-extern void GLAPIENTRY
-_mesa_Flush( void );
 
 /*@}*/
 
@@ -425,6 +410,13 @@ _mesa_has_texture_view(const struct gl_context *ctx)
 {
    return _mesa_has_ARB_texture_view(ctx) ||
           _mesa_has_OES_texture_view(ctx);
+}
+
+static inline bool
+_mesa_hw_select_enabled(const struct gl_context *ctx)
+{
+   return ctx->RenderMode == GL_SELECT &&
+      ctx->Const.HardwareAcceleratedSelect;
 }
 
 #ifdef __cplusplus

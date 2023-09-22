@@ -23,10 +23,13 @@
 
 #include "d3d12_wgl_public.h"
 
-#include <Windows.h>
+#include <new>
+
+#include <windows.h>
 #include <dxgi1_4.h>
 #include <directx/d3d12.h>
 #include <wrl.h>
+#include <dxguids/dxguids.h>
 
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
@@ -188,9 +191,10 @@ d3d12_wgl_framebuffer_get_resource(struct stw_winsys_framebuffer *pframebuffer,
    struct winsys_handle handle;
    memset(&handle, 0, sizeof(handle));
    handle.type = WINSYS_HANDLE_TYPE_D3D12_RES;
+   handle.format = framebuffer->pformat;
    handle.com_obj = res;
 
-   D3D12_RESOURCE_DESC res_desc = res->GetDesc();
+   D3D12_RESOURCE_DESC res_desc = GetDesc(res);
 
    struct pipe_resource templ;
    memset(&templ, 0, sizeof(templ));

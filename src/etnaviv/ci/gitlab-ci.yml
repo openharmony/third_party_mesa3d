@@ -1,21 +1,13 @@
 .etnaviv-armhf-test:
   extends:
-    - .baremetal-test
-    - .use-debian/arm_test
+    - .baremetal-test-armhf
     - .etnaviv-rules
   script:
     - ./install/bare-metal/fastboot.sh
   variables:
     BM_CMDLINE: "ip=dhcp console=ttymxc0,115200n8 root=/dev/nfs rw nfsrootdebug init=/init $BM_KERNELARGS"
     BM_KERNEL: /baremetal-files/zImage
-    BM_ROOTFS: /rootfs-armhf
-    ETNA_MESA_DEBUG: nir
     FLAKES_CHANNEL: "#etnaviv-ci"
-    MINIO_ARTIFACT_NAME: mesa-armhf
-  needs:
-    - debian/arm_test
-    - job: debian-arm64
-      artifacts: false
 
 .etnaviv-armhf-gc2000:
   extends:
@@ -34,3 +26,12 @@ gc2000_gles2:
   variables:
     HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
     DEQP_VER: gles2
+
+gc2000_piglit:
+  extends:
+    - .piglit-test
+    - .etnaviv-armhf-gc2000
+    - .test-manual-mr
+  variables:
+    PIGLIT_PLATFORM: gbm
+    PIGLIT_PROFILES: gpu

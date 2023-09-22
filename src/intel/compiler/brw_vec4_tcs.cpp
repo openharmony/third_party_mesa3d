@@ -40,10 +40,9 @@ vec4_tcs_visitor::vec4_tcs_visitor(const struct brw_compiler *compiler,
                                    struct brw_tcs_prog_data *prog_data,
                                    const nir_shader *nir,
                                    void *mem_ctx,
-                                   int shader_time_index,
                                    bool debug_enabled)
    : vec4_visitor(compiler, log_data, &key->base.tex, &prog_data->base,
-                  nir, mem_ctx, false, shader_time_index, debug_enabled),
+                  nir, mem_ctx, false, debug_enabled),
      key(key)
 {
 }
@@ -143,9 +142,6 @@ vec4_tcs_visitor::emit_thread_end()
       emit(BRW_OPCODE_ENDIF);
    }
 
-   if (INTEL_DEBUG(DEBUG_SHADER_TIME))
-      emit_shader_time_end();
-
    inst = emit(TCS_OPCODE_THREAD_END);
    inst->base_mrf = 14;
    inst->mlen = 2;
@@ -165,7 +161,7 @@ vec4_tcs_visitor::emit_input_urb_read(const dst_reg &dst,
 
    /* Set up the message header to reference the proper parts of the URB */
    dst_reg header = dst_reg(this, glsl_type::uvec4_type);
-   inst = emit(TCS_OPCODE_SET_INPUT_URB_OFFSETS, header, vertex_index,
+   inst = emit(VEC4_TCS_OPCODE_SET_INPUT_URB_OFFSETS, header, vertex_index,
                indirect_offset);
    inst->force_writemask_all = true;
 
@@ -198,7 +194,7 @@ vec4_tcs_visitor::emit_output_urb_read(const dst_reg &dst,
 
    /* Set up the message header to reference the proper parts of the URB */
    dst_reg header = dst_reg(this, glsl_type::uvec4_type);
-   inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
+   inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
                brw_imm_ud(dst.writemask << first_component), indirect_offset);
    inst->force_writemask_all = true;
 
@@ -227,14 +223,14 @@ vec4_tcs_visitor::emit_urb_write(const src_reg &value,
    src_reg message(this, glsl_type::uvec4_type, 2);
    vec4_instruction *inst;
 
-   inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
+   inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
                brw_imm_ud(writemask), indirect_offset);
    inst->force_writemask_all = true;
    inst = emit(MOV(byte_offset(dst_reg(retype(message, value.type)), REG_SIZE),
                    value));
    inst->force_writemask_all = true;
 
-   inst = emit(TCS_OPCODE_URB_WRITE, dst_null_f(), message);
+   inst = emit(VEC4_TCS_OPCODE_URB_WRITE, dst_null_f(), message);
    inst->offset = base_offset;
    inst->mlen = 2;
    inst->base_mrf = -1;
@@ -356,22 +352,22 @@ get_patch_count_threshold(int input_control_points)
 
 extern "C" const unsigned *
 brw_compile_tcs(const struct brw_compiler *compiler,
-                void *log_data,
                 void *mem_ctx,
-                const struct brw_tcs_prog_key *key,
-                struct brw_tcs_prog_data *prog_data,
-                nir_shader *nir,
-                int shader_time_index,
-                struct brw_compile_stats *stats,
-                char **error_str)
+                struct brw_compile_tcs_params *params)
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
+   nir_shader *nir = params->nir;
+   const struct brw_tcs_prog_key *key = params->key;
+   struct brw_tcs_prog_data *prog_data = params->prog_data;
    struct brw_vue_prog_data *vue_prog_data = &prog_data->base;
+
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_CTRL];
    const bool debug_enabled = INTEL_DEBUG(DEBUG_TCS);
    const unsigned *assembly;
 
    vue_prog_data->base.stage = MESA_SHADER_TESS_CTRL;
+   prog_data->base.base.ray_queries = nir->info.ray_queries;
+   prog_data->base.base.total_scratch = 0;
 
    nir->info.outputs_written = key->outputs_written;
    nir->info.patch_outputs_written = key->patch_outputs_written;
@@ -386,7 +382,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    brw_nir_apply_key(nir, compiler, &key->base, 8, is_scalar);
    brw_nir_lower_vue_inputs(nir, &input_vue_map);
    brw_nir_lower_tcs_outputs(nir, &vue_prog_data->vue_map,
-                             key->tes_primitive_mode);
+                             key->_tes_primitive_mode);
    if (key->quads_workaround)
       brw_nir_apply_tcs_quads_workaround(nir);
 
@@ -458,18 +454,16 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
-      fs_visitor v(compiler, log_data, mem_ctx, &key->base,
-                   &prog_data->base.base, nir, 8,
-                   shader_time_index, debug_enabled);
+      fs_visitor v(compiler, params->log_data, mem_ctx, &key->base,
+                   &prog_data->base.base, nir, 8, debug_enabled);
       if (!v.run_tcs()) {
-         if (error_str)
-            *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
          return NULL;
       }
 
       prog_data->base.base.dispatch_grf_start_reg = v.payload.num_regs;
 
-      fs_generator g(compiler, log_data, mem_ctx,
+      fs_generator g(compiler, params->log_data, mem_ctx,
                      &prog_data->base.base, false, MESA_SHADER_TESS_CTRL);
       if (unlikely(debug_enabled)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
@@ -480,18 +474,16 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       }
 
       g.generate_code(v.cfg, 8, v.shader_stats,
-                      v.performance_analysis.require(), stats);
+                      v.performance_analysis.require(), params->stats);
 
       g.add_const_data(nir->constant_data, nir->constant_data_size);
 
       assembly = g.get_assembly();
    } else {
-      brw::vec4_tcs_visitor v(compiler, log_data, key, prog_data,
-                              nir, mem_ctx, shader_time_index,
-                              debug_enabled);
+      brw::vec4_tcs_visitor v(compiler, params->log_data, key, prog_data,
+                              nir, mem_ctx, debug_enabled);
       if (!v.run()) {
-         if (error_str)
-            *error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
          return NULL;
       }
 
@@ -499,10 +491,10 @@ brw_compile_tcs(const struct brw_compiler *compiler,
          v.dump_instructions();
 
 
-      assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
+      assembly = brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx, nir,
                                             &prog_data->base, v.cfg,
                                             v.performance_analysis.require(),
-                                            stats, debug_enabled);
+                                            params->stats, debug_enabled);
    }
 
    return assembly;

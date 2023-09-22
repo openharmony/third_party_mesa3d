@@ -42,7 +42,6 @@
 #include "fd6_context.h"
 #include "fd6_draw.h"
 #include "fd6_emit.h"
-#include "fd6_format.h"
 #include "fd6_gmem.h"
 #include "fd6_pack.h"
 #include "fd6_program.h"
@@ -78,7 +77,12 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
    unsigned srgb_cntl = 0;
    unsigned i;
 
+   /* Note, GLES 3.2 says "If the fragment’s layer number is negative, or
+    * greater than or equal to the minimum number of layers of any attachment,
+    * the effects of the fragment on the framebuffer contents are undefined."
+    */
    unsigned max_layer_index = 0;
+   enum a6xx_format mrt0_format = 0;
 
    for (i = 0; i < pfb->nr_cbufs; i++) {
       enum a3xx_color_swap swap = WZYX;
@@ -117,7 +121,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 
       max_layer_index = psurf->u.tex.last_layer - psurf->u.tex.first_layer;
 
-      debug_assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
+      assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
 
       OUT_REG(
          ring,
@@ -134,7 +138,14 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
       OUT_PKT4(ring, REG_A6XX_RB_MRT_FLAG_BUFFER(i), 3);
       fd6_emit_flag_reference(ring, rsc, psurf->u.tex.level,
                               psurf->u.tex.first_layer);
+
+      if (i == 0)
+         mrt0_format = format;
    }
+   if (pfb->zsbuf)
+      max_layer_index = pfb->zsbuf->u.tex.last_layer - pfb->zsbuf->u.tex.first_layer;
+
+   OUT_REG(ring, A6XX_GRAS_LRZ_MRT_BUF_INFO_0(.color_format = mrt0_format));
 
    OUT_REG(ring, A6XX_RB_SRGB_CNTL(.dword = srgb_cntl));
    OUT_REG(ring, A6XX_SP_SRGB_CNTL(.dword = srgb_cntl));
@@ -149,8 +160,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
    if (zsbuf) {
       struct fd_resource *rsc = fd_resource(zsbuf->texture);
       enum a6xx_depth_format fmt = fd6_pipe2depth(zsbuf->format);
-      uint32_t stride = fd_resource_pitch(rsc, 0);
-      uint32_t array_stride = fd_resource_layer_stride(rsc, 0);
+      uint32_t stride = fd_resource_pitch(rsc, zsbuf->u.tex.level);
+      uint32_t array_stride = fd_resource_layer_stride(rsc, zsbuf->u.tex.level);
       uint32_t base = gmem ? gmem->zsbuf_base[0] : 0;
       uint32_t offset =
          fd_resource_offset(rsc, zsbuf->u.tex.level, zsbuf->u.tex.first_layer);
@@ -188,19 +199,21 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
        * plus this CP_EVENT_WRITE at the end in it's own IB..
        */
       OUT_PKT7(ring, CP_EVENT_WRITE, 1);
-      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(UNK_25));
+      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(LRZ_CLEAR));
 
       if (rsc->stencil) {
-         stride = fd_resource_pitch(rsc->stencil, 0);
-         array_stride = fd_resource_layer_stride(rsc->stencil, 0);
+         stride = fd_resource_pitch(rsc->stencil, zsbuf->u.tex.level);
+         array_stride = fd_resource_layer_stride(rsc->stencil, zsbuf->u.tex.level);
          uint32_t base = gmem ? gmem->zsbuf_base[1] : 0;
+         uint32_t offset =
+            fd_resource_offset(rsc->stencil, zsbuf->u.tex.level, zsbuf->u.tex.first_layer);
 
          OUT_REG(ring, A6XX_RB_STENCIL_INFO(.separate_stencil = true),
                  A6XX_RB_STENCIL_BUFFER_PITCH(.a6xx_rb_stencil_buffer_pitch =
                                                  stride),
                  A6XX_RB_STENCIL_BUFFER_ARRAY_PITCH(
                        .a6xx_rb_stencil_buffer_array_pitch = array_stride),
-                 A6XX_RB_STENCIL_BUFFER_BASE(.bo = rsc->stencil->bo),
+                 A6XX_RB_STENCIL_BUFFER_BASE(.bo = rsc->stencil->bo, .bo_offset = offset),
                  A6XX_RB_STENCIL_BUFFER_BASE_GMEM(.dword = base));
       } else {
          OUT_REG(ring, A6XX_RB_STENCIL_INFO(0));
@@ -251,14 +264,23 @@ patch_fb_read_gmem(struct fd_batch *batch)
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
    struct pipe_surface *psurf = pfb->cbufs[0];
-   uint32_t texconst0 = fd6_tex_const_0(
-      psurf->texture, psurf->u.tex.level, psurf->format, PIPE_SWIZZLE_X,
-      PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
+   struct pipe_resource *prsc = psurf->texture;
+   struct fd_resource *rsc = fd_resource(prsc);
+   enum pipe_format format = psurf->format;
 
-   /* always TILE6_2 mode in GMEM.. which also means no swap: */
-   texconst0 &=
-      ~(A6XX_TEX_CONST_0_SWAP__MASK | A6XX_TEX_CONST_0_TILE_MODE__MASK);
-   texconst0 |= A6XX_TEX_CONST_0_TILE_MODE(TILE6_2);
+   uint8_t swiz[4];
+   fdl6_format_swiz(psurf->format, false, swiz);
+
+   /* always TILE6_2 mode in GMEM, which also means no swap: */
+   uint32_t texconst0 = A6XX_TEX_CONST_0_FMT(fd6_texture_format(format, rsc->layout.tile_mode)) |
+          A6XX_TEX_CONST_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
+          A6XX_TEX_CONST_0_SWAP(WZYX) |
+          A6XX_TEX_CONST_0_TILE_MODE(TILE6_2) |
+          COND(util_format_is_srgb(format), A6XX_TEX_CONST_0_SRGB) |
+          A6XX_TEX_CONST_0_SWIZ_X(fdl6_swiz(swiz[0])) |
+          A6XX_TEX_CONST_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
+          A6XX_TEX_CONST_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
+          A6XX_TEX_CONST_0_SWIZ_W(fdl6_swiz(swiz[3]));
 
    for (unsigned i = 0; i < num_patches; i++) {
       struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
@@ -285,45 +307,39 @@ patch_fb_read_sysmem(struct fd_batch *batch)
       return;
 
    struct fd_resource *rsc = fd_resource(psurf->texture);
-   unsigned lvl = psurf->u.tex.level;
-   unsigned layer = psurf->u.tex.first_layer;
-   bool ubwc_enabled = fd_resource_ubwc_enabled(rsc, lvl);
-   uint64_t iova = fd_bo_get_iova(rsc->bo) + fd_resource_offset(rsc, lvl, layer);
-   uint64_t ubwc_iova = fd_bo_get_iova(rsc->bo) + fd_resource_ubwc_offset(rsc, lvl, layer);
-   uint32_t texconst0 = fd6_tex_const_0(
-      psurf->texture, psurf->u.tex.level, psurf->format, PIPE_SWIZZLE_X,
-      PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
+
    uint32_t block_width, block_height;
    fdl6_get_ubwc_blockwidth(&rsc->layout, &block_width, &block_height);
 
+   struct fdl_view_args args = {
+      .iova = fd_bo_get_iova(rsc->bo),
+
+      .base_miplevel = psurf->u.tex.level,
+      .level_count = 1,
+
+      .base_array_layer = psurf->u.tex.first_layer,
+      .layer_count = 1,
+
+      .format = psurf->format,
+      .swiz = {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W},
+
+      .type = FDL_VIEW_TYPE_2D,
+      .chroma_offsets = {FDL_CHROMA_LOCATION_COSITED_EVEN,
+                         FDL_CHROMA_LOCATION_COSITED_EVEN},
+   };
+   const struct fdl_layout *layouts[3] = {&rsc->layout, NULL, NULL};
+   struct fdl6_view view;
+   fdl6_view_init(&view, layouts, &args,
+                  batch->ctx->screen->info->a6xx.has_z24uint_s8uint);
+
    for (unsigned i = 0; i < num_patches; i++) {
       struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
-      patch->cs[0] = texconst0;
-      patch->cs[2] = A6XX_TEX_CONST_2_PITCH(fd_resource_pitch(rsc, lvl)) |
-                     A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D);
+
       /* This is cheating a bit, since we can't use OUT_RELOC() here.. but
        * the render target will already have a reloc emitted for RB_MRT state,
        * so we can get away with manually patching in the address here:
        */
-      patch->cs[4] = A6XX_TEX_CONST_4_BASE_LO(iova);
-      patch->cs[5] = A6XX_TEX_CONST_5_BASE_HI(iova >> 32) |
-                     A6XX_TEX_CONST_5_DEPTH(1);
-
-      if (!ubwc_enabled)
-         continue;
-
-      patch->cs[3] |= A6XX_TEX_CONST_3_FLAG;
-      patch->cs[7] = A6XX_TEX_CONST_7_FLAG_LO(ubwc_iova);
-      patch->cs[8] = A6XX_TEX_CONST_8_FLAG_HI(ubwc_iova >> 32);
-      patch->cs[9] = A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(
-            rsc->layout.ubwc_layer_size >> 2);
-      patch->cs[10] =
-            A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(
-               fdl_ubwc_pitch(&rsc->layout, lvl)) |
-            A6XX_TEX_CONST_10_FLAG_BUFFER_LOGW(util_logbase2_ceil(
-               DIV_ROUND_UP(u_minify(psurf->texture->width0, lvl), block_width))) |
-            A6XX_TEX_CONST_10_FLAG_BUFFER_LOGH(util_logbase2_ceil(
-               DIV_ROUND_UP(u_minify(psurf->texture->height0, lvl), block_height)));
+      memcpy(patch->cs, view.descriptor, FDL6_TEX_CONST_DWORDS * 4);
    }
    util_dynarray_clear(&batch->fb_read_patches);
 }
@@ -412,13 +428,13 @@ update_vsc_pipe(struct fd_batch *batch)
    if (!fd6_ctx->vsc_draw_strm) {
       fd6_ctx->vsc_draw_strm = fd_bo_new(
          ctx->screen->dev, VSC_DRAW_STRM_SIZE(fd6_ctx->vsc_draw_strm_pitch),
-         0, "vsc_draw_strm");
+         FD_BO_NOMAP, "vsc_draw_strm");
    }
 
    if (!fd6_ctx->vsc_prim_strm) {
       fd6_ctx->vsc_prim_strm = fd_bo_new(
          ctx->screen->dev, VSC_PRIM_STRM_SIZE(fd6_ctx->vsc_prim_strm_pitch),
-         0, "vsc_prim_strm");
+         FD_BO_NOMAP, "vsc_prim_strm");
    }
 
    OUT_REG(
@@ -465,8 +481,8 @@ emit_vsc_overflow_test(struct fd_batch *batch)
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
-   debug_assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
-   debug_assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
+   assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
+   assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
 
    /* Check for overflow, write vsc_scratch if detected: */
    for (int i = 0; i < gmem->num_vsc_pipes; i++) {
@@ -670,7 +686,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd_screen *screen = batch->ctx->screen;
 
-   debug_assert(!batch->tessellation);
+   assert(!batch->tessellation);
 
    set_scissor(ring, 0, 0, gmem->width - 1, gmem->height - 1);
 
@@ -745,7 +761,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
+                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
 }
 
 static void
@@ -813,7 +829,7 @@ fd6_emit_tile_init(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
+                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
 
    emit_zs(ring, pfb->zsbuf, batch->gmem_state);
    emit_mrt(ring, pfb, batch->gmem_state);
@@ -971,7 +987,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
    uint32_t offset;
    bool ubwc_enabled;
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    /* separate stencil case: */
    if (stencil) {
@@ -983,12 +999,12 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
    ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    uint32_t tile_mode = fd_resource_tile_mode(&rsc->b.b, psurf->u.tex.level);
    enum a6xx_format format = fd6_color_format(pfmt, tile_mode);
    uint32_t stride = fd_resource_pitch(rsc, psurf->u.tex.level);
-   uint32_t size = fd_resource_slice(rsc, psurf->u.tex.level)->size0;
+   uint32_t array_stride = fd_resource_layer_stride(rsc, psurf->u.tex.level);
    enum a3xx_color_swap swap = fd6_color_swap(pfmt, rsc->layout.tile_mode);
    enum a3xx_msaa_samples samples = fd_msaa_samples(rsc->b.b.nr_samples);
 
@@ -998,7 +1014,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
                                  .flags = ubwc_enabled),
            A6XX_RB_BLIT_DST(.bo = rsc->bo, .bo_offset = offset),
            A6XX_RB_BLIT_DST_PITCH(.a6xx_rb_blit_dst_pitch = stride),
-           A6XX_RB_BLIT_DST_ARRAY_PITCH(.a6xx_rb_blit_dst_array_pitch = size));
+           A6XX_RB_BLIT_DST_ARRAY_PITCH(.a6xx_rb_blit_dst_array_pitch = array_stride));
 
    OUT_REG(ring, A6XX_RB_BLIT_BASE_GMEM(.dword = base));
 
@@ -1536,25 +1552,6 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
 }
 
 static void
-setup_tess_buffers(struct fd_batch *batch, struct fd_ringbuffer *ring)
-{
-   struct fd_context *ctx = batch->ctx;
-
-   batch->tessfactor_bo = fd_bo_new(ctx->screen->dev, batch->tessfactor_size,
-                                    0, "tessfactor");
-
-   batch->tessparam_bo = fd_bo_new(ctx->screen->dev, batch->tessparam_size,
-                                   0, "tessparam");
-
-   OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR, 2);
-   OUT_RELOC(ring, batch->tessfactor_bo, 0, 0, 0);
-
-   batch->tess_addrs_constobj->cur = batch->tess_addrs_constobj->start;
-   OUT_RELOC(batch->tess_addrs_constobj, batch->tessparam_bo, 0, 0, 0);
-   OUT_RELOC(batch->tess_addrs_constobj, batch->tessfactor_bo, 0, 0, 0);
-}
-
-static void
 fd6_emit_sysmem_prep(struct fd_batch *batch) assert_dt
 {
    struct fd_ringbuffer *ring = batch->gmem;
@@ -1594,9 +1591,6 @@ fd6_emit_sysmem_prep(struct fd_batch *batch) assert_dt
    OUT_PKT7(ring, CP_SET_MARKER, 1);
    OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BYPASS));
    emit_marker6(ring, 7);
-
-   if (batch->tessellation)
-      setup_tess_buffers(batch, ring);
 
    OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
    OUT_RING(ring, 0x0);

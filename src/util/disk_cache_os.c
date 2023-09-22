@@ -21,7 +21,6 @@
  * IN THE SOFTWARE.
  */
 
-#ifdef ENABLE_SHADER_CACHE
 
 #include <assert.h>
 #include <inttypes.h>
@@ -30,16 +29,58 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <fcntl.h>
 
 #include "util/compress.h"
 #include "util/crc32.h"
+#include "util/disk_cache.h"
+#include "util/disk_cache_os.h"
 
 struct cache_entry_file_data {
    uint32_t crc32;
    uint32_t uncompressed_size;
 };
+
+#if DETECT_OS_WINDOWS
+
+bool
+disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
+{
+   HMODULE mod = NULL;
+   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                      (LPCWSTR)ptr,
+                      &mod);
+   if (!mod)
+      return false;
+
+   WCHAR filename[MAX_PATH];
+   DWORD filename_length = GetModuleFileNameW(mod, filename, ARRAY_SIZE(filename));
+
+   if (filename_length == 0 || filename_length == ARRAY_SIZE(filename))
+      return false;
+
+   HANDLE mod_as_file = CreateFileW(
+        filename,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+   if (mod_as_file == INVALID_HANDLE_VALUE)
+      return false;
+
+   FILETIME time;
+   bool ret = GetFileTime(mod_as_file, NULL, NULL, &time);
+   if (ret)
+      _mesa_sha1_update(ctx, &time, sizeof(time));
+   CloseHandle(mod_as_file);
+   return ret;
+}
+
+#endif
+
+#ifdef ENABLE_SHADER_CACHE
 
 #if DETECT_OS_WINDOWS
 /* TODO: implement disk cache support on windows */
@@ -60,8 +101,6 @@ struct cache_entry_file_data {
 #include "util/blob.h"
 #include "util/crc32.h"
 #include "util/debug.h"
-#include "util/disk_cache.h"
-#include "util/disk_cache_os.h"
 #include "util/ralloc.h"
 #include "util/rand_xor.h"
 
@@ -766,7 +805,7 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
 
 /* Determine path for cache based on the first defined name as follows:
  *
- *   $MESA_GLSL_CACHE_DIR
+ *   $MESA_SHADER_CACHE_DIR
  *   $XDG_CACHE_HOME/mesa_shader_cache
  *   <pwd.pw_dir>/.cache/mesa_shader_cache
  */
@@ -778,7 +817,16 @@ disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
    if (env_var_as_boolean("MESA_DISK_CACHE_SINGLE_FILE", false))
       cache_dir_name = CACHE_DIR_NAME_SF;
 
-   char *path = getenv("MESA_GLSL_CACHE_DIR");
+   char *path = getenv("MESA_SHADER_CACHE_DIR");
+
+   if (!path) {
+      path = getenv("MESA_GLSL_CACHE_DIR");
+      if (path)
+         fprintf(stderr,
+                 "*** MESA_GLSL_CACHE_DIR is deprecated; "
+                 "use MESA_SHADER_CACHE_DIR instead ***\n");
+   }
+
    if (path) {
       if (mkdir_if_needed(path) == -1)
          return NULL;
@@ -862,7 +910,16 @@ disk_cache_enabled()
 #else
    bool disable_by_default = false;
 #endif
-   if (env_var_as_boolean("MESA_GLSL_CACHE_DISABLE", disable_by_default))
+   char *envvar_name = "MESA_SHADER_CACHE_DISABLE";
+   if (!getenv(envvar_name)) {
+      envvar_name = "MESA_GLSL_CACHE_DISABLE";
+      if (getenv(envvar_name))
+         fprintf(stderr,
+                 "*** MESA_GLSL_CACHE_DISABLE is deprecated; "
+                 "use MESA_SHADER_CACHE_DISABLE instead ***\n");
+   }
+
+   if (env_var_as_boolean(envvar_name, disable_by_default))
       return false;
 
    return true;

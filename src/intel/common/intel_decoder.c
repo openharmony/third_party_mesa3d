@@ -32,6 +32,7 @@
 
 #include <util/macros.h>
 #include <util/ralloc.h>
+#include <util/u_math.h>
 
 #include "intel_decoder.h"
 
@@ -243,7 +244,7 @@ get_start_end_pos(int *start, int *end)
    /* start value has to be mod with 32 as we need the relative
     * start position in the first DWord. For the end position, add
     * the length of the field to the start position to get the
-    * relative postion in the 64 bit address.
+    * relative position in the 64 bit address.
     */
    if (*end - *start > 32) {
       int len = *end - *start;
@@ -303,6 +304,8 @@ string_to_type(struct parser_context *ctx, const char *s)
       return (struct intel_type) { .kind = INTEL_TYPE_ENUM, .intel_enum = e };
    else if (strcmp(s, "mbo") == 0)
       return (struct intel_type) { .kind = INTEL_TYPE_MBO };
+   else if (strcmp(s, "mbz") == 0)
+      return (struct intel_type) { .kind = INTEL_TYPE_MBZ };
    else
       fail(&ctx->loc, "invalid type: %s", s);
 }
@@ -1058,6 +1061,7 @@ iter_decode_field(struct intel_field_iterator *iter)
       enum_name = intel_get_enum_name(&iter->field->inline_enum, v.qw);
       break;
    }
+   case INTEL_TYPE_MBZ:
    case INTEL_TYPE_UINT: {
       snprintf(iter->value, sizeof(iter->value), "%"PRIu64, v.qw);
       enum_name = intel_get_enum_name(&iter->field->inline_enum, v.qw);
@@ -1091,7 +1095,7 @@ iter_decode_field(struct intel_field_iterator *iter)
    case INTEL_TYPE_SFIXED: {
       /* Sign extend before converting */
       int bits = iter->field->type.i + iter->field->type.f + 1;
-      int64_t v_sign_extend = ((int64_t)(v.qw << (64 - bits))) >> (64 - bits);
+      int64_t v_sign_extend = util_mask_sign_extend(v.qw, bits);
       snprintf(iter->value, sizeof(iter->value), "%f",
                (float) v_sign_extend / (1 << iter->field->type.f));
       break;

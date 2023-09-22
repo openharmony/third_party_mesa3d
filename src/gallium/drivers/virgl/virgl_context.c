@@ -43,8 +43,6 @@
 #include "tgsi/tgsi_text.h"
 #include "indices/u_primconvert.h"
 
-#include "pipebuffer/pb_buffer.h"
-
 #include "virgl_encode.h"
 #include "virgl_context.h"
 #include "virtio-gpu/virgl_protocol.h"
@@ -204,14 +202,12 @@ static void virgl_attach_res_sampler_views(struct virgl_context *vctx,
    struct virgl_winsys *vws = virgl_screen(vctx->base.screen)->vws;
    const struct virgl_shader_binding_state *binding =
       &vctx->shader_bindings[shader_type];
-   uint32_t remaining_mask = binding->view_enabled_mask;
-   struct virgl_resource *res;
 
-   while (remaining_mask) {
-      int i = u_bit_scan(&remaining_mask);
-      assert(binding->views[i] && binding->views[i]->texture);
-      res = virgl_resource(binding->views[i]->texture);
-      vws->emit_res(vws, vctx->cbuf, res->hw_res, FALSE);
+   for (int i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; ++i) {
+      if (binding->views[i] && binding->views[i]->texture) {
+         struct virgl_resource *res = virgl_resource(binding->views[i]->texture);
+         vws->emit_res(vws, vctx->cbuf, res->hw_res, FALSE);
+      }
    }
 }
 
@@ -686,15 +682,24 @@ static void *virgl_shader_encoder(struct pipe_context *ctx,
    const struct tgsi_token *ntt_tokens = NULL;
    struct tgsi_token *new_tokens;
    int ret;
+   bool is_separable = false;
 
    if (shader->type == PIPE_SHADER_IR_NIR) {
+      struct nir_to_tgsi_options options = {
+         .unoptimized_ra = true,
+         .lower_fabs = true
+      };
       nir_shader *s = nir_shader_clone(NULL, shader->ir.nir);
-      ntt_tokens = tokens = nir_to_tgsi(s, vctx->base.screen); /* takes ownership */
+
+      /* Propagare the separable shader property to the host, unless
+       * it is an internal shader - these are marked separable even though they are not. */
+      is_separable = s->info.separate_shader && !s->info.internal;
+      ntt_tokens = tokens = nir_to_tgsi_options(s, vctx->base.screen, &options); /* takes ownership */
    } else {
       tokens = shader->tokens;
    }
 
-   new_tokens = virgl_tgsi_transform((struct virgl_screen *)vctx->base.screen, tokens);
+   new_tokens = virgl_tgsi_transform((struct virgl_screen *)vctx->base.screen, tokens, is_separable);
    if (!new_tokens)
       return NULL;
 
@@ -950,7 +955,7 @@ static void virgl_submit_cmd(struct virgl_winsys *vws,
 }
 
 void virgl_flush_eq(struct virgl_context *ctx, void *closure,
-		    struct pipe_fence_handle **fence)
+                    struct pipe_fence_handle **fence)
 {
    struct virgl_screen *rs = virgl_screen(ctx->base.screen);
 
@@ -1035,7 +1040,6 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
    struct virgl_shader_binding_state *binding =
       &vctx->shader_bindings[shader_type];
 
-   binding->view_enabled_mask &= ~u_bit_consecutive(start_slot, num_views);
    for (unsigned i = 0; i < num_views; i++) {
       unsigned idx = start_slot + i;
       if (views && views[i]) {
@@ -1048,7 +1052,6 @@ static void virgl_set_sampler_views(struct pipe_context *ctx,
          } else {
             pipe_sampler_view_reference(&binding->views[idx], views[i]);
          }
-         binding->view_enabled_mask |= 1 << idx;
       } else {
          pipe_sampler_view_reference(&binding->views[idx], NULL);
       }
@@ -1372,23 +1375,32 @@ static void *virgl_create_compute_state(struct pipe_context *ctx,
    int ret;
 
    if (state->ir_type == PIPE_SHADER_IR_NIR) {
+      struct nir_to_tgsi_options options = {
+         .unoptimized_ra = true,
+         .lower_fabs = true
+      };
       nir_shader *s = nir_shader_clone(NULL, state->prog);
-      ntt_tokens = tokens = nir_to_tgsi(s, vctx->base.screen); /* takes ownership */
+      ntt_tokens = tokens = nir_to_tgsi_options(s, vctx->base.screen, &options); /* takes ownership */
    } else {
       tokens = state->prog;
    }
+
+   void *new_tokens = virgl_tgsi_transform((struct virgl_screen *)vctx->base.screen, tokens, false);
+   if (!new_tokens)
+      return NULL;
 
    handle = virgl_object_assign_handle();
    ret = virgl_encode_shader_state(vctx, handle, PIPE_SHADER_COMPUTE,
                                    &so_info,
                                    state->req_local_mem,
-                                   tokens);
+                                   new_tokens);
    if (ret) {
       FREE((void *)ntt_tokens);
       return NULL;
    }
 
    FREE((void *)ntt_tokens);
+   FREE(new_tokens);
 
    return (void *)(unsigned long)handle;
 }
@@ -1428,10 +1440,11 @@ virgl_release_shader_binding(struct virgl_context *vctx,
    struct virgl_shader_binding_state *binding =
       &vctx->shader_bindings[shader_type];
 
-   while (binding->view_enabled_mask) {
-      int i = u_bit_scan(&binding->view_enabled_mask);
-      pipe_sampler_view_reference(
-            (struct pipe_sampler_view **)&binding->views[i], NULL);
+   for (int i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; ++i) {
+      if (binding->views[i]) {
+         pipe_sampler_view_reference(
+                  (struct pipe_sampler_view **)&binding->views[i], NULL);
+      }
    }
 
    while (binding->ubo_enabled_mask) {
@@ -1540,6 +1553,15 @@ static void virgl_send_tweaks(struct virgl_context *vctx, struct virgl_screen *r
                          rs->tweak_gles_tf3_value);
 }
 
+static void virgl_link_shader(struct pipe_context *ctx, void **handles)
+{
+   struct virgl_context *vctx = virgl_context(ctx);
+   uint32_t shader_handles[PIPE_SHADER_TYPES];
+   for (uint32_t i = 0; i < PIPE_SHADER_TYPES; ++i)
+      shader_handles[i] = (uintptr_t)handles[i];
+   virgl_encode_link_shader(vctx, shader_handles);
+}
+
 struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
                                           void *priv,
                                           unsigned flags)
@@ -1637,6 +1659,9 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
    vctx->base.set_shader_images = virgl_set_shader_images;
    vctx->base.memory_barrier = virgl_memory_barrier;
    vctx->base.emit_string_marker = virgl_emit_string_marker;
+
+   if (rs->caps.caps.v2.host_feature_check_version >= 7)
+      vctx->base.link_shader = virgl_link_shader;
 
    virgl_init_context_resource_functions(&vctx->base);
    virgl_init_query_functions(vctx);
