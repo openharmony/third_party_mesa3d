@@ -245,19 +245,6 @@ panfrost_supports_compressed_format(struct panfrost_device *dev, unsigned fmt)
         return dev->compressed_formats & (1 << idx);
 }
 
-/* Check for AFBC hardware support. AFBC is introduced in v5. Implementations
- * may omit it, signaled as a nonzero value in the AFBC_FEATURES property. */
-
-static bool
-panfrost_query_afbc(int fd, unsigned arch)
-{
-        unsigned reg = panfrost_query_raw(fd,
-                                          DRM_PANFROST_PARAM_AFBC_FEATURES,
-                                          false, 0);
-
-        return (arch >= 5) && (reg == 0);
-}
-
 /*
  * To pipeline multiple tiles, a given tile may use at most half of the tile
  * buffer. This function returns the optimal size (assuming pipelining).
