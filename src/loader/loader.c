@@ -89,7 +89,7 @@ static void ohos_logger(int level, const char *fmt, ...)
     char log_string[MAX_BUFFER_LEN];
     va_list args;
     va_start(args, fmt);
-    (void)snprintf(log_string, MAX_BUFFER_LEN, fmt, args);
+    (void)vsnprintf(log_string, MAX_BUFFER_LEN, fmt, args);
     va_end(args);
     switch (level) {
         case _LOADER_WARNING:
