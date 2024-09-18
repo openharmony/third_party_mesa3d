@@ -277,19 +277,6 @@ panfrost_query_optimal_tib_size(const struct panfrost_device *dev)
         return dev->model->tilebuffer_size / 2;
 }
 
-/* Check for AFBC hardware support. AFBC is introduced in v5. Implementations
- * may omit it, signaled as a nonzero value in the AFBC_FEATURES property. */
-
-static bool
-panfrost_query_afbc(int fd, unsigned arch)
-{
-        unsigned reg = panfrost_query_raw(fd,
-                                          DRM_PANFROST_PARAM_AFBC_FEATURES,
-                                          false, 0);
-
-        return (arch >= 5) && (reg == 0);
-}
-
 void
 panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
 {
