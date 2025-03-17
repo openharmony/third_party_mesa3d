@@ -56,10 +56,26 @@ Note:If the text contains special characters, please escape them according to th
 -->
 <configuration>
     <oatconfig>
-        <licensefile>COPYING</licensefile>
+        <licensefile>docs/license.rst</licensefile>
+        <policylist>
+            <policy name="projectPolicy" desc="">
+                <policyitem type="compatibility" name="HPND-sell-variant" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="HPND" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="SGI-B-2.0" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="Khronos License" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="BSL-1.0" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="SPDX:GPL-2.0 WITH Linux-syscall-note" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+                <policyitem type="compatibility" name="SPDX:GPL-1.0+ WITH Linux-syscall-note" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
+            </policy>
+        </policylist>
         <filefilterlist>
             <filefilter name="defaultFilter" desc="Files not to check">
-                <filteritem type="filepath" name=".*" desc="third party"/>
+                <filteritem type="filepath" name="docs/.*" desc="docs"/>
+                <filteritem type="filepath" name="src/microsoft/compiler/dxcapi.h" desc="未找到对应LICENSE.TXT"/>
+                <filteritem type="filepath" name="src/imgui/imstb_textedit.h" desc="LICENSE是MIT，在文件末尾"/>
+                <filteritem type="filepath" name="src/freedreno/registers/rules-ng.xsd" desc="没有LICENSE"/>
+                <filteritem type="filepath" name="ohos/BUILD.gn" desc="没有LICENSE"/>
+                <filteritem type="filename" name="*.rst" desc="third party"/>
             </filefilter>
             <filefilter name="defaultPolicyFilter" desc="Filters for compatibility，license header policies">
                 <filteritem type="filename" name="README.OpenSource"/>
@@ -77,5 +93,335 @@ Note:If the text contains special characters, please escape them according to th
                 <filteritem type="filename" name="*.bmp|*.png|*.jpg" desc="binary not used and belonged to weston"/>
             </filefilter>
         </filefilterlist>
+        <licensematcherlist>
+            <licensematcher name="MIT" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * copy of this software and associated documentation files (the
+                    * &gt;Software&gt;), to deal in the Software without restriction, including
+                    * without limitation the rights to use, copy, modify, merge, publish,
+                    * distribute, sub license, and/or sell copies of the Software, and to
+                    * permit persons to whom the Software is furnished to do so, subject to
+                    * the following conditions:
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+                    * THE COPYRIGHT HOLDERS, AUTHORS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM,
+                    * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+                    * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+                    * USE OR OTHER DEALINGS IN THE SOFTWARE.
+                    *
+                    * The above copyright notice and this permission notice (including the
+                    * next paragraph) shall be included in all copies or substantial portions
+                    * of the Software.
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * copy of this software and associated documentation files (the &gt;Soft-
+                    * ware&gt;), to deal in the Software without restriction, including without
+                    * limitation the rights to use, copy, modify, merge, publish, distribute,
+                    * and/or sell copies of the Software, and to permit persons to whom the
+                    * Software is furnished to do so, provided that the above copyright
+                    * notice(s) and this permission notice appear in all copies of the Soft-
+                    * ware and that both the above copyright notice(s) and this permission
+                    * notice appear in supporting documentation.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+                    * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
+                    * ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY
+                    * RIGHTS. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN
+                    * THIS NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSE-
+                    * QUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+                    * DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+                    * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFOR-
+                    * MANCE OF THIS SOFTWARE.
+                    *
+                    * Except as contained in this notice, the name of a copyright holder shall
+                    * not be used in advertising or otherwise to promote the sale, use or
+                    * other dealings in this Software without prior written authorization of
+                    * the copyright holder.
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * copy of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * on the rights to use, copy, modify, merge, publish, distribute, sub
+                    * license, and/or sell copies of the Software, and to permit persons to whom
+                    * the Software is furnished to do so, subject to the following conditions:
+                    *
+                    * The above copyright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+                    * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+                    * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+                    * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+                    * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, f, to any person obtaining a
+                    * copy of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * on the rights to use, f, copy, modify, merge, f, publish, distribute, f, sub
+                    * license, f, and/or sell copies of the Software, f, and to permit persons to whom
+                    * the Software is furnished to do so, subject to the following conditions:
+                    *
+                    * The above copyright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+                    * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+                    * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+                    * OTHERWISe, f, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+                    * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * copy of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+                    * and/or sell copies of the Software, and to permit persons to whom the
+                    *
+                    * The above copyright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+                    * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+                    * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+                    * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+                    * DEALINGS IN THE SOFTWARE.
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * constant of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * the rights to use, constant, modify, merge, publish, distribute, sublicense,
+                    * and/or sell copies of the Software, and to permit persons to whom the
+                    * Software is furnished to do so, subject to the following conditions:
+                    *
+                    * The above constantright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+                    * THE AUTHORS OR CONSTANTRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+                    * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+                    * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+                    * DEALINGS IN THE SOFTWARE.
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * constant of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * the rights to use, constant, modify, merge, publish, distribute, sublicense,
+                    * and/or sell copies of the Software, and to permit persons to whom the
+                    * Software is furnished to do so, subject to the following conditions:
+                    *
+                    * The above constantright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+                    * THE AUTHORS OR CONSTANTRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+                    * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+                    * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+                    * DEALINGS IN THE SOFTWARE.
+				 " desc=""/>
+                <licensetext name="
+                    # Permission is hereby granted, free of charge, to any person obtaining a
+                    # copy of this software and associated documentation files (the &gt;Software&gt;),
+                    # to deal in the Software without restriction, including without limitation
+                    # on the rights to use, copy, modify, merge, publish, distribute, sub
+                    # license, and/or sell copies of the Software, and to permit persons to whom
+                    # the Software is furnished to do so, subject to the following conditions:
+                    #
+                    # The above copyright notice and this permission notice (including the next
+                    # paragraph) shall be included in all copies or substantial portions of the
+                    # Software.
+				 " desc=""/>
+                <licensetext name="
+                    * Permission is hereby granted, free of charge, to any person obtaining a
+                    * copy of this software and associated documentation files (the &gt;Software&gt;),
+                    * to deal in the Software without restriction, including without limitation
+                    * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+                    * and/or sell copies of the Software, and to permit persons to whom the
+                    * Software is furnished to do so, subject to the following conditions:
+                    *
+                    * The above copyright notice and this permission notice (including the next
+                    * paragraph) shall be included in all copies or substantial portions of the
+                    * Software.
+                    *
+                    * THE SOFTWARE IS PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                    * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTAagxLITY,
+                    * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+                    * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+                    * LIAagxLITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+                    * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+                    * SOFTWARE.
+				 " desc=""/>
+
+            </licensematcher>
+            <licensematcher name="BSD-2-Clause" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    * Redistribution and use in source and binary forms, with or without
+                    * modification, are permitted provided that the following conditions
+                    * are met:
+                    * 1. Redistributions of source code must retain the above copyright
+                    *    notice, this list of conditions and the following disclaimer.
+                    * 2. Redistributions in binary form must reproduce the above copyright
+                    *    notice, this list of conditions and the following disclaimer in the
+                    *    documentation and/or other materials provided with the distribution.
+                    *
+                    * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
+                    * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+                    * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+                    * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
+                    * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+                    * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+                    * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+                    * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+                    * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+                    * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+                    * THE POSSIBILITY OF SUCH DAMAGE.
+				 " desc=""/>
+                <licensetext name="
+                    * Redistribution and use in source and binary forms, with or without
+                    * modification, are permitted provided that the following conditions are met:
+                    *
+                    *    1. Redistributions of source code must retain the above copyright notice,
+                    *       this list of conditions and the following disclaimer.
+                    *
+                    *    2. Redistributions in binary form must reproduce the following statement:
+                    *
+                    *       &gt;Uses Jimenez's MLAA. Copyright (C) 2010 by Jorge Jimenez, Belen Masia,
+                    *        Jose I. Echevarria, Fernando Navarro and Diego Gutierrez.&gt;
+                    *
+                    *       Only for use in the Mesa project, this point 2 is filled by naming the
+                    *       technique Jimenez's MLAA in the Mesa config options.
+                    *
+                    * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS
+                    * IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+                    * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+                    * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDERS OR CONTRIBUTORS
+                    * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+                    * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+                    * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+                    * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+                    * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+                    * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+                    * POSSIBILITY OF SUCH DAMAGE.
+                    *
+                    * The views and conclusions contained in the software and documentation are
+                    * those of the authors and should not be interpreted as representing official
+                    * policies, either expressed or implied, of the copyright holders.
+				 " desc=""/>
+            </licensematcher>
+            <licensematcher name="HPND-sell-variant" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    * Permission to use, copy, modify, distribute, and sell this software and its
+                    * documentation for any purpose is hereby granted without fee, provided that
+                    * the above copyright notice appear in all copies and that both that copyright
+                    * notice and this permission notice appear in supporting documentation, and
+                    * that the name of the copyright holders not be used in advertising or
+                    * publicity pertaining to distribution of the software without specific,
+                    * written prior permission.  The copyright holders make no representations
+                    * about the suitability of this software for any purpose.  It is provided &gt;as
+                    * is &gt; without express or implied warranty.
+                    *
+                    * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+                    * INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
+                    * EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+                    * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+                    * DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+                    * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+                    * OF THIS SOFTWARE.
+				 " desc=""/>
+                <licensetext name="
+                    Permission to use, copy, modify, distribute, and sell this
+                    software and its documentation for any purpose is hereby granted
+                    without fee, provided that\n the above copyright notice appear in
+                    all copies and that both that copyright notice and this permission
+                    notice appear in supporting documentation, and that the name of
+                    the copyright holders not be used in advertising or publicity
+                    pertaining to distribution of the software without specific,
+                    written prior permission.  The copyright holders make no
+                    representations about the suitability of this software for any
+                    purpose.  It is provided &gt;as is&gt; without express or implied
+                    warranty.
+
+                    THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+                    SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+                    FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+                    SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+                    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+                    AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+                    ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+                    THIS SOFTWARE.
+				 " desc=""/>
+            </licensematcher>
+            <licensematcher name="HPND" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    * Permission to use, copy, modify, and distribute this software and its
+                    * documentation for any purpose and without fee is hereby granted, provided
+                    * that the above copyright notice appear in all copies and that both that
+                    * copyright notice and this permission notice appear in supporting
+                    * documentation, and that the name of the Vrije Universiteit not be used in
+                    * advertising or publicity pertaining to distribution of the software without
+                    * specific, written prior permission.  The Vrije Universiteit makes no
+                    * representations about the suitability of this software for any purpose.
+                    * It is provided &gt;as is&gt; without express or implied warranty.
+                    *
+                    * The Vrije Universiteit DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+                    * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS,
+                    * IN NO EVENT SHALL The Vrije Universiteit BE LIABLE FOR ANY SPECIAL,
+                    * INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+                    * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+                    * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+                    * PERFORMANCE OF THIS SOFTWARE.
+				 " desc=""/>
+            </licensematcher>
+            <licensematcher name="Khronos License" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    ** Permission is hereby granted, free of charge, to any person obtaining a
+                    ** copy of this software and/or associated documentation files (the
+                    ** &gt;Materials&gt;), to deal in the Materials without restriction, including
+                    ** without limitation the rights to use, copy, modify, merge, publish,
+                    ** distribute, sublicense, and/or sell copies of the Materials, and to
+                    ** permit persons to whom the Materials are furnished to do so, subject to
+                    ** the following conditions:
+                    **
+                    ** The above copyright notice and this permission notice shall be included
+                    ** in all copies or substantial portions of the Materials.
+                    **
+                    ** THE MATERIALS ARE PROVIDED &gt;AS IS&gt;, WITHOUT WARRANTY OF ANY KIND,
+                    ** EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+                    ** MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+                    ** IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+                    ** CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+                    ** TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+                    ** MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+				 " desc=""/>
+            </licensematcher>
+            <licensematcher name="SGI-B-2.0" desc="If the scanning result is InvalidLicense, you can define matching rules here. Note that quotation marks must be escaped.">
+                <licensetext name="
+                    * This document is licensed under the SGI Free Software B License Version
+                    * 2.0. For details, see http://oss.sgi.com/projects/FreeB/ .
+				 " desc=""/>
+            </licensematcher>
+        </licensematcherlist>
     </oatconfig>
 </configuration>
