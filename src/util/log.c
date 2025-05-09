@@ -44,12 +44,20 @@
 #include <windows.h>
 #endif
 
+#if DETECT_OS_OHOS
+/* There is a conflict with syslog.h */
+#undef LOG_DEBUG
+#undef LOG_INFO
+#include <hilog/log.h>
+#endif
+
 enum mesa_log_control {
    MESA_LOG_CONTROL_NULL = 1 << 0,
    MESA_LOG_CONTROL_FILE = 1 << 1,
    MESA_LOG_CONTROL_SYSLOG = 1 << 2,
    MESA_LOG_CONTROL_ANDROID = 1 << 3,
    MESA_LOG_CONTROL_WINDBG = 1 << 4,
+   MESA_LOG_CONTROL_OHOS = 1 << 5,
    MESA_LOG_CONTROL_LOGGER_MASK = 0xff,
 
    MESA_LOG_CONTROL_WAIT = 1 << 8,
@@ -62,6 +70,7 @@ static const struct debug_control mesa_log_control_options[] = {
    { "syslog", MESA_LOG_CONTROL_SYSLOG },
    { "android", MESA_LOG_CONTROL_ANDROID },
    { "windbg", MESA_LOG_CONTROL_WINDBG },
+   { "ohos", MESA_LOG_CONTROL_OHOS },
    /* flags */
    { "wait", MESA_LOG_CONTROL_WAIT },
    { NULL, 0 },
@@ -80,6 +89,8 @@ mesa_log_init_once(void)
       /* pick the default loggers */
 #if DETECT_OS_ANDROID
       mesa_log_control |= MESA_LOG_CONTROL_ANDROID;
+#elif DETECT_OS_OHOS
+      mesa_log_control |= MESA_LOG_CONTROL_OHOS;
 #else
       mesa_log_control |= MESA_LOG_CONTROL_FILE;
 #endif
@@ -360,6 +371,36 @@ logger_windbg(enum mesa_log_level level,
 
 #endif /* DETECT_OS_WINDOWS */
 
+#if DETECT_OS_OHOS
+
+static inline LogLevel
+level_to_ohos(enum mesa_log_level l)
+{
+   switch (l) {
+   case MESA_LOG_ERROR: return LOG_ERROR;
+   case MESA_LOG_WARN: return LOG_WARN;
+   case MESA_LOG_INFO: return LOG_INFO;
+   case MESA_LOG_DEBUG: return LOG_DEBUG;
+   }
+
+   unreachable("bad mesa_log_level");
+}
+
+static void
+logger_ohos(enum mesa_log_level level,
+            const char *tag,
+            const char *format,
+            va_list va)
+{
+   char local_msg[1024];
+   char *msg = logger_vasnprintf(local_msg, sizeof(local_msg), 0, level, tag,
+         format, va);
+
+   HiLogPrint(LOG_APP, level_to_ohos(level), 0xFF00, tag, "%{public}s", msg);
+}
+
+#endif /* DETECT_OS_OHOS */
+
 /* This is for use with debug functions that take a FILE, such as
  * nir_print_shader, although switching to nir_log_shader* is preferred.
  */
@@ -400,6 +441,9 @@ mesa_log_v(enum mesa_log_level level, const char *tag, const char *format,
 #endif
 #if DETECT_OS_WINDOWS
       { MESA_LOG_CONTROL_WINDBG, logger_windbg },
+#endif
+#if DETECT_OS_OHOS
+      { MESA_LOG_CONTROL_OHOS, logger_ohos },
 #endif
    };
 

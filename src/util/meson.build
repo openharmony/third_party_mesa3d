@@ -247,6 +247,10 @@ if with_platform_haiku
   deps_for_libmesa_util += dep_network
 endif
 
+if with_platform_ohos
+  deps_for_libmesa_util += dependency('libhilog')
+endif
+
 if with_perfetto
   files_mesa_util += files(
     'perf/u_perfetto.cc',
