@@ -70,6 +70,11 @@ init_dt_type(struct kopper_displaytarget *cdt)
       cdt->type = KOPPER_WIN32;
       break;
 #endif
+#ifdef VK_USE_PLATFORM_OHOS
+   case VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS:
+      cdt->type = KOPPER_OHOS;
+      break;
+#endif
    default:
       unreachable("unsupported!");
    }
@@ -106,6 +111,13 @@ kopper_CreateSurface(struct zink_screen *screen, struct kopper_displaytarget *cd
    case VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR: {
       VkWin32SurfaceCreateInfoKHR *win32 = (VkWin32SurfaceCreateInfoKHR *)&cdt->info.bos;
       error = VKSCR(CreateWin32SurfaceKHR)(screen->instance, win32, NULL, &surface);
+      break;
+   }
+#endif
+#ifdef VK_USE_PLATFORM_OHOS
+   case VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS: {
+      VkSurfaceCreateInfoOHOS *sci = (VkSurfaceCreateInfoOHOS *)&cdt->info.bos;
+      error = VKSCR(CreateSurfaceOHOS)(screen->instance, sci, NULL, &surface);
       break;
    }
 #endif
@@ -219,6 +231,13 @@ find_dt_entry(struct zink_screen *screen, const struct kopper_displaytarget *cdt
       break;
    }
 #endif
+#ifdef VK_USE_PLATFORM_OHOS
+   case KOPPER_OHOS: {
+      VkSurfaceCreateInfoOHOS *sci = (VkSurfaceCreateInfoOHOS *)&cdt->info.bos;
+      he = _mesa_hash_table_search(&screen->dts, sci->window);
+      break;
+   }
+#endif
    default:
       unreachable("unsupported!");
    }
@@ -318,6 +337,10 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
        * application sets a swapchain’s imageExtent to will be the size of the window, after the first image is
        * presented.
        */
+      cswap->scci.imageExtent.width = w;
+      cswap->scci.imageExtent.height = h;
+      break;
+   case KOPPER_OHOS:
       cswap->scci.imageExtent.width = w;
       cswap->scci.imageExtent.height = h;
       break;
@@ -423,6 +446,7 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
             break;
          case KOPPER_WAYLAND:
          case KOPPER_WIN32:
+         case KOPPER_OHOS:
             _mesa_hash_table_init(&screen->dts, screen, _mesa_hash_pointer, _mesa_key_pointer_equal);
             break;
          default:
@@ -492,6 +516,13 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
    case KOPPER_WIN32: {
       VkWin32SurfaceCreateInfoKHR *win32 = (VkWin32SurfaceCreateInfoKHR *)&cdt->info.bos;
       _mesa_hash_table_insert(&screen->dts, win32->hwnd, cdt);
+      break;
+   }
+#endif
+#ifdef VK_USE_PLATFORM_OHOS
+   case KOPPER_OHOS: {
+      VkSurfaceCreateInfoOHOS *sci = (VkSurfaceCreateInfoOHOS *)&cdt->info.bos;
+      _mesa_hash_table_insert(&screen->dts, sci->window, cdt);
       break;
    }
 #endif
