@@ -124,7 +124,7 @@ if with_dri
     files_egl += files('drivers/dri2/platform_android.c')
   endif
   if with_platform_ohos
-    deps_for_egl += [dependency('libnative_window')]
+    deps_for_egl += [dependency('libsurface')]
     files_egl += files('drivers/dri2/platform_ohos.c')
   endif
 elif with_platform_haiku
