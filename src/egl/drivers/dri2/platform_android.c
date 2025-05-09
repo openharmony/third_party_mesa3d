@@ -1183,12 +1183,8 @@ EGLBoolean
 dri2_initialize_android(_EGLDisplay *disp)
 {
    bool device_opened = false;
-   struct dri2_egl_display *dri2_dpy;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    const char *err;
-
-   dri2_dpy = dri2_display_create();
-   if (!dri2_dpy)
-      return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
    dri2_dpy->gralloc = u_gralloc_create(U_GRALLOC_TYPE_AUTO);
    if (dri2_dpy->gralloc == NULL) {
@@ -1198,7 +1194,6 @@ dri2_initialize_android(_EGLDisplay *disp)
 
    bool force_pure_swrast = debug_get_bool_option("MESA_ANDROID_NO_KMS_SWRAST", false);
 
-   disp->DriverData = (void *)dri2_dpy;
    if (!force_pure_swrast)
       device_opened = droid_open_device(disp, disp->Options.ForceSoftware);
 
@@ -1312,6 +1307,5 @@ dri2_initialize_android(_EGLDisplay *disp)
    return EGL_TRUE;
 
 cleanup:
-   dri2_display_destroy(disp);
    return _eglError(EGL_NOT_INITIALIZED, err);
 }
