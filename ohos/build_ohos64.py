@@ -33,8 +33,8 @@ if __name__ == '__main__':
 
     run_build_cmd = 'PKG_CONFIG_PATH=./pkgconfig '
     run_build_cmd += 'meson setup '+ sys.argv[3] + ' build-ohos '
-    run_build_cmd += '-Dplatforms=ohos -Degl-native-platform=ohos -Ddri-drivers= -Dgallium-drivers=v3d,vc4 \
-                      -Dvulkan-drivers= -Dgbm=enabled -Degl=enabled -Dgles1=enabled -Dgles2=enabled -Dcpp_rtti=false -Dglx=disabled -Dtools= -Ddri-search-path=/vendor/lib64/chipsetsdk '
+    run_build_cmd += '-Dplatforms=ohos -Degl-native-platform=ohos -Dgallium-drivers=v3d,vc4 \
+                      -Dvulkan-drivers= -Dgbm=enabled -Degl=enabled -Dgles1=enabled -Dgles2=enabled -Dcpp_rtti=false -Dglx=disabled -Dtools= '
     run_build_cmd += '--cross-file=cross_file '
     run_build_cmd += '--prefix=' + os.getcwd() + '/build-ohos/install'
     print("build command: %s" %run_build_cmd)
