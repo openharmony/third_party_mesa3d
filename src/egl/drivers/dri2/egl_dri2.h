@@ -389,6 +389,10 @@ struct dri2_egl_surface {
    uint32_t gralloc_usage;
 #endif
 
+#ifdef HAVE_OHOS_PLATFORM
+   struct NativeWindow *window;
+#endif
+
    /* surfaceless and device */
    struct dri_image *front;
    enum pipe_format visual;
@@ -579,6 +583,17 @@ static inline EGLBoolean
 dri2_initialize_android(_EGLDisplay *disp)
 {
    return _eglError(EGL_NOT_INITIALIZED, "Android platform not built");
+}
+#endif
+
+#ifdef HAVE_OHOS_PLATFORM
+EGLBoolean
+dri2_initialize_ohos(_EGLDisplay *disp);
+#else
+static inline EGLBoolean
+dri2_initialize_ohos(_EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "OHOS platform not built");
 }
 #endif
 
