@@ -3889,9 +3889,17 @@ compile_module(struct zink_screen *screen, struct zink_shader *zs, nir_shader *n
    if (zink_debug & (ZINK_DEBUG_NIR | ZINK_DEBUG_SPIRV))
       nir_index_ssa_defs(nir_shader_get_entrypoint(nir));
    if (zink_debug & ZINK_DEBUG_NIR) {
-      fprintf(stderr, "NIR shader:\n---8<---\n");
-      nir_print_shader(nir, stderr);
-      fprintf(stderr, "---8<---\n");
+      char buf[256];
+      static int i;
+      snprintf(buf, sizeof(buf), "/data/storage/el2/base/files/dump%02d.nir", i++);
+
+      FILE *fp = fopen(buf, "wb");
+      if (fp) {
+         fprintf(fp, "NIR shader:\n---8<---\n");
+         nir_print_shader(nir, fp);
+         fprintf(fp, "---8<---\n");
+         fclose(fp);
+      }
    }
 
    struct zink_shader_object obj = {0};
