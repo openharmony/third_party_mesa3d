@@ -421,12 +421,20 @@ with_platform_wayland = _platforms.contains('wayland')
 with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
 with_platform_macos = _platforms.contains('macos')
+with_platform_ohos = _platforms.contains('ohos')
+
+if with_platform_ohos
+  pre_args += '-DVK_USE_PLATFORM_OHOS=1'
+  system_has_kms_drm = false
+endif
 
 with_glx = get_option('glx')
 if with_glx == 'auto'
   if not with_opengl
     with_glx = 'disabled'
   elif with_platform_android
+    with_glx = 'disabled'
+  elif with_platform_ohos
     with_glx = 'disabled'
   elif with_dri
     with_glx = 'dri'
