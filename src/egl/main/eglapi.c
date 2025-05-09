@@ -401,6 +401,14 @@ _eglConvertAttribsToInt(const EGLAttrib *attr_list)
    return int_attribs;
 }
 
+static void
+setenv_to_ohos(void)
+{
+   setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 0);
+   setenv("MESA_GLES_VERSION_OVERRIDE", "3.0", 0);
+   setenv("MESA_GL_VERSION_OVERRIDE", "4.2", 0);
+}
+
 /**
  * This is typically the first EGL function that an application calls.
  * It associates a private _EGLDisplay object to the native display.
@@ -412,6 +420,9 @@ eglGetDisplay(EGLNativeDisplayType nativeDisplay)
    _EGLDisplay *disp;
    void *native_display_ptr;
 
+#if DETECT_OS_OHOS
+   setenv_to_ohos();
+#endif
 #if !DETECT_OS_ANDROID
    util_cpu_trace_init();
 #endif
