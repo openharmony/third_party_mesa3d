@@ -3340,7 +3340,7 @@ zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, st
    if (zink_debug & ZINK_DEBUG_SPIRV) {
       char buf[256];
       static int i;
-      snprintf(buf, sizeof(buf), "dump%02d.spv", i++);
+      snprintf(buf, sizeof(buf), "/data/storage/el2/base/files/dump%02d.spv", i++);
       zink_shader_dump(zs, spirv->words, spirv->num_words * sizeof(uint32_t), buf);
    }
 
