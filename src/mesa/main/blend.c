@@ -490,21 +490,21 @@ advanced_blend_mode_from_gl_enum(GLenum mode)
    case GL_HSL_LUMINOSITY_KHR:
       return BLEND_HSL_LUMINOSITY;
    default:
-      return BLEND_NONE;
+      return BLEND_MODE_NONE;
    }
 }
 
 /**
  * If \p mode is one of the advanced blending equations defined by
  * GL_KHR_blend_equation_advanced (and the extension is supported),
- * return the corresponding BLEND_* enum.  Otherwise, return BLEND_NONE
+ * return the corresponding BLEND_* enum.  Otherwise, return BLEND_MODE_NONE
  * (which can also be treated as false).
  */
 static enum gl_advanced_blend_mode
 advanced_blend_mode(const struct gl_context *ctx, GLenum mode)
 {
    return _mesa_has_KHR_blend_equation_advanced(ctx) ?
-          advanced_blend_mode_from_gl_enum(mode) : BLEND_NONE;
+          advanced_blend_mode_from_gl_enum(mode) : BLEND_MODE_NONE;
 }
 
 static void
@@ -687,7 +687,7 @@ blend_equation_separate(struct gl_context *ctx, GLenum modeRGB, GLenum modeA,
       ctx->Color.Blend[buf].EquationA = modeA;
    }
    ctx->Color._BlendEquationPerBuffer = GL_FALSE;
-   set_advanced_blend_mode(ctx, BLEND_NONE);
+   set_advanced_blend_mode(ctx, BLEND_MODE_NONE);
 }
 
 
@@ -743,7 +743,7 @@ blend_equation_separatei(struct gl_context *ctx, GLuint buf, GLenum modeRGB,
    ctx->Color.Blend[buf].EquationRGB = modeRGB;
    ctx->Color.Blend[buf].EquationA = modeA;
    ctx->Color._BlendEquationPerBuffer = GL_TRUE;
-   set_advanced_blend_mode(ctx, BLEND_NONE);
+   set_advanced_blend_mode(ctx, BLEND_MODE_NONE);
 }
 
 

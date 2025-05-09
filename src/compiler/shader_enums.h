@@ -1171,7 +1171,7 @@ enum gl_access_qualifier
  */
 enum gl_advanced_blend_mode
 {
-   BLEND_NONE = 0,
+   BLEND_MODE_NONE = 0,
    BLEND_MULTIPLY,
    BLEND_SCREEN,
    BLEND_OVERLAY,

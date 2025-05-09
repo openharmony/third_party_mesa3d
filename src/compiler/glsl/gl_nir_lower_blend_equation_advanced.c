@@ -318,7 +318,7 @@ calc_blend_result(nir_builder *b,
    nir_variable *result = add_temp_var(b, "__blend_result", glsl_vec4_type());
 
    /* If we're not doing advanced blending, just write the original value. */
-   nir_if *if_blending = nir_push_if(b, is_mode(b, mode, BLEND_NONE));
+   nir_if *if_blending = nir_push_if(b, is_mode(b, mode, BLEND_MODE_NONE));
    nir_store_var(b, result, blend_src, ~0);
 
    nir_push_else(b, if_blending);
@@ -413,7 +413,7 @@ calc_blend_result(nir_builder *b,
       case BLEND_HSL_LUMINOSITY:
          set_lum(b, factor, dst_rgb, src_rgb);
          break;
-      case BLEND_NONE:
+      case BLEND_MODE_NONE:
          unreachable("not real cases");
       }
 

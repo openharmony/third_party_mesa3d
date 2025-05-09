@@ -285,7 +285,7 @@ struct gl_colorbuffer_attrib
    GLboolean _BlendEquationPerBuffer;
 
    /**
-    * Which advanced blending mode is in use (or BLEND_NONE).
+    * Which advanced blending mode is in use (or BLEND_MODE_NONE).
     *
     * KHR_blend_equation_advanced only allows advanced blending with a single
     * draw buffer, and NVX_blend_equation_advanced_multi_draw_buffer still

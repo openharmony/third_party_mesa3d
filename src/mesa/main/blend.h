@@ -71,7 +71,7 @@ static inline enum gl_advanced_blend_mode
 _mesa_get_advanced_blend_sh_constant(GLbitfield blend_enabled,
                                      enum gl_advanced_blend_mode mode)
 {
-   return blend_enabled ? mode : BLEND_NONE;
+   return blend_enabled ? mode : BLEND_MODE_NONE;
 }
 
 static inline bool
