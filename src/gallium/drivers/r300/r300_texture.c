@@ -1,25 +1,8 @@
 /*
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2010 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 /* Always include headers in the reverse order!! ~ M. */
 #include "r300_texture.h"
@@ -100,7 +83,7 @@ static unsigned r300_get_endian_swap(enum pipe_format format)
 
 unsigned r300_get_swizzle_combined(const unsigned char *swizzle_format,
                                    const unsigned char *swizzle_view,
-                                   boolean dxtc_swizzle)
+                                   bool dxtc_swizzle)
 {
     unsigned i;
     unsigned char swizzle[4];
@@ -164,13 +147,13 @@ unsigned r300_get_swizzle_combined(const unsigned char *swizzle_format,
  * makes available X, Y, Z, W, ZERO, and ONE for swizzling. */
 uint32_t r300_translate_texformat(enum pipe_format format,
                                   const unsigned char *swizzle_view,
-                                  boolean is_r500,
-                                  boolean dxtc_swizzle)
+                                  bool is_r500,
+                                  bool dxtc_swizzle)
 {
     uint32_t result = 0;
     const struct util_format_description *desc;
-    unsigned i;
-    boolean uniform = TRUE;
+    int i;
+    bool uniform = true;
     const uint32_t sign_bit[4] = {
         R300_TX_FORMAT_SIGNED_W,
         R300_TX_FORMAT_SIGNED_Z,
@@ -241,10 +224,10 @@ uint32_t r300_translate_texformat(enum pipe_format format,
         format != PIPE_FORMAT_LATC1_UNORM &&
         format != PIPE_FORMAT_LATC1_SNORM) {
         result |= r300_get_swizzle_combined(desc->swizzle, swizzle_view,
-                                            TRUE);
+                                            true);
     } else {
         result |= r300_get_swizzle_combined(desc->swizzle, swizzle_view,
-                                            FALSE);
+                                            false);
     }
 
     /* S3TC formats. */
@@ -358,14 +341,8 @@ uint32_t r300_translate_texformat(enum pipe_format format,
         return ~0; /* Unsupported/unknown. */
     }
 
-    /* Find the first non-VOID channel. */
-    for (i = 0; i < 4; i++) {
-        if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-            break;
-        }
-    }
-
-    if (i == 4)
+    i = util_format_get_first_non_void_channel(format);
+    if (i == -1)
         return ~0; /* Unsupported/unknown. */
 
     /* And finally, uniform formats. */
@@ -591,21 +568,15 @@ static uint32_t r300_translate_zsformat(enum pipe_format format)
 static uint32_t r300_translate_out_fmt(enum pipe_format format)
 {
     uint32_t modifier = 0;
-    unsigned i;
+    int i;
     const struct util_format_description *desc;
-    boolean uniform_sign;
+    bool uniform_sign;
 
     format = r300_unbyteswap_array_format(format);
     desc = util_format_description(format);
 
-    /* Find the first non-VOID channel. */
-    for (i = 0; i < 4; i++) {
-        if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-            break;
-        }
-    }
-
-    if (i == 4)
+    i = util_format_get_first_non_void_channel(format);
+    if (i == -1)
         return ~0; /* Unsupported/unknown. */
 
     /* Specifies how the shader output is written to the fog unit. */
@@ -671,10 +642,10 @@ static uint32_t r300_translate_out_fmt(enum pipe_format format)
     }
 
     /* Add sign. */
-    uniform_sign = TRUE;
+    uniform_sign = true;
     for (i = 0; i < desc->nr_channels; i++)
         if (desc->channel[i].type != UTIL_FORMAT_TYPE_SIGNED)
-            uniform_sign = FALSE;
+            uniform_sign = false;
 
     if (uniform_sign)
         modifier |= R300_OUT_SIGN(0xf);
@@ -884,21 +855,21 @@ static uint32_t r300_translate_colormask_swizzle(enum pipe_format format)
     }
 }
 
-boolean r300_is_colorbuffer_format_supported(enum pipe_format format)
+bool r300_is_colorbuffer_format_supported(enum pipe_format format)
 {
     return r300_translate_colorformat(format) != ~0 &&
            r300_translate_out_fmt(format) != ~0 &&
            r300_translate_colormask_swizzle(format) != ~0;
 }
 
-boolean r300_is_zs_format_supported(enum pipe_format format)
+bool r300_is_zs_format_supported(enum pipe_format format)
 {
     return r300_translate_zsformat(format) != ~0;
 }
 
-boolean r300_is_sampler_format_supported(enum pipe_format format)
+bool r300_is_sampler_format_supported(enum pipe_format format)
 {
-    return r300_translate_texformat(format, NULL, TRUE, FALSE) != ~0;
+    return r300_translate_texformat(format, NULL, true, false) != ~0;
 }
 
 void r300_texture_setup_format_state(struct r300_screen *screen,
@@ -911,7 +882,7 @@ void r300_texture_setup_format_state(struct r300_screen *screen,
 {
     struct pipe_resource *pt = &tex->b;
     struct r300_texture_desc *desc = &tex->tex;
-    boolean is_r500 = screen->caps.is_r500;
+    bool is_r500 = screen->caps.is_r500;
     unsigned width, height, depth;
     unsigned txwidth, txheight, txdepth;
 
@@ -1045,7 +1016,7 @@ r300_texture_create_object(struct r300_screen *rscreen,
                            enum radeon_bo_layout microtile,
                            enum radeon_bo_layout macrotile,
                            unsigned stride_in_bytes_override,
-                           struct pb_buffer *buffer)
+                           struct pb_buffer_lean *buffer)
 {
     struct radeon_winsys *rws = rscreen->rws;
     struct r300_resource *tex = NULL;
@@ -1121,7 +1092,7 @@ r300_texture_create_object(struct r300_screen *rscreen,
 fail:
     FREE(tex);
     if (buffer)
-        pb_reference(&buffer, NULL);
+        radeon_bo_reference(rscreen->rws, &buffer, NULL);
     return NULL;
 }
 
@@ -1132,8 +1103,8 @@ struct pipe_resource *r300_texture_create(struct pipe_screen *screen,
     struct r300_screen *rscreen = r300_screen(screen);
     enum radeon_bo_layout microtile, macrotile;
 
-    if ((base->flags & R300_RESOURCE_FLAG_TRANSFER) ||
-        (base->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR))) {
+    if (base->flags & R300_RESOURCE_FLAG_TRANSFER ||
+        base->bind & PIPE_BIND_LINEAR) {
         microtile = RADEON_LAYOUT_LINEAR;
         macrotile = RADEON_LAYOUT_LINEAR;
     } else {
@@ -1154,7 +1125,7 @@ struct pipe_resource *r300_texture_from_handle(struct pipe_screen *screen,
 {
     struct r300_screen *rscreen = r300_screen(screen);
     struct radeon_winsys *rws = rscreen->rws;
-    struct pb_buffer *buffer;
+    struct pb_buffer_lean *buffer;
     struct radeon_bo_metadata tiling = {};
 
     /* Support only 2D textures without mipmaps */
@@ -1235,7 +1206,8 @@ struct pipe_surface* r300_create_surface_custom(struct pipe_context * ctx,
                                                tex->b.nr_samples,
                                                tex->tex.microtile,
                                                tex->tex.macrotile[level],
-                                               DIM_HEIGHT, 0);
+                                               DIM_HEIGHT, 0,
+                                               tex->b.bind & PIPE_BIND_SCANOUT);
 
         surface->cbzb_height = align((surface->base.height + 1) / 2,
                                      tile_height);

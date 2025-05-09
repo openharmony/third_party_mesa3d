@@ -50,36 +50,32 @@ applegl_destroy_context(struct glx_context *gc)
 
 static int
 applegl_bind_context(
-    struct glx_context *gc, struct glx_context *old,
+    struct glx_context *gc,
     GLXDrawable draw, GLXDrawable read)
 {
    Display *dpy = gc->psc->dpy;
    bool error = apple_glx_make_current_context(
        dpy,
-       (old && old != &dummyContext) ? old->driContext : NULL,
+       NULL,
        gc ? gc->driContext : NULL, draw);
 
    apple_glx_diagnostic("%s: error %s\n", __func__, error ? "YES" : "NO");
    if (error)
       return 1; /* GLXBadContext is the same as Success (0) */
 
-   apple_glapi_set_dispatch();
+   apple_mesa_glapi_set_dispatch();
 
    return Success;
 }
 
 static void
-applegl_unbind_context(struct glx_context *gc, struct glx_context *new)
+applegl_unbind_context(struct glx_context *gc)
 {
    Display *dpy;
    bool error;
 
    /* If we don't have a context, then we have nothing to unbind */
    if (!gc)
-      return;
-
-   /* If we have a new context, keep this one around and remove it during bind. */
-   if (new)
       return;
 
    dpy = gc->psc->dpy;

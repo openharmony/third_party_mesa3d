@@ -5,21 +5,32 @@
 #
 # SPDX-License-Identifier: MIT
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
-import yaml
 from lava.exceptions import MesaCIKnownIssueException, MesaCITimeoutError
 from lava.utils import (
     GitlabSection,
     LogFollower,
     LogSectionType,
-    fix_lava_color_log,
     fix_lava_gitlab_section_log,
     hide_sensitive_data,
 )
+from lava.utils.constants import (
+    KNOWN_ISSUE_R8152_MAX_CONSECUTIVE_COUNTER,
+    A6XX_GPU_RECOVERY_WATCH_PERIOD_MIN,
+    A6XX_GPU_RECOVERY_FAILURE_MESSAGE,
+    A6XX_GPU_RECOVERY_FAILURE_MAX_COUNT,
+)
+from lava.utils.lava_log_hints import LAVALogHints
 
-from ..lava.helpers import create_lava_yaml_msg, does_not_raise
+from ..lava.helpers import (
+    create_lava_yaml_msg,
+    does_not_raise,
+    lava_yaml,
+    mock_lava_signal,
+    yaml_dump,
+)
 
 GITLAB_SECTION_SCENARIOS = {
     "start collapsed": (
@@ -65,39 +76,47 @@ def test_gitlab_section(method, collapsed, expectation):
 def test_gl_sections():
     lines = [
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
+            "lvl": "debug",
+            "msg": "Received signal: <STARTRUN> 0_setup-ssh-server 10145749_1.3.2.3.1",
+        },
+        {
+            "dt": datetime.now(tz=UTC),
             "lvl": "debug",
             "msg": "Received signal: <STARTRUN> 0_mesa 5971831_1.3.2.3.1",
         },
         # Redundant log message which triggers the same Gitlab Section, it
         # should be ignored, unless the id is different
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "target",
             "msg": "[    7.778836] <LAVA_SIGNAL_STARTRUN 0_mesa 5971831_1.3.2.3.1>",
         },
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "debug",
             "msg": "Received signal: <STARTTC> mesa-ci_iris-kbl-traces",
         },
         # Another redundant log message
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "target",
             "msg": "[   16.997829] <LAVA_SIGNAL_STARTTC mesa-ci_iris-kbl-traces>",
         },
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "target",
             "msg": "<LAVA_SIGNAL_ENDTC mesa-ci_iris-kbl-traces>",
         },
     ]
     lf = LogFollower()
-    for line in lines:
-        lf.manage_gl_sections(line)
+    with lf:
+        for line in lines:
+            lf.manage_gl_sections(line)
+        parsed_lines = lf.flush()
 
-    parsed_lines = lf.flush()
+    section_types = [s.type for s in lf.section_history]
+
     assert "section_start" in parsed_lines[0]
     assert "collapsed=true" not in parsed_lines[0]
     assert "section_end" in parsed_lines[1]
@@ -105,18 +124,28 @@ def test_gl_sections():
     assert "collapsed=true" not in parsed_lines[2]
     assert "section_end" in parsed_lines[3]
     assert "section_start" in parsed_lines[4]
-    assert "collapsed=true" in parsed_lines[4]
+    assert "collapsed=true" not in parsed_lines[4]
+    assert "section_end" in parsed_lines[5]
+    assert "section_start" in parsed_lines[6]
+    assert "collapsed=true" in parsed_lines[6]
+    assert section_types == [
+        # LogSectionType.LAVA_BOOT,  True, if LogFollower started with Boot section
+        LogSectionType.TEST_DUT_SUITE,
+        LogSectionType.TEST_SUITE,
+        LogSectionType.TEST_CASE,
+        LogSectionType.LAVA_POST_PROCESSING,
+    ]
 
 
 def test_log_follower_flush():
     lines = [
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "debug",
             "msg": "Received signal: <STARTTC> mesa-ci_iris-kbl-traces",
         },
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "target",
             "msg": "<LAVA_SIGNAL_ENDTC mesa-ci_iris-kbl-traces>",
         },
@@ -137,112 +166,116 @@ SENSITIVE_DATA_SCENARIOS = {
     "no sensitive data tagged": (
         ["bla  bla", "mytoken: asdkfjsde1341=="],
         ["bla  bla", "mytoken: asdkfjsde1341=="],
-        "HIDEME",
+        ["HIDEME"],
     ),
     "sensitive data tagged": (
         ["bla  bla", "mytoken: asdkfjsde1341== # HIDEME"],
         ["bla  bla"],
-        "HIDEME",
+        ["HIDEME"],
     ),
     "sensitive data tagged with custom word": (
-        ["bla  bla", "mytoken: asdkfjsde1341== # DELETETHISLINE", "third line"],
-        ["bla  bla", "third line"],
-        "DELETETHISLINE",
+        ["bla  bla", "mytoken: asdkfjsde1341== # DELETETHISLINE", "third line # NOTANYMORE"],
+        ["bla  bla", "third line # NOTANYMORE"],
+        ["DELETETHISLINE", "NOTANYMORE"],
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "input, expectation, tag",
+    "input, expectation, tags",
     SENSITIVE_DATA_SCENARIOS.values(),
     ids=SENSITIVE_DATA_SCENARIOS.keys(),
 )
-def test_hide_sensitive_data(input, expectation, tag):
-    yaml_data = yaml.safe_dump(input)
-    yaml_result = hide_sensitive_data(yaml_data, tag)
-    result = yaml.safe_load(yaml_result)
+def test_hide_sensitive_data(input, expectation, tags):
+    yaml_data = yaml_dump(input)
+    yaml_result = hide_sensitive_data(yaml_data, *tags)
+    result = lava_yaml.load(yaml_result)
 
     assert result == expectation
 
 
-COLOR_MANGLED_SCENARIOS = {
-    "Mangled error message at target level": (
-        create_lava_yaml_msg(msg="[0m[0m[31mERROR - dEQP error: ", lvl="target"),
-        "\x1b[0m\x1b[0m\x1b[31mERROR - dEQP error: ",
-    ),
-    "Mangled pass message at target level": (
-        create_lava_yaml_msg(
-            msg="[0mPass: 26718, ExpectedFail: 95, Skip: 25187, Duration: 8:18, Remaining: 13",
-            lvl="target",
+GITLAB_SECTION_SPLIT_SCENARIOS = {
+    "Split section_start at target level": (
+        "\x1b[0Ksection_start:1668454947:test_post_process[collapsed=true]\r\x1b[0Kpost-processing test results",
+        (
+            "\x1b[0Ksection_start:1668454947:test_post_process[collapsed=true]",
+            "\x1b[0Kpost-processing test results",
         ),
-        "\x1b[0mPass: 26718, ExpectedFail: 95, Skip: 25187, Duration: 8:18, Remaining: 13",
     ),
-    "Mangled error message with bold formatting at target level": (
-        create_lava_yaml_msg(msg="[1;31mReview the image changes...", lvl="target"),
-        "\x1b[1;31mReview the image changes...",
+    "Split section_end at target level": (
+        "\x1b[0Ksection_end:1666309222:test_post_process\r\x1b[0K",
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "\x1b[0K"),
     ),
-    "Mangled error message with high intensity background at target level": (
-        create_lava_yaml_msg(msg="[100mReview the image changes...", lvl="target"),
-        "\x1b[100mReview the image changes...",
-    ),
-    "Mangled error message with underline+bg color+fg color at target level": (
-        create_lava_yaml_msg(msg="[4;41;97mReview the image changes...", lvl="target"),
-        "\x1b[4;41;97mReview the image changes...",
-    ),
-    "Bad input for color code.": (
-        create_lava_yaml_msg(
-            msg="[4;97 This message is missing the `m`.", lvl="target"
-        ),
-        "[4;97 This message is missing the `m`.",
+    "Second line is not split from the first": (
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "Any message"),
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "Any message"),
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "message, fixed_message",
-    COLOR_MANGLED_SCENARIOS.values(),
-    ids=COLOR_MANGLED_SCENARIOS.keys(),
+    "expected_message, messages",
+    GITLAB_SECTION_SPLIT_SCENARIOS.values(),
+    ids=GITLAB_SECTION_SPLIT_SCENARIOS.keys(),
 )
-def test_fix_lava_color_log(message, fixed_message):
-    fix_lava_color_log(message)
+def test_fix_lava_gitlab_section_log(expected_message, messages):
+    fixed_messages = []
+    gen = fix_lava_gitlab_section_log()
+    next(gen)
 
-    assert message["msg"] == fixed_message
+    for message in messages:
+        lava_log = create_lava_yaml_msg(msg=message, lvl="target")
+        if recovered_line := gen.send(lava_log):
+            fixed_messages.append((recovered_line, lava_log["msg"]))
+        fixed_messages.append(lava_log["msg"])
+
+    assert expected_message in fixed_messages
 
 
-GITLAB_SECTION_MANGLED_SCENARIOS = {
-    "Mangled section_start at target level": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_start:1652658415:deqp[collapsed=false][0Kdeqp-runner",
-            lvl="target",
+@pytest.mark.parametrize(
+    "expected_message, messages",
+    GITLAB_SECTION_SPLIT_SCENARIOS.values(),
+    ids=GITLAB_SECTION_SPLIT_SCENARIOS.keys(),
+)
+def test_lava_gitlab_section_log_collabora(expected_message, messages, monkeypatch):
+    """Check if LogFollower does not change the message if we are running in Collabora farm."""
+    monkeypatch.setenv("RUNNER_TAG", "mesa-ci-x86_64-lava-test")
+    lf = LogFollower()
+    for message in messages:
+        lf.feed([create_lava_yaml_msg(msg=message)])
+    new_messages = lf.flush()
+    new_messages = tuple(new_messages) if len(new_messages) > 1 else new_messages[0]
+    assert new_messages == expected_message
+
+
+CARRIAGE_RETURN_SCENARIOS = {
+    "Carriage return at the end of the previous line": (
+        (
+            "\x1b[0Ksection_start:1677609903:test_setup[collapsed=true]\r\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m",
         ),
-        "\x1b[0Ksection_start:1652658415:deqp[collapsed=false]\r\x1b[0Kdeqp-runner",
+        (
+            "\x1b[0Ksection_start:1677609903:test_setup[collapsed=true]\r",
+            "\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m\r\n",
+        ),
     ),
-    "Mangled section_start at target level with header with spaces": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_start:1652658415:deqp[collapsed=false][0Kdeqp runner stats",
-            lvl="target",
-        ),
-        "\x1b[0Ksection_start:1652658415:deqp[collapsed=false]\r\x1b[0Kdeqp runner stats",
-    ),
-    "Mangled section_end at target level": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_end:1652658415:test_setup[0K",
-            lvl="target",
-        ),
-        "\x1b[0Ksection_end:1652658415:test_setup\r\x1b[0K",
+    "Newline at the end of the line": (
+        ("\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m", "log"),
+        ("\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m\r\n", "log"),
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "message, fixed_message",
-    GITLAB_SECTION_MANGLED_SCENARIOS.values(),
-    ids=GITLAB_SECTION_MANGLED_SCENARIOS.keys(),
+    "expected_message, messages",
+    CARRIAGE_RETURN_SCENARIOS.values(),
+    ids=CARRIAGE_RETURN_SCENARIOS.keys(),
 )
-def test_fix_lava_gitlab_section_log(message, fixed_message):
-    fix_lava_gitlab_section_log(message)
-
-    assert message["msg"] == fixed_message
+def test_lava_log_merge_carriage_return_lines(expected_message, messages):
+    lf = LogFollower()
+    for message in messages:
+        lf.feed([create_lava_yaml_msg(msg=message)])
+    new_messages = tuple(lf.flush())
+    assert new_messages == expected_message
 
 
 WATCHDOG_SCENARIOS = {
@@ -259,7 +292,7 @@ WATCHDOG_SCENARIOS = {
 def test_log_follower_watchdog(frozen_time, timedelta_kwargs, exception):
     lines = [
         {
-            "dt": datetime.now(),
+            "dt": datetime.now(tz=UTC),
             "lvl": "debug",
             "msg": "Received signal: <STARTTC> mesa-ci_iris-kbl-traces",
         },
@@ -291,47 +324,56 @@ def test_gitlab_section_id(case_name, expected_id):
     assert gl.id == expected_id
 
 
-A618_NETWORK_ISSUE_LOGS = [
-    create_lava_yaml_msg(
-        msg="[ 1733.599402] r8152 2-1.3:1.0 eth0: Tx status -71", lvl="target"
-    ),
-    create_lava_yaml_msg(
-        msg="[ 1733.604506] nfs: server 192.168.201.1 not responding, still trying",
-        lvl="target",
-    ),
-]
-TEST_PHASE_LAVA_SIGNAL = create_lava_yaml_msg(
-    msg="Received signal: <STARTTC> mesa-ci_a618_vk", lvl="debug"
-)
+def a618_network_issue_logs(level: str = "target") -> list:
+    net_error = create_lava_yaml_msg(
+            msg="[ 1733.599402] r8152 2-1.3:1.0 eth0: Tx status -71", lvl=level)
+
+    nfs_error = create_lava_yaml_msg(
+            msg="[ 1733.604506] nfs: server 192.168.201.1 not responding, still trying",
+            lvl=level,
+        )
+
+    return [
+        *(KNOWN_ISSUE_R8152_MAX_CONSECUTIVE_COUNTER*[net_error]),
+        nfs_error
+    ]
+
+
+TEST_PHASE_LAVA_SIGNAL = mock_lava_signal(LogSectionType.TEST_CASE)
+A618_NET_ISSUE_BOOT = a618_network_issue_logs(level="feedback")
+A618_NET_ISSUE_TEST = [TEST_PHASE_LAVA_SIGNAL, *a618_network_issue_logs(level="target")]
 
 
 A618_NETWORK_ISSUE_SCENARIOS = {
-    "Pass - R8152 kmsg during boot": (A618_NETWORK_ISSUE_LOGS, does_not_raise()),
+    "Fail - R8152 kmsg during boot phase": (
+        A618_NET_ISSUE_BOOT,
+        pytest.raises(MesaCIKnownIssueException),
+    ),
     "Fail - R8152 kmsg during test phase": (
-        [TEST_PHASE_LAVA_SIGNAL, *A618_NETWORK_ISSUE_LOGS],
+        A618_NET_ISSUE_TEST,
         pytest.raises(MesaCIKnownIssueException),
     ),
     "Pass - Partial (1) R8152 kmsg during test phase": (
-        [TEST_PHASE_LAVA_SIGNAL, A618_NETWORK_ISSUE_LOGS[0]],
+        A618_NET_ISSUE_TEST[:1],
         does_not_raise(),
     ),
     "Pass - Partial (2) R8152 kmsg during test phase": (
-        [TEST_PHASE_LAVA_SIGNAL, A618_NETWORK_ISSUE_LOGS[1]],
+        A618_NET_ISSUE_TEST[:2],
         does_not_raise(),
     ),
-    "Pass - Partial subsequent (3) R8152 kmsg during test phase": (
+    "Pass - Partial (3) subsequent R8152 kmsg during test phase": (
         [
             TEST_PHASE_LAVA_SIGNAL,
-            A618_NETWORK_ISSUE_LOGS[0],
-            A618_NETWORK_ISSUE_LOGS[0],
+            A618_NET_ISSUE_TEST[1],
+            A618_NET_ISSUE_TEST[1],
         ],
         does_not_raise(),
     ),
-    "Pass - Partial subsequent (4) R8152 kmsg during test phase": (
+    "Pass - Partial (4) subsequent nfs kmsg during test phase": (
         [
             TEST_PHASE_LAVA_SIGNAL,
-            A618_NETWORK_ISSUE_LOGS[1],
-            A618_NETWORK_ISSUE_LOGS[1],
+            A618_NET_ISSUE_TEST[-1],
+            A618_NET_ISSUE_TEST[-1],
         ],
         does_not_raise(),
     ),
@@ -344,6 +386,54 @@ A618_NETWORK_ISSUE_SCENARIOS = {
     ids=A618_NETWORK_ISSUE_SCENARIOS.keys(),
 )
 def test_detect_failure(messages, expectation):
-    lf = LogFollower()
+    boot_section = GitlabSection(
+        id="dut_boot",
+        header="Booting hardware device",
+        type=LogSectionType.LAVA_BOOT,
+        start_collapsed=True,
+    )
+    boot_section.start()
+    lf = LogFollower(starting_section=boot_section)
     with expectation:
         lf.feed(messages)
+
+def test_detect_a6xx_gpu_recovery_failure(frozen_time):
+    log_follower = LogFollower()
+    lava_log_hints = LAVALogHints(log_follower=log_follower)
+    failure_message = {
+        "dt": datetime.now(tz=UTC).isoformat(),
+        "msg": A6XX_GPU_RECOVERY_FAILURE_MESSAGE[0],
+        "lvl": "feedback",
+    }
+    with pytest.raises(MesaCIKnownIssueException):
+        for _ in range(A6XX_GPU_RECOVERY_FAILURE_MAX_COUNT):
+            lava_log_hints.detect_a6xx_gpu_recovery_failure(failure_message)
+            # Simulate the passage of time within the watch period
+            frozen_time.tick(1)
+            failure_message["dt"] = datetime.now(tz=UTC).isoformat()
+
+def test_detect_a6xx_gpu_recovery_success(frozen_time):
+    log_follower = LogFollower()
+    lava_log_hints = LAVALogHints(log_follower=log_follower)
+    failure_message = {
+        "dt": datetime.now(tz=UTC).isoformat(),
+        "msg": A6XX_GPU_RECOVERY_FAILURE_MESSAGE[0],
+        "lvl": "feedback",
+    }
+    # Simulate sending a tolerable number of failure messages
+    for _ in range(A6XX_GPU_RECOVERY_FAILURE_MAX_COUNT - 1):
+        lava_log_hints.detect_a6xx_gpu_recovery_failure(failure_message)
+        frozen_time.tick(1)
+        failure_message["dt"] = datetime.now(tz=UTC).isoformat()
+
+    # Simulate the passage of time outside of the watch period
+    frozen_time.tick(60 * A6XX_GPU_RECOVERY_WATCH_PERIOD_MIN + 1)
+    failure_message = {
+        "dt": datetime.now(tz=UTC).isoformat(),
+        "msg": A6XX_GPU_RECOVERY_FAILURE_MESSAGE[1],
+        "lvl": "feedback",
+    }
+    with does_not_raise():
+        lava_log_hints.detect_a6xx_gpu_recovery_failure(failure_message)
+    assert lava_log_hints.a6xx_gpu_first_fail_time is None, "a6xx_gpu_first_fail_time is not None"
+    assert lava_log_hints.a6xx_gpu_recovery_fail_counter == 0, "a6xx_gpu_recovery_fail_counter is not 0"

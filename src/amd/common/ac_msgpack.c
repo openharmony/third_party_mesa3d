@@ -1,26 +1,7 @@
 /*
  * Copyright 2021 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 /**
@@ -142,7 +123,7 @@ void ac_msgpack_add_fixarray_op(struct ac_msgpack *msgpack, uint32_t n)
    }
 }
 
-void ac_msgpack_add_fixstr(struct ac_msgpack *msgpack, char *str)
+void ac_msgpack_add_fixstr(struct ac_msgpack *msgpack, const char *str)
 {
    uint32_t n;
 
@@ -207,47 +188,6 @@ void ac_msgpack_add_uint(struct ac_msgpack *msgpack, uint64_t val)
          return;
       msgpack->mem[msgpack->offset] = MSGPACK_UINT64_OP;
       *((uint64_t*)&msgpack->mem[msgpack->offset + 1]) = util_bswap64(val);
-      msgpack->offset = msgpack->offset + 9;
-   }
-}
-
-void ac_msgpack_add_int(struct ac_msgpack *msgpack, int64_t val)
-{
-   if ((val >= -0x7f) && (val <= 0x7f)) {
-      if ((val >= -31) && (val < 0)) {
-         if (!ac_msgpack_resize_if_required(msgpack, 1))
-            return;
-         msgpack->mem[msgpack->offset] = val | MSGPACK_NIL_OP;
-         msgpack->offset = msgpack->offset + 1;
-      } else if ((val >= 0) && (val <= 127)) {
-         if (!ac_msgpack_resize_if_required(msgpack, 1))
-            return;
-         msgpack->mem[msgpack->offset] = val;
-         msgpack->offset = msgpack->offset + 1;
-      } else {
-         if (!ac_msgpack_resize_if_required(msgpack, 2))
-            return;
-         msgpack->mem[msgpack->offset] = MSGPACK_INT8_OP;
-         msgpack->mem[msgpack->offset + 1] = val;
-         msgpack->offset = msgpack->offset + 2;
-      }
-   } else if ((val >= -0x7fff) && (val <= 0x7fff)) {
-      if (!ac_msgpack_resize_if_required(msgpack, 3))
-         return;
-      msgpack->mem[msgpack->offset] = MSGPACK_INT16_OP;
-      *((int16_t*)&msgpack->mem[msgpack->offset + 1]) = util_bswap32(val);
-      msgpack->offset = msgpack->offset + 3;
-   } else if ((val >= -0x7fffffff) && (val <= 0x7fffffff)) {
-      if (!ac_msgpack_resize_if_required(msgpack, 5))
-         return;
-      msgpack->mem[msgpack->offset] = MSGPACK_INT32_OP;
-      *((int32_t*)&msgpack->mem[msgpack->offset + 1]) = util_bswap32(val);
-      msgpack->offset = msgpack->offset + 5;
-   } else {
-      if (!ac_msgpack_resize_if_required(msgpack, 9))
-         return;
-      msgpack->mem[msgpack->offset] = MSGPACK_INT64_OP;
-      *((int64_t*)&msgpack->mem[msgpack->offset + 1]) = util_bswap64(val);
       msgpack->offset = msgpack->offset + 9;
    }
 }

@@ -23,11 +23,15 @@
 #ifndef VK_UTIL_H
 #define VK_UTIL_H
 
+#include "compiler/shader_enums.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
-#include "compiler/shader_enums.h"
+#include "c99_compat.h"
+
 #include <stdlib.h>
 #include <string.h>
+
+#include "vk_struct_type_cast.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +39,7 @@ extern "C" {
 
 /* common inlines and macros for vulkan drivers */
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
 struct vk_pnext_iterator {
    VkBaseOutStructure *pos;
@@ -107,7 +111,6 @@ vk_pnext_iterator_next(struct vk_pnext_iterator *iter)
         !__iter.done; __iter.done = true) \
       for (const VkBaseInStructure *__e = (VkBaseInStructure *)__iter.pos; \
            __e; __e = (VkBaseInStructure *)vk_pnext_iterator_next(&__iter))
-
 
 /**
  * A wrapper for a Vulkan output array. A Vulkan output array is one that
@@ -263,11 +266,13 @@ __vk_find_struct(void *start, VkStructureType sType)
    return NULL;
 }
 
-#define vk_find_struct(__start, __sType) \
-   __vk_find_struct((__start), VK_STRUCTURE_TYPE_##__sType)
+#define vk_find_struct(__start, __sType)                                       \
+  (VK_STRUCTURE_TYPE_##__sType##_cast *)__vk_find_struct(                      \
+      (__start), VK_STRUCTURE_TYPE_##__sType)
 
-#define vk_find_struct_const(__start, __sType) \
-   (const void *)__vk_find_struct((void *)(__start), VK_STRUCTURE_TYPE_##__sType)
+#define vk_find_struct_const(__start, __sType)                                 \
+  (const VK_STRUCTURE_TYPE_##__sType##_cast *)__vk_find_struct(                \
+      (void *)(__start), VK_STRUCTURE_TYPE_##__sType)
 
 static inline void
 __vk_append_struct(void *start, void *element)
@@ -303,7 +308,9 @@ struct vk_pipeline_cache_header {
 
 #define typed_memcpy(dest, src, count) do { \
    STATIC_ASSERT(sizeof(*(src)) == sizeof(*(dest))); \
-   memcpy((dest), (src), (count) * sizeof(*(src))); \
+   if ((dest) != NULL && (src) != NULL && (count) > 0) { \
+       memcpy((dest), (src), (count) * sizeof(*(src))); \
+   } \
 } while (0)
 
 static inline gl_shader_stage
@@ -322,14 +329,14 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 /* iterate over a sequence of indexed multidraws for VK_EXT_multi_draw extension */
 /* 'i' must be explicitly declared */
 #define vk_foreach_multi_draw_indexed(_draw, _i, _pDrawInfo, _num_draws, _stride) \
-   for (const VkMultiDrawIndexedInfoEXT *_draw = (const void*)(_pDrawInfo); \
+   for (const VkMultiDrawIndexedInfoEXT *_draw = (const VkMultiDrawIndexedInfoEXT*)(_pDrawInfo); \
         (_i) < (_num_draws); \
         (_i)++, (_draw) = (const VkMultiDrawIndexedInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
 
 /* iterate over a sequence of multidraws for VK_EXT_multi_draw extension */
 /* 'i' must be explicitly declared */
 #define vk_foreach_multi_draw(_draw, _i, _pDrawInfo, _num_draws, _stride) \
-   for (const VkMultiDrawInfoEXT *_draw = (const void*)(_pDrawInfo); \
+   for (const VkMultiDrawInfoEXT *_draw = (const VkMultiDrawInfoEXT*)(_pDrawInfo); \
         (_i) < (_num_draws); \
         (_i)++, (_draw) = (const VkMultiDrawInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
 
@@ -342,19 +349,55 @@ vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
 
 #define STACK_ARRAY_SIZE 8
 
-#ifdef __cplusplus
-#define STACK_ARRAY_ZERO_INIT {}
-#else
-#define STACK_ARRAY_ZERO_INIT {0}
-#endif
-
+/* Sometimes gcc may claim -Wmaybe-uninitialized for the stack array in some
+ * places it can't verify that when size is 0 nobody down the call chain reads
+ * the array. Please don't try to fix it by zero-initializing the array here
+ * since it's used in a lot of different places. An "if (size == 0) return;"
+ * may work for you.
+ */
 #define STACK_ARRAY(type, name, size) \
-   type _stack_##name[STACK_ARRAY_SIZE] = STACK_ARRAY_ZERO_INIT; \
+   type _stack_##name[STACK_ARRAY_SIZE]; \
    type *const name = \
      ((size) <= STACK_ARRAY_SIZE ? _stack_##name : (type *)malloc((size) * sizeof(type)))
 
 #define STACK_ARRAY_FINISH(name) \
    if (name != _stack_##name) free(name)
+
+static inline uint8_t
+vk_index_type_to_bytes(VkIndexType type)
+{
+   switch (type) {
+   case VK_INDEX_TYPE_NONE_KHR:  return 0;
+   case VK_INDEX_TYPE_UINT8_KHR: return 1;
+   case VK_INDEX_TYPE_UINT16:    return 2;
+   case VK_INDEX_TYPE_UINT32:    return 4;
+   default:                      unreachable("Invalid index type");
+   }
+}
+
+static inline uint32_t
+vk_index_to_restart(VkIndexType type)
+{
+   switch (type) {
+   case VK_INDEX_TYPE_UINT8_KHR: return 0xff;
+   case VK_INDEX_TYPE_UINT16:    return 0xffff;
+   case VK_INDEX_TYPE_UINT32:    return 0xffffffff;
+   default:                      unreachable("unexpected index type");
+   }
+}
+
+static inline bool
+vk_descriptor_type_is_dynamic(VkDescriptorType type)
+{
+   switch (type) {
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      return true;
+
+   default:
+      return false;
+   }
+}
 
 #ifdef __cplusplus
 }

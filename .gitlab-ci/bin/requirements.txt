@@ -1,2 +1,0 @@
-colorama==0.4.5
-python-gitlab==3.5.0

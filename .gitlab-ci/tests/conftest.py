@@ -1,11 +1,15 @@
+from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from freezegun import freeze_time
+from hypothesis import settings
 
 from .lava.helpers import generate_testsuite_result, jobs_logs_response
 
+settings.register_profile("ci", max_examples=1000, derandomize=True)
+settings.load_profile("ci")
 
 def pytest_configure(config):
     config.addinivalue_line(
@@ -21,7 +25,7 @@ def mock_sleep():
 
 @pytest.fixture
 def frozen_time(mock_sleep):
-    with freeze_time() as frozen_time:
+    with freeze_time("2024-01-01") as frozen_time:
         yield frozen_time
 
 
@@ -29,7 +33,11 @@ RESULT_GET_TESTJOB_RESULTS = [{"metadata": {"result": "test"}}]
 
 
 @pytest.fixture
-def mock_proxy():
+def mock_proxy(frozen_time):
+    def mock_job_state(jid) -> dict[str, str]:
+        frozen_time.tick(1)
+        return {"job_state": "Running"}
+
     def create_proxy_mock(
         job_results=RESULT_GET_TESTJOB_RESULTS,
         testsuite_results=[generate_testsuite_result()],
@@ -47,6 +55,19 @@ def mock_proxy():
 
         proxy_logs_mock = proxy_mock.scheduler.jobs.logs
         proxy_logs_mock.return_value = jobs_logs_response()
+
+        proxy_job_state = proxy_mock.scheduler.job_state
+        proxy_job_state.side_effect = mock_job_state
+
+        proxy_show_mock = proxy_mock.scheduler.jobs.show
+        proxy_show_mock.return_value = defaultdict(
+            str,
+            {
+                "device_type": "test_device",
+                "device": "test_device-cbg-1",
+                "state": "created",
+            },
+        )
 
         for key, value in kwargs.items():
             setattr(proxy_logs_mock, key, value)

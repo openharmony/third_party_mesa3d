@@ -65,7 +65,7 @@
 #include "lp_bld_arit.h"
 #include "lp_bld_flow.h"
 
-#if defined(PIPE_ARCH_SSE)
+#if DETECT_ARCH_SSE
 #include <xmmintrin.h>
 #endif
 
@@ -137,7 +137,7 @@ lp_build_min_simple(struct lp_build_context *bld,
    else if (type.floating && util_get_cpu_caps()->has_altivec) {
       if (nan_behavior == GALLIVM_NAN_RETURN_NAN_FIRST_NONNAN) {
          debug_printf("%s: altivec doesn't support nan return nan behavior\n",
-                      __FUNCTION__);
+                      __func__);
       }
       if (type.width == 32 && type.length == 4) {
          intrinsic = "llvm.ppc.altivec.vminfp";
@@ -291,7 +291,7 @@ lp_build_max_simple(struct lp_build_context *bld,
    else if (type.floating && util_get_cpu_caps()->has_altivec) {
       if (nan_behavior == GALLIVM_NAN_RETURN_NAN_FIRST_NONNAN) {
          debug_printf("%s: altivec doesn't support nan return nan behavior\n",
-                      __FUNCTION__);
+                      __func__);
       }
       if (type.width == 32 || type.length == 4) {
          intrinsic = "llvm.ppc.altivec.vmaxfp";
@@ -946,12 +946,15 @@ lp_build_mul(struct lp_build_context *bld,
    assert(lp_check_value(type, a));
    assert(lp_check_value(type, b));
 
-   if (a == bld->zero)
-      return bld->zero;
+   if (!type.floating || !type.nan_preserve) {
+      if (a == bld->zero)
+         return bld->zero;
+      if (b == bld->zero)
+         return bld->zero;
+   }
+
    if (a == bld->one)
       return b;
-   if (b == bld->zero)
-      return bld->zero;
    if (b == bld->one)
       return a;
    if (a == bld->undef || b == bld->undef)
@@ -1273,7 +1276,7 @@ lp_build_div(struct lp_build_context *bld,
       return bld->undef;
 
    /* fast rcp is disabled (just uses div), so makes no sense to try that */
-   if (FALSE &&
+   if (false &&
       ((util_get_cpu_caps()->has_sse && type.width == 32 && type.length == 4) ||
        (util_get_cpu_caps()->has_avx && type.width == 32 && type.length == 8)) &&
       type.floating)
@@ -1854,23 +1857,24 @@ lp_build_int_to_float(struct lp_build_context *bld,
 }
 
 
-static boolean
+static bool
 arch_rounding_available(const struct lp_type type)
 {
    if ((util_get_cpu_caps()->has_sse4_1 &&
-       (type.length == 1 || type.width*type.length == 128)) ||
-       (util_get_cpu_caps()->has_avx && type.width*type.length == 256) ||
-       (util_get_cpu_caps()->has_avx512f && type.width*type.length == 512))
-      return TRUE;
+       (type.length == 1 || (LLVM_VERSION_MAJOR >= 8 && type.length == 2) ||
+        type.width * type.length == 128)) ||
+       (util_get_cpu_caps()->has_avx && type.width * type.length == 256) ||
+       (util_get_cpu_caps()->has_avx512f && type.width * type.length == 512))
+      return true;
    else if ((util_get_cpu_caps()->has_altivec &&
             (type.width == 32 && type.length == 4)))
-      return TRUE;
+      return true;
    else if (util_get_cpu_caps()->has_neon)
-      return TRUE;
+      return true;
    else if (util_get_cpu_caps()->family == CPU_S390X)
-      return TRUE;
+      return true;
 
-   return FALSE;
+   return false;
 }
 
 enum lp_build_round_mode
@@ -2055,6 +2059,12 @@ lp_build_trunc(struct lp_build_context *bld,
       trunc = LLVMBuildFPToSI(builder, a, int_vec_type, "");
       res = LLVMBuildSIToFP(builder, trunc, vec_type, "floor.trunc");
 
+      if (type.signed_zero_preserve) {
+         char intrinsic[64];
+         lp_format_intrinsic(intrinsic, 64, "llvm.copysign", bld->vec_type);
+         res = lp_build_intrinsic_binary(builder, intrinsic, vec_type, res, a);
+      }
+
       /* mask out sign bit */
       anosign = lp_build_abs(bld, a);
       /*
@@ -2112,6 +2122,17 @@ lp_build_round(struct lp_build_context *bld,
 
       res = lp_build_iround(bld, a);
       res = LLVMBuildSIToFP(builder, res, vec_type, "");
+
+      if (type.signed_zero_preserve) {
+         LLVMValueRef sign_mask =
+            lp_build_const_int_vec(bld->gallivm, type, 1llu << (type.width - 1));
+         LLVMValueRef a_sign = LLVMBuildBitCast(builder, a, int_vec_type, "");
+         a_sign = LLVMBuildAnd(builder, a_sign, sign_mask, "");
+
+         res = LLVMBuildBitCast(builder, res, int_vec_type, "");
+         res = LLVMBuildOr(builder, res, a_sign, "");
+         res = LLVMBuildBitCast(builder, res, vec_type, "");
+      }
 
       /* mask out sign bit */
       anosign = lp_build_abs(bld, a);
@@ -2644,7 +2665,7 @@ lp_build_rcp(struct lp_build_context *bld,
     * particular uses that require less workarounds.
     */
 
-   if (FALSE && ((util_get_cpu_caps()->has_sse && type.width == 32 && type.length == 4) ||
+   if (false && ((util_get_cpu_caps()->has_sse && type.width == 32 && type.length == 4) ||
          (util_get_cpu_caps()->has_avx && type.width == 32 && type.length == 8))){
       const unsigned num_iterations = 0;
       LLVMValueRef res;
@@ -2760,7 +2781,7 @@ lp_build_rsqrt(struct lp_build_context *bld,
  * unavailable it would result in sqrt/div/mul so obviously
  * much better to just call sqrt, skipping both div and mul).
  */
-boolean
+bool
 lp_build_fast_rsqrt_available(struct lp_type type)
 {
    assert(type.floating);
@@ -2800,7 +2821,7 @@ lp_build_fast_rsqrt(struct lp_build_context *bld,
       return lp_build_intrinsic_unary(builder, intrinsic, bld->vec_type, a);
    }
    else {
-      debug_printf("%s: emulating fast rsqrt with rcp/sqrt\n", __FUNCTION__);
+      debug_printf("%s: emulating fast rsqrt with rcp/sqrt\n", __func__);
    }
    return lp_build_rcp(bld, lp_build_sqrt(bld, a));
 }
@@ -2817,7 +2838,7 @@ lp_build_fast_rsqrt(struct lp_build_context *bld,
 static LLVMValueRef
 lp_build_sin_or_cos(struct lp_build_context *bld,
                     LLVMValueRef a,
-                    boolean cos)
+                    bool cos)
 {
    struct gallivm_state *gallivm = bld->gallivm;
    LLVMBuilderRef b = gallivm->builder;
@@ -3035,7 +3056,7 @@ lp_build_sin(struct lp_build_context *bld,
       return lp_build_intrinsic(builder, intrinsic, vec_type, args, 1, 0);
    }
 
-   return lp_build_sin_or_cos(bld, a, FALSE);
+   return lp_build_sin_or_cos(bld, a, false);
 }
 
 
@@ -3057,7 +3078,7 @@ lp_build_cos(struct lp_build_context *bld,
       return lp_build_intrinsic(builder, intrinsic, vec_type, args, 1, 0);
    }
 
-   return lp_build_sin_or_cos(bld, a, TRUE);
+   return lp_build_sin_or_cos(bld, a, true);
 }
 
 
@@ -3073,10 +3094,10 @@ lp_build_pow(struct lp_build_context *bld,
    if (gallivm_debug & GALLIVM_DEBUG_PERF &&
        LLVMIsConstant(x) && LLVMIsConstant(y)) {
       debug_printf("%s: inefficient/imprecise constant arithmetic\n",
-                   __FUNCTION__);
+                   __func__);
    }
 
-   LLVMValueRef cmp = lp_build_cmp(bld, PIPE_FUNC_EQUAL, x, lp_build_const_vec(bld->gallivm, bld->type, 0.0f));
+   LLVMValueRef cmp = lp_build_cmp_ordered(bld, PIPE_FUNC_EQUAL, x, lp_build_const_vec(bld->gallivm, bld->type, 0.0f));
    LLVMValueRef res = lp_build_exp2(bld, lp_build_mul(bld, lp_build_log2_safe(bld, x), y));
 
    res = lp_build_select(bld, cmp, lp_build_const_vec(bld->gallivm, bld->type, 0.0f), res);
@@ -3157,7 +3178,7 @@ lp_build_polynomial(struct lp_build_context *bld,
    if (gallivm_debug & GALLIVM_DEBUG_PERF &&
        LLVMIsConstant(x)) {
       debug_printf("%s: inefficient/imprecise constant arithmetic\n",
-                   __FUNCTION__);
+                   __func__);
    }
 
    /*
@@ -3253,7 +3274,7 @@ lp_build_exp2(struct lp_build_context *bld,
    if (gallivm_debug & GALLIVM_DEBUG_PERF &&
        LLVMIsConstant(x)) {
       debug_printf("%s: inefficient/imprecise constant arithmetic\n",
-                   __FUNCTION__);
+                   __func__);
    }
 
    assert(type.floating && type.width == 32);
@@ -3408,7 +3429,7 @@ lp_build_log2_approx(struct lp_build_context *bld,
                      LLVMValueRef *p_exp,
                      LLVMValueRef *p_floor_log2,
                      LLVMValueRef *p_log2,
-                     boolean handle_edge_cases)
+                     bool handle_edge_cases)
 {
    LLVMBuilderRef builder = bld->gallivm->builder;
    const struct lp_type type = bld->type;
@@ -3444,7 +3465,7 @@ lp_build_log2_approx(struct lp_build_context *bld,
       if (gallivm_debug & GALLIVM_DEBUG_PERF &&
           LLVMIsConstant(x)) {
          debug_printf("%s: inefficient/imprecise constant arithmetic\n",
-                      __FUNCTION__);
+                      __func__);
       }
 
       assert(type.floating && type.width == 32);
@@ -3535,7 +3556,7 @@ lp_build_log2(struct lp_build_context *bld,
               LLVMValueRef x)
 {
    LLVMValueRef res;
-   lp_build_log2_approx(bld, x, NULL, NULL, &res, FALSE);
+   lp_build_log2_approx(bld, x, NULL, NULL, &res, false);
    return res;
 }
 
@@ -3550,7 +3571,7 @@ lp_build_log2_safe(struct lp_build_context *bld,
                    LLVMValueRef x)
 {
    LLVMValueRef res;
-   lp_build_log2_approx(bld, x, NULL, NULL, &res, TRUE);
+   lp_build_log2_approx(bld, x, NULL, NULL, &res, true);
    return res;
 }
 
@@ -3735,7 +3756,7 @@ lp_build_fpstate_get(struct gallivm_state *gallivm)
 
 void
 lp_build_fpstate_set_denorms_zero(struct gallivm_state *gallivm,
-                                  boolean zero)
+                                  bool zero)
 {
    if (util_get_cpu_caps()->has_sse) {
       /* turn on DAZ (64) | FTZ (32768) = 32832 if available */

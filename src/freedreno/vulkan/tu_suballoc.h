@@ -12,7 +12,7 @@
 
 #include "tu_common.h"
 
-#include "tu_drm.h"
+#include "tu_knl.h"
 
 /* externally-synchronized BO suballocator. */
 struct tu_suballocator
@@ -28,6 +28,8 @@ struct tu_suballocator
 
    /** Optional BO cached for recycling as the next suballoc->bo, instead of having to allocate one. */
    struct tu_bo *cached_bo;
+
+   const char *name;
 };
 
 struct tu_suballoc_bo
@@ -41,13 +43,14 @@ void
 tu_bo_suballocator_init(struct tu_suballocator *suballoc,
                         struct tu_device *dev,
                         uint32_t default_size,
-                        uint32_t flags);
+                        enum tu_bo_alloc_flags flags,
+                        const char *name);
 void
 tu_bo_suballocator_finish(struct tu_suballocator *suballoc);
 
 VkResult
 tu_suballoc_bo_alloc(struct tu_suballoc_bo *suballoc_bo, struct tu_suballocator *suballoc,
-                     uint32_t size, uint32_t align);
+                     uint32_t size, uint32_t alignment);
 
 void *
 tu_suballoc_bo_map(struct tu_suballoc_bo *bo);

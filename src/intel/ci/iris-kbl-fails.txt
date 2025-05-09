@@ -1,17 +1,6 @@
-# https://gitlab.freedesktop.org/mesa/mesa/-/issues/4167
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.10x10,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.10x5,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.10x6,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.10x8,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.12x10,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.12x12,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.4x4,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.5x4,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.6x5,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.6x6,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.8x5,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.8x6,Fail
-dEQP-GLES3.functional.texture.compressed.astc.void_extent_ldr.8x8,Fail
+glx@glx-make-current,Fail
+
+glx@glx-multi-window-single-context,Fail
 
 glx@glx-swap-pixmap-bad,Fail
 
@@ -27,31 +16,14 @@ glx@glx-visuals-stencil -pixmap,Crash
 # X error 167 (GLXBadFBConfig (9)) was generated, but X error 8 was expected.
 glx@glx_arb_create_context_no_error@no error,Fail
 
-# "X error 2 (non-GLX error (-1)) was generated, but X error 8 was expected."
-glx@glx_arb_create_context_robustness@invalid reset notification strategy,Fail
-
 # X error 167 (GLXBadFBConfig (9)) was generated, but GLXBadProfileARB (13) was expected.
 # Version = 1.2
 # X error 167 (GLXBadFBConfig (9)) was generated, but GLXBadProfileARB (13) was expected.
 # Version = 2.1
 # X error 167 (GLXBadFBConfig (9)) was generated, but GLXBadProfileARB (13) was expected.
 # Version = 3.3
-glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
 
-# Xorg has disabled indirect rendering contexts.
-glx@glx_ext_import_context@free context,Fail
-glx@glx_ext_import_context@get context id,Fail
-glx@glx_ext_import_context@get current display,Fail
-glx@glx_ext_import_context@import context- multi process,Fail
-glx@glx_ext_import_context@import context- single process,Fail
-glx@glx_ext_import_context@imported context has same context id,Fail
-glx@glx_ext_import_context@make current- multi process,Fail
-glx@glx_ext_import_context@make current- single process,Fail
-glx@glx_ext_import_context@query context info,Fail
-
-# "Unsupported intrinsic: vec4 32 ssa_56 = intrinsic image_load (ssa_44, ssa_55, ssa_40, ssa_44) (5, 0, 12, 80, 160) /* image_dim=Buf */ /* image_array=false */ /* format=r32g32b32a32_float  */ /* access=80 */ /* dest_type=float32 */
-#  rasterpos: ../src/gallium/auxiliary/gallivm/lp_bld_nir.c:1930: visit_intrinsic: Assertion `0' failed."
-spec@!opengl 1.0@rasterpos,Crash
+spec@!opengl 1.0@rasterpos,Fail
 
 spec@!opengl 1.0@rasterpos@glsl_vs_gs_linked,Fail
 spec@!opengl 1.0@rasterpos@glsl_vs_tes_linked,Fail
@@ -64,12 +36,6 @@ spec@!opengl 1.1@linestipple@Line strip,Fail
 
 # Fail: nothing rendered.
 spec@!opengl 2.0@vs-point_size-zero,Fail
-
-spec@!opengl 3.2@gl-3.2-adj-prims cull-back pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims cull-front pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims line cull-back pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims line cull-front pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims pv-first,Fail
 
 # The textures will be initialized by rendering to them using glDrawPixels.
 # gettextureimage-formats failure: format: GL_RGB10_A2, level 1 at pixel(369, 103)
@@ -109,9 +75,6 @@ spec@egl_chromium_sync_control@conformance,Fail
 # piglit: error: SBC did not change after second SwapBuffers: 0
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test,Fail
 
-# test binary not built
-spec@egl_ext_protected_content@conformance,Fail
-
 # Failed blit src(0,0;1,1) - dst(0,0;2147483647,2147483647)
 # Failed blit src(0,0;40,40) - dst(0,0;134217727,134217727)
 # Failed blit src(0,0;40,40) - dst(0,0;2147483647,2147483647)
@@ -149,3 +112,15 @@ spec@khr_texture_compression_astc@sliced-3d-miptree-gl srgb-fp@sRGB decode full 
 # piglit: error: Mode: ldrs Block: 5x5.
 spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp,Fail
 spec@khr_texture_compression_astc@sliced-3d-miptree-gles srgb-fp@sRGB decode full precision,Fail
+
+spec@!opengl 1.1@line-smooth-coverage,Fail
+spec@!opengl 1.1@line-smooth-stipple,Fail
+
+# fails after Debian bookworm update
+spec@arb_viewport_array@display-list,Fail
+
+# Uprev Piglit in Mesa
+spec@arb_framebuffer_object@execution@msaa-alpha-to-coverage_alpha-to-one,Fail
+spec@arb_framebuffer_object@execution@msaa-alpha-to-coverage_alpha-to-one_write-z,Fail
+spec@arb_framebuffer_object@execution@msaa-alpha-to-coverage,Fail
+

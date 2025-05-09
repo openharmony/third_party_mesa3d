@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 bison_command = []
 if yacc_is_bison
@@ -80,13 +63,8 @@ glcpp = executable(
 )
 
 # Meson can't auto-skip these on cross builds because of the python wrapper
-#
-# TODO: has_exe_wrapper() is deprecated and renamed to can_run_host_binaries()
-# starting with Meson 0.55.0
-#
-# FIXME: these fail on windows due to whitespace differences
-if with_any_opengl and with_tests and meson.has_exe_wrapper() and \
-   host_machine.system() != 'windows'
+if with_any_opengl and with_tests and meson.can_run_host_binaries() and \
+   with_glcpp_tests
   modes = ['unix', 'windows', 'oldmac', 'bizarro']
 
   foreach m : modes
@@ -94,7 +72,7 @@ if with_any_opengl and with_tests and meson.has_exe_wrapper() and \
       'glcpp test (@0@)'.format(m),
       prog_python,
       args : [
-        join_paths(meson.current_source_dir(), 'tests/glcpp_test.py'),
+        files('tests/glcpp_test.py'),
         glcpp, join_paths(meson.current_source_dir(), 'tests'),
         '--@0@'.format(m),
       ],

@@ -29,7 +29,7 @@
  */
 
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/context.h"
 #include "main/framebuffer.h"
 #include "main/hash.h"
@@ -89,9 +89,10 @@ _mesa_init_program(struct gl_context *ctx)
    ctx->Program.ErrorPos = -1;
    ctx->Program.ErrorString = strdup("");
 
+   ctx->VertexProgram._VaryingInputs = VERT_BIT_ALL;
    ctx->VertexProgram.Enabled = GL_FALSE;
    ctx->VertexProgram.PointSizeEnabled =
-      (ctx->API == API_OPENGLES2) ? GL_TRUE : GL_FALSE;
+      _mesa_is_gles2(ctx) ? GL_TRUE : GL_FALSE;
    ctx->VertexProgram.TwoSideEnabled = GL_FALSE;
    _mesa_reference_program(ctx, &ctx->VertexProgram.Current,
                            ctx->Shared->DefaultVertexProgram);
@@ -122,7 +123,7 @@ _mesa_free_program_data(struct gl_context *ctx)
    _mesa_reference_program(ctx, &ctx->VertexProgram.Current, NULL);
    _mesa_delete_program_cache(ctx, ctx->VertexProgram.Cache);
    _mesa_reference_program(ctx, &ctx->FragmentProgram.Current, NULL);
-   _mesa_delete_shader_cache(ctx, ctx->FragmentProgram.Cache);
+   _mesa_delete_program_cache(ctx, ctx->FragmentProgram.Cache);
 
    /* XXX probably move this stuff */
    if (ctx->ATIFragmentShader.Current) {
@@ -250,6 +251,7 @@ _mesa_delete_program(struct gl_context *ctx, struct gl_program *prog)
    st_release_variants(st, prog);
 
    free(prog->serialized_nir);
+   free(prog->base_serialized_nir);
 
    if (prog == &_mesa_DummyProgram)
       return;
@@ -287,7 +289,7 @@ struct gl_program *
 _mesa_lookup_program(struct gl_context *ctx, GLuint id)
 {
    if (id)
-      return (struct gl_program *) _mesa_HashLookup(ctx->Shared->Programs, id);
+      return (struct gl_program *) _mesa_HashLookup(&ctx->Shared->Programs, id);
    else
       return NULL;
 }
@@ -411,6 +413,9 @@ _mesa_add_separate_state_parameters(struct gl_program *prog,
                                     struct gl_program_parameter_list *state_params)
 {
    unsigned num_state_params = state_params->NumParameters;
+
+   if (num_state_params == 0)
+      return;
 
    /* All state parameters should be vec4s. */
    for (unsigned i = 0; i < num_state_params; i++) {

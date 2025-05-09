@@ -133,7 +133,7 @@ OpenAdapter10(__inout D3D10DDIARG_OPENADAPTER *pOpenData)   // IN
    default:
       if (0) {
          DebugPrintf("%s: unsupported interface version 0x%08x\n",
-                     __FUNCTION__, pOpenData->Interface);
+                     __func__, pOpenData->Interface);
       }
       return E_FAIL;
    }
@@ -217,9 +217,9 @@ GetCaps(D3D10DDI_HADAPTER hAdapter,
 /*
  * ----------------------------------------------------------------------
  *
- * OpenAdapter10 --
+ * OpenAdapter10_2 --
  *
- *    The OpenAdapter10 function creates a graphics adapter object
+ *    The OpenAdapter10_2 function creates a graphics adapter object
  *    that is referenced in subsequent calls.
  *
  * ----------------------------------------------------------------------

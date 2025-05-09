@@ -46,6 +46,13 @@
 
 #define ROGUE_MAX_INSTR_BYTES 32U
 
+#define ROGUE_ICACHE_ALIGN 8U
+
+#define ROGUE_MAX_ALU_INPUTS 6U
+#define ROGUE_ALU_INPUT_GROUP_SIZE (ROGUE_MAX_ALU_INPUTS / 2)
+#define ROGUE_MAX_ALU_OUTPUTS 2U
+#define ROGUE_MAX_ALU_INTERNAL_SOURCES 6U
+
 /* MList entry stride in bytes */
 #define ROGUE_MLIST_ENTRY_STRIDE 4U
 
@@ -84,6 +91,11 @@
 /* Number of PBESTATE_REG_WORD values that need setting up. */
 #define ROGUE_NUM_PBESTATE_REG_WORDS 3U
 
+/* Number of PBESTATE_REG_WORD used in transfer.
+ * The last word is not used.
+ */
+#define ROGUE_NUM_PBESTATE_REG_WORDS_FOR_TRANSFER 2U
+
 /* Number of PBESTATE_STATE_WORD values that need setting up. */
 #define ROGUE_NUM_PBESTATE_STATE_WORDS 2U
 
@@ -92,8 +104,6 @@
 
 /* Number of TEXSTATE_SAMPLER state words that need setting up. */
 #define ROGUE_NUM_TEXSTATE_SAMPLER_WORDS 2U
-
-#define ROGUE_MAX_RENDER_TARGETS 2048U
 
 /* 12 dwords reserved for shared register management. The first dword is the
  * number of shared register blocks to reload. Should be a multiple of 4 dwords,
@@ -126,5 +136,35 @@
  * task will be able to run and allocations will be freed.
  */
 #define ROGUE_MAX_OVERLAPPED_PIXEL_TASK_INSTANCES 7U
+
+/* Size of the image state in 64-bit units. */
+#define ROGUE_MAXIMUM_IMAGE_STATE_SIZE_IN_ULONGLONGS 2U
+
+/* Size of the image state in dwords. The last 64-bit word is optional for
+ * non-YUV textures.
+ */
+#define ROGUE_MAXIMUM_IMAGE_STATE_SIZE             \
+   (ROGUE_MAXIMUM_IMAGE_STATE_SIZE_IN_ULONGLONGS * \
+    (sizeof(uint64_t) / sizeof(uint32_t)))
+
+#define PVR_NUM_PBE_EMIT_REGS 8U
+
+#define ROGUE_USRM_GRANULARITY_IN_REGISTERS 4U
+
+#define ROGUE_RESERVED_USRM_LINES 2U
+
+#define ROGUE_USC_NUM_UNIFIED_STORE_BANKS 8U
+
+#define ROGUE_PDS_US_REGISTER_ALLOCATION_GRANULARITY 8U
+
+#define ROGUE_PDS_US_TEMP_ALLOCATION_GRANULARITY \
+   ROGUE_PDS_US_REGISTER_ALLOCATION_GRANULARITY
+
+#define ROGUE_USRM_LINE_SIZE 16U
+
+#define ROGUE_USRM_LINE_SIZE_PER_INSTANCE \
+   (ROGUE_PDS_US_TEMP_ALLOCATION_GRANULARITY * ROGUE_USRM_LINE_SIZE)
+
+#define ROGUE_USC_COEFFICIENT_SET_SIZE 4U
 
 #endif /* ROGUE_HW_DEFS_H */

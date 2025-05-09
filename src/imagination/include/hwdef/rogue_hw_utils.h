@@ -102,31 +102,84 @@ rogue_get_isp_samples_per_tile_xy(const struct pvr_device_info *dev_info,
    }
 }
 
-static inline uint64_t
-rogue_get_min_free_list_size(const struct pvr_device_info *dev_info)
+static void rogue_get_isp_scale_xy_from_samples(const uint32_t samples,
+                                                uint32_t *const x_scale_out,
+                                                uint32_t *const y_scale_out)
 {
-   uint64_t min_num_pages;
-
-   if (PVR_HAS_FEATURE(dev_info, roguexe)) {
-      if (PVR_HAS_QUIRK(dev_info, 66011))
-         min_num_pages = 40U;
-      else
-         min_num_pages = 25U;
-   } else {
-      min_num_pages = 50U;
+   switch (samples) {
+   case 1:
+      *x_scale_out = 1;
+      *y_scale_out = 1;
+      break;
+   case 2:
+      *x_scale_out = 1;
+      *y_scale_out = 2;
+      break;
+   case 4:
+      *x_scale_out = 2;
+      *y_scale_out = 2;
+      break;
+   case 8:
+      *x_scale_out = 2;
+      *y_scale_out = 4;
+      break;
+   default:
+      unreachable("Unsupported number of samples");
    }
-
-   return min_num_pages << ROGUE_BIF_PM_PHYSICAL_PAGE_SHIFT;
 }
 
-static inline uint32_t
-rogue_get_max_num_vdm_pds_tasks(const struct pvr_device_info *dev_info)
+static inline void
+rogue_get_isp_num_tiles_xy(const struct pvr_device_info *dev_info,
+                           uint32_t samples,
+                           uint32_t width,
+                           uint32_t height,
+                           uint32_t *const x_out,
+                           uint32_t *const y_out)
 {
-   /* Default value based on the minimum value found in all existing cores. */
-   uint32_t max_usc_tasks = PVR_GET_FEATURE_VALUE(dev_info, max_usc_tasks, 24U);
+   uint32_t tile_samples_x;
+   uint32_t tile_samples_y;
+   uint32_t scale_x;
+   uint32_t scale_y;
 
-   /* FIXME: Where does the 9 come from? */
-   return max_usc_tasks - 9;
+   rogue_get_isp_samples_per_tile_xy(dev_info,
+                                     samples,
+                                     &tile_samples_x,
+                                     &tile_samples_y);
+
+   rogue_get_isp_scale_xy_from_samples(samples, &scale_x, &scale_y);
+
+   *x_out = DIV_ROUND_UP(width * scale_x, tile_samples_x);
+   *y_out = DIV_ROUND_UP(height * scale_y, tile_samples_y);
+
+   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)) {
+      assert(PVR_GET_FEATURE_VALUE(dev_info,
+                                   simple_parameter_format_version,
+                                   0U) == 2U);
+      /* Align to a 2x2 tile block. */
+      *x_out = ALIGN_POT(*x_out, 2);
+      *y_out = ALIGN_POT(*y_out, 2);
+   }
+}
+
+static inline void
+rogue_get_zls_tile_size_xy(const struct pvr_device_info *dev_info,
+                           uint32_t *const x_out,
+                           uint32_t *const y_out)
+{
+   uint32_t version = 0;
+   bool has_version;
+
+   has_version =
+      !PVR_FEATURE_VALUE(dev_info, simple_parameter_format_version, &version);
+
+   *x_out = PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 0U);
+   *y_out = PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 0U);
+
+   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) &&
+       has_version && version == 2) {
+      *x_out *= 2;
+      *y_out *= 2;
+   }
 }
 
 static inline uint32_t
@@ -228,17 +281,27 @@ static inline uint32_t
 rogue_max_compute_shared_registers(const struct pvr_device_info *dev_info)
 {
    if (PVR_HAS_FEATURE(dev_info, compute))
-      return 2U * 1024U;
+      return 1024U;
 
    return 0U;
+}
+
+static inline uint32_t
+rogue_get_max_num_cores(const struct pvr_device_info *dev_info)
+{
+   if (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
+       PVR_HAS_FEATURE(dev_info, xpu_max_slaves)) {
+      return PVR_GET_FEATURE_VALUE(dev_info, xpu_max_slaves, 0U) + 1U;
+   }
+
+   return 1U;
 }
 
 static inline uint32_t
 rogue_get_cdm_context_resume_buffer_size(const struct pvr_device_info *dev_info)
 {
    if (PVR_HAS_FEATURE(dev_info, gpu_multicore_support)) {
-      const uint32_t max_num_cores =
-         PVR_GET_FEATURE_VALUE(dev_info, xpu_max_slaves, 0U) + 1U;
+      const uint32_t max_num_cores = rogue_get_max_num_cores(dev_info);
       const uint32_t cache_line_size = rogue_get_slc_cache_line_size(dev_info);
       const uint32_t cdm_context_resume_buffer_stride =
          ALIGN_POT(ROGUE_LLS_CDM_CONTEXT_RESUME_BUFFER_SIZE, cache_line_size);
@@ -274,4 +337,134 @@ rogue_get_compute_max_work_group_size(const struct pvr_device_info *dev_info)
    return ROGUE_MAX_INSTANCES_PER_TASK * max_tasks_per_usc;
 }
 
+/* Don't use this directly. Use the x and y define macros. */
+static inline uint32_t
+__rogue_get_param_vf_max(const struct pvr_device_info *dev_info)
+{
+   return (rogue_get_render_size_max(dev_info) * 3 / 2) - 1;
+}
+
+#define rogue_get_param_vf_max_x(dev_info) __rogue_get_param_vf_max(dev_info)
+#define rogue_get_param_vf_max_y(dev_info) __rogue_get_param_vf_max(dev_info)
+
+static inline uint32_t
+rogue_get_max_total_instances(const struct pvr_device_info *dev_info)
+{
+   const uint32_t usc_slots = PVR_GET_FEATURE_VALUE(dev_info, usc_slots, 0U);
+   assert(usc_slots);
+
+   return usc_slots * ROGUE_MAX_INSTANCES_PER_TASK;
+}
+
+static inline uint32_t rogue_get_unified_store_size_per_instance(
+   const struct pvr_device_info *dev_info)
+{
+   const uint32_t unified_store_depth =
+      PVR_GET_FEATURE_VALUE(dev_info, unified_store_depth, 0U);
+   assert(unified_store_depth);
+
+   return unified_store_depth * ROGUE_USC_NUM_UNIFIED_STORE_BANKS;
+}
+
+static inline uint32_t
+rogue_get_min_attr_in_usrm_lines(const struct pvr_device_info *dev_info)
+{
+   const uint32_t unified_store_size_per_instance =
+      rogue_get_unified_store_size_per_instance(dev_info);
+   assert(unified_store_size_per_instance);
+
+   return (unified_store_size_per_instance /
+           ROGUE_USRM_LINE_SIZE_PER_INSTANCE) -
+          ROGUE_RESERVED_USRM_LINES;
+}
+
+static inline uint32_t
+rogue_get_parallel_instances(const struct pvr_device_info *dev_info)
+{
+   return ROGUE_MAX_INSTANCES_PER_TASK / 2;
+}
+
+static inline uint32_t rogue_get_unified_store_temps_per_instance(
+   const struct pvr_device_info *dev_info)
+{
+   return rogue_get_min_attr_in_usrm_lines(dev_info) *
+          ROGUE_USRM_LINE_SIZE_PER_INSTANCE;
+}
+
+static inline uint32_t
+rogue_get_unified_store_total_temps(const struct pvr_device_info *dev_info)
+{
+   return rogue_get_unified_store_temps_per_instance(dev_info) *
+          rogue_get_parallel_instances(dev_info);
+}
+
+static inline uint32_t
+rogue_get_instance_groups_per_slot(const struct pvr_device_info *dev_info)
+{
+   return ROGUE_MAX_INSTANCES_PER_TASK / rogue_get_parallel_instances(dev_info);
+}
+
+static inline uint32_t
+rogue_get_optimal_temps(const struct pvr_device_info *dev_info)
+{
+   const uint32_t usc_slots = PVR_GET_FEATURE_VALUE(dev_info, usc_slots, 0U);
+   assert(usc_slots);
+
+   uint32_t max_temps_full_slot_use =
+      rogue_get_unified_store_temps_per_instance(dev_info) /
+      (rogue_get_instance_groups_per_slot(dev_info) * usc_slots);
+
+   max_temps_full_slot_use &= ~(ROGUE_PDS_US_TEMP_ALLOCATION_GRANULARITY - 1);
+
+   return MAX2(max_temps_full_slot_use, 24U);
+}
+
+static inline uint32_t rogue_get_temps(const struct pvr_device_info *dev_info)
+{
+   uint32_t temps = rogue_get_unified_store_temps_per_instance(dev_info) / 2;
+
+   return MIN2(temps, 248U);
+}
+
+static inline uint32_t
+rogue_max_wg_temps(const struct pvr_device_info *dev_info,
+                   unsigned temps,
+                   unsigned wg_size,
+                   bool has_barrier)
+{
+   assert(wg_size <= rogue_get_max_total_instances(dev_info));
+   if (!wg_size)
+      return rogue_get_compute_max_work_group_size(dev_info);
+
+   if (wg_size > ROGUE_MAX_INSTANCES_PER_TASK && has_barrier) {
+      /* Number of slots allocated for each workgroup. */
+      unsigned slots_per_wg =
+         DIV_ROUND_UP(wg_size, ROGUE_MAX_INSTANCES_PER_TASK);
+
+      /* Lines of USRM lines available for each slot
+       * (+1 for fragmentation / coarse checking).
+       */
+      unsigned lines_per_slot =
+         rogue_get_min_attr_in_usrm_lines(dev_info) / (slots_per_wg + 1);
+
+      unsigned max_allocs;
+      if (lines_per_slot != 0) {
+         /* Convert lines to USRM allocs. */
+         max_allocs = lines_per_slot * ROGUE_USRM_LINE_SIZE;
+      } else {
+         max_allocs = (rogue_get_min_attr_in_usrm_lines(dev_info) *
+                       ROGUE_USRM_LINE_SIZE) /
+                      (slots_per_wg + 1);
+      }
+
+      /* Convert USRM allocs to temporary registers. */
+      unsigned max_temps_for_barrier =
+         max_allocs * ROGUE_USRM_GRANULARITY_IN_REGISTERS;
+
+      /* Clamp to provided limit */
+      temps = MIN2(temps, max_temps_for_barrier);
+   }
+
+   return temps;
+}
 #endif /* ROGUE_HW_UTILS_H */

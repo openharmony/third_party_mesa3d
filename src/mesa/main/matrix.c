@@ -35,7 +35,7 @@
  */
 
 
-#include "glheader.h"
+#include "util/glheader.h"
 
 #include "context.h"
 #include "enums.h"
@@ -81,7 +81,7 @@ get_named_matrix_stack(struct gl_context *ctx, GLenum mode, const char* caller)
    case GL_MATRIX5_ARB:
    case GL_MATRIX6_ARB:
    case GL_MATRIX7_ARB:
-      if (ctx->API == API_OPENGL_COMPAT
+      if (_mesa_is_desktop_gl_compat(ctx)
           && (ctx->Extensions.ARB_vertex_program ||
               ctx->Extensions.ARB_fragment_program)) {
          const GLuint m = mode - GL_MATRIX0_ARB;
@@ -122,6 +122,7 @@ static void matrix_frustum(struct gl_matrix_stack* stack,
                         (GLfloat) left, (GLfloat) right,
                         (GLfloat) bottom, (GLfloat) top,
                         (GLfloat) nearval, (GLfloat) farval);
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -203,6 +204,7 @@ matrix_ortho(struct gl_matrix_stack* stack,
                        (GLfloat) left, (GLfloat) right,
              (GLfloat) bottom, (GLfloat) top,
              (GLfloat) nearval, (GLfloat) farval );
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -309,8 +311,9 @@ push_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack,
    if (stack->Depth + 1 >= stack->StackSize) {
       unsigned new_stack_size = stack->StackSize * 2;
       unsigned i;
-      GLmatrix *new_stack = realloc(stack->Stack,
-                                    sizeof(*new_stack) * new_stack_size);
+      GLmatrix *new_stack =
+         os_realloc_aligned(stack->Stack, stack->StackSize * sizeof(GLmatrix),
+                            new_stack_size * sizeof(GLmatrix), 16);
 
       if (!new_stack) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
@@ -328,6 +331,7 @@ push_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack,
                           &stack->Stack[stack->Depth]);
    stack->Depth++;
    stack->Top = &(stack->Stack[stack->Depth]);
+   stack->ChangedSincePush = false;
 }
 
 
@@ -377,13 +381,15 @@ pop_matrix( struct gl_context *ctx, struct gl_matrix_stack *stack )
    /* If the popped matrix is the same as the current one, treat it as
     * a no-op change.
     */
-   if (memcmp(stack->Top, &stack->Stack[stack->Depth],
+   if (stack->ChangedSincePush &&
+       memcmp(stack->Top, &stack->Stack[stack->Depth],
               sizeof(GLmatrix))) {
       FLUSH_VERTICES(ctx, 0, 0);
       ctx->NewState |= stack->DirtyFlag;
    }
 
    stack->Top = &(stack->Stack[stack->Depth]);
+   stack->ChangedSincePush = true;
    return GL_TRUE;
 }
 
@@ -450,6 +456,7 @@ _mesa_load_identity_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack
    FLUSH_VERTICES(ctx, 0, 0);
 
    _math_matrix_set_identity(stack->Top);
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -495,6 +502,7 @@ _mesa_load_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack,
    if (memcmp(m, stack->Top->m, 16 * sizeof(GLfloat)) != 0) {
       FLUSH_VERTICES(ctx, 0, 0);
       _math_matrix_loadf(stack->Top, m);
+      stack->ChangedSincePush = true;
       ctx->NewState |= stack->DirtyFlag;
    }
 }
@@ -562,12 +570,11 @@ static void
 matrix_mult(struct gl_matrix_stack *stack, const GLfloat *m, const char* caller)
 {
    GET_CURRENT_CONTEXT(ctx);
-   if (!m ||
-       (m[0]  == 1 && m[1]  == 0 && m[2]  == 0 && m[3]  == 0 &&
-        m[4]  == 0 && m[5]  == 1 && m[6]  == 0 && m[7]  == 0 &&
-        m[8]  == 0 && m[9]  == 0 && m[10] == 1 && m[11] == 0 &&
-        m[12] == 0 && m[13] == 0 && m[14] == 0 && m[15] == 1))
+
+   /* glthread filters out identity matrices, so don't do it again. */
+   if (!m || (!ctx->GLThread.enabled && _mesa_matrix_is_identity(m)))
       return;
+
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx,
           "%s(%f %f %f %f, %f %f %f %f, %f %f %f %f, %f %f %f %f\n",
@@ -579,6 +586,7 @@ matrix_mult(struct gl_matrix_stack *stack, const GLfloat *m, const char* caller)
 
    FLUSH_VERTICES(ctx, 0, 0);
    _math_matrix_mul_floats(stack->Top, m);
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -624,6 +632,7 @@ matrix_rotate(struct gl_matrix_stack *stack, GLfloat angle,
    FLUSH_VERTICES(ctx, 0, 0);
    if (angle != 0.0F) {
       _math_matrix_rotate(stack->Top, angle, x, y, z);
+      stack->ChangedSincePush = true;
       ctx->NewState |=stack->DirtyFlag;
    }
 }
@@ -684,6 +693,7 @@ _mesa_Scalef( GLfloat x, GLfloat y, GLfloat z )
 
    FLUSH_VERTICES(ctx, 0, 0);
    _math_matrix_scale( ctx->CurrentStack->Top, x, y, z);
+   ctx->CurrentStack->ChangedSincePush = true;
    ctx->NewState |= ctx->CurrentStack->DirtyFlag;
 }
 
@@ -700,6 +710,7 @@ _mesa_MatrixScalefEXT( GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z )
 
    FLUSH_VERTICES(ctx, 0, 0);
    _math_matrix_scale(stack->Top, x, y, z);
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -724,6 +735,7 @@ _mesa_Translatef( GLfloat x, GLfloat y, GLfloat z )
 
    FLUSH_VERTICES(ctx, 0, 0);
    _math_matrix_translate( ctx->CurrentStack->Top, x, y, z);
+   ctx->CurrentStack->ChangedSincePush = true;
    ctx->NewState |= ctx->CurrentStack->DirtyFlag;
 }
 
@@ -739,6 +751,7 @@ _mesa_MatrixTranslatefEXT( GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z )
 
    FLUSH_VERTICES(ctx, 0, 0);
    _math_matrix_translate(stack->Top, x, y, z);
+   stack->ChangedSincePush = true;
    ctx->NewState |= stack->DirtyFlag;
 }
 
@@ -996,10 +1009,11 @@ init_matrix_stack(struct gl_matrix_stack *stack,
    stack->MaxDepth = maxDepth;
    stack->DirtyFlag = dirtyFlag;
    /* The stack will be dynamically resized at glPushMatrix() time */
-   stack->Stack = calloc(1, sizeof(GLmatrix));
+   stack->Stack = os_malloc_aligned(sizeof(GLmatrix), 16);
    stack->StackSize = 1;
    _math_matrix_ctr(&stack->Stack[0]);
    stack->Top = stack->Stack;
+   stack->ChangedSincePush = false;
 }
 
 /**
@@ -1010,7 +1024,7 @@ init_matrix_stack(struct gl_matrix_stack *stack,
 static void
 free_matrix_stack( struct gl_matrix_stack *stack )
 {
-   free(stack->Stack);
+   os_free_aligned(stack->Stack);
    stack->Stack = stack->Top = NULL;
    stack->StackSize = 0;
 }

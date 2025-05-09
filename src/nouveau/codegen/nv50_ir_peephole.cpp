@@ -33,7 +33,7 @@ namespace nv50_ir {
 bool
 Instruction::isNop() const
 {
-   if (op == OP_PHI || op == OP_SPLIT || op == OP_MERGE || op == OP_CONSTRAINT)
+   if (op == OP_PHI || op == OP_SPLIT || op == OP_MERGE)
       return true;
    if (terminator || join) // XXX: should terminator imply flow ?
       return false;
@@ -66,8 +66,7 @@ bool Instruction::isDead() const
    if (op == OP_STORE ||
        op == OP_EXPORT ||
        op == OP_ATOM ||
-       op == OP_SUSTB || op == OP_SUSTP || op == OP_SUREDP || op == OP_SUREDB ||
-       op == OP_WRSV)
+       op == OP_SUSTB || op == OP_SUSTP || op == OP_SUREDP || op == OP_SUREDB)
       return false;
 
    for (int d = 0; defExists(d); ++d)
@@ -137,6 +136,8 @@ MergeSplits::visit(BasicBlock *bb)
          continue;
       si = i->getSrc(0)->getInsn();
       if (si->op != OP_SPLIT || si != i->getSrc(1)->getInsn())
+         continue;
+      if (i->getSrc(0) != si->getDef(0) || i->getSrc(1) != si->getDef(1))
          continue;
       i->def(0).replace(si->getSrc(0), false);
       delete_Instruction(prog, i);
@@ -636,14 +637,6 @@ ConstantFolding::expr(Instruction *i,
          return;
       }
       break;
-   case OP_POW:
-      switch (i->dType) {
-      case TYPE_F32: res.data.f32 = pow(a->data.f32, b->data.f32); break;
-      case TYPE_F64: res.data.f64 = pow(a->data.f64, b->data.f64); break;
-      default:
-         return;
-      }
-      break;
    case OP_MAX:
       switch (i->dType) {
       case TYPE_F32: res.data.f32 = MAX2(a->data.f32, b->data.f32); break;
@@ -753,7 +746,8 @@ ConstantFolding::expr(Instruction *i,
    switch (i->op) {
    case OP_MAD:
    case OP_FMA: {
-      ImmediateValue src0, src1 = *i->getSrc(0)->asImm();
+      ImmediateValue src0, src1;
+      src1 = *i->getSrc(0)->asImm();
 
       // Move the immediate into position 1, where we know it might be
       // emittable. However it might not be anyways, as there may be other
@@ -1070,7 +1064,8 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
          Value *def = i->getDef(d);
          assert(def->reg.size == size);
 
-         newi = bld.mkMov(def, bld.mkImm((uint32_t)(val & mask)), TYPE_U32);
+         newi = bld.mkMov(def, bld.mkImm((uint32_t)(val & mask)),
+                          typeOfSize(size));
          val >>= bitsize;
       }
       delete_Instruction(prog, i);
@@ -1643,8 +1638,8 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
       switch(i->dType) {
       CASE(TYPE_U16, u16, 0, UINT16_MAX, 0, UINT16_MAX, 0, UINT16_MAX);
       CASE(TYPE_S16, s16, INT16_MIN, INT16_MAX, INT16_MIN, INT16_MAX, 0, INT16_MAX);
-      CASE(TYPE_U32, u32, 0, UINT32_MAX, 0, INT32_MAX, 0, UINT32_MAX);
-      CASE(TYPE_S32, s32, INT32_MIN, INT32_MAX, INT32_MIN, INT32_MAX, 0, INT32_MAX);
+      CASE(TYPE_U32, u32, 0, (float)UINT32_MAX, 0, INT32_MAX, 0, UINT32_MAX);
+      CASE(TYPE_S32, s32, (float)INT32_MIN, (float)INT32_MAX, INT32_MIN, INT32_MAX, 0, INT32_MAX);
       case TYPE_F32:
          switch (i->sType) {
          case TYPE_F64:
@@ -3173,6 +3168,12 @@ MemoryOpt::runOpt(BasicBlock *bb)
       bool isLoad = true;
       next = ldst->next;
 
+      // TODO: Handle combining sub 4-bytes loads/stores.
+      if (ldst->op == OP_STORE && typeSizeof(ldst->dType) < 4) {
+         purgeRecords(ldst, ldst->src(0).getFile());
+         continue;
+      }
+
       if (ldst->op == OP_LOAD || ldst->op == OP_VFETCH) {
          if (ldst->subOp == NV50_IR_SUBOP_LOAD_LOCKED) {
             purgeRecords(ldst, ldst->src(0).getFile());
@@ -3220,14 +3221,19 @@ MemoryOpt::runOpt(BasicBlock *bb)
          }
          continue;
       }
+
+      DataFile file = ldst->src(0).getFile();
+      if (file != FILE_MEMORY_CONST &&
+          file != FILE_SHADER_INPUT &&
+          file != FILE_SHADER_OUTPUT)
+         continue;
+
       if (ldst->getPredicate()) // TODO: handle predicated ld/st
          continue;
       if (ldst->perPatch) // TODO: create separate per-patch lists
          continue;
 
       if (isLoad) {
-         DataFile file = ldst->src(0).getFile();
-
          // if ld l[]/g[] look for previous store to eliminate the reload
          if (file == FILE_MEMORY_GLOBAL || file == FILE_MEMORY_LOCAL) {
             // TODO: shared memory ?
@@ -4085,7 +4091,7 @@ Program::optimizeSSA(int level)
    RUN_PASS(2, LateAlgebraicOpt, run);
    RUN_PASS(1, LoadPropagation, run);
    RUN_PASS(1, IndirectPropagation, run);
-   RUN_PASS(2, MemoryOpt, run);
+   RUN_PASS(4, MemoryOpt, run);
    RUN_PASS(2, LocalCSE, run);
    RUN_PASS(0, DeadCodeElim, buryAll);
 

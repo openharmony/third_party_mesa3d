@@ -25,7 +25,7 @@
 #include "d3d12_public.h"
 #include "d3d12_debug.h"
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_dl.h"
 
@@ -55,7 +55,7 @@ get_dxgi_factory()
    }
 
    UINT flags = 0;
-#ifndef DEBUG
+#if !MESA_DEBUG
    if (d3d12_debug & D3D12_DEBUG_DEBUG_LAYER)
 #endif
       flags |= DXGI_CREATE_FACTORY_DEBUG;
@@ -81,7 +81,7 @@ choose_dxgi_adapter(IDXGIFactory4 *factory, LUID *adapter)
       debug_printf("D3D12: requested adapter missing, falling back to auto-detection...\n");
    }
 
-   bool want_warp = env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false);
+   bool want_warp = debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false);
    if (want_warp) {
       if (SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&ret))))
          return ret;
@@ -120,7 +120,12 @@ dxgi_get_memory_info(struct d3d12_screen *screen, struct d3d12_memory_info *outp
    DXGI_QUERY_VIDEO_MEMORY_INFO local_info, nonlocal_info;
    dxgi_screen->adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local_info);
    dxgi_screen->adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonlocal_info);
+
+   output->budget_local = local_info.Budget;
+   output->budget_nonlocal = nonlocal_info.Budget;
    output->budget = local_info.Budget + nonlocal_info.Budget;
+   output->usage_local = local_info.CurrentUsage;
+   output->usage_nonlocal = nonlocal_info.CurrentUsage;
    output->usage = local_info.CurrentUsage + nonlocal_info.CurrentUsage;
 }
 
@@ -179,11 +184,12 @@ d3d12_init_dxgi_screen(struct d3d12_screen *dscreen)
    screen->base.device_id = adapter_desc.DeviceId;
    screen->base.subsys_id = adapter_desc.SubSysId;
    screen->base.revision = adapter_desc.Revision;
+   screen->base.memory_device_size_megabytes = adapter_desc.DedicatedVideoMemory >> 20;
    // Note: memory sizes in bytes, but stored in size_t, so may be capped at 4GB.
    // In that case, adding before conversion to MB can easily overflow.
-   screen->base.memory_size_megabytes = (adapter_desc.DedicatedVideoMemory >> 20) +
-                                        (adapter_desc.DedicatedSystemMemory >> 20) +
-                                        (adapter_desc.SharedSystemMemory >> 20);
+   screen->base.memory_system_size_megabytes =
+      (adapter_desc.DedicatedSystemMemory >> 20) + (adapter_desc.SharedSystemMemory >> 20);
+
    wcsncpy(screen->description, adapter_desc.Description, ARRAY_SIZE(screen->description));
    screen->base.base.get_name = dxgi_get_name;
    screen->base.get_memory_info = dxgi_get_memory_info;
@@ -203,7 +209,10 @@ d3d12_create_dxgi_screen(struct sw_winsys *winsys, LUID *adapter_luid)
    if (!screen)
       return nullptr;
 
-   d3d12_init_screen_base(&screen->base, winsys, adapter_luid);
+   if (!d3d12_init_screen_base(&screen->base, winsys, adapter_luid)) {
+      d3d12_destroy_screen(&screen->base);
+      return nullptr;
+   }
    screen->base.base.destroy = d3d12_destroy_dxgi_screen;
    screen->base.init = d3d12_init_dxgi_screen;
    screen->base.deinit = d3d12_deinit_dxgi_screen;

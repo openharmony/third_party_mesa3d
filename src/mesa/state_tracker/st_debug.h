@@ -29,7 +29,7 @@
 #ifndef ST_DEBUG_H
 #define ST_DEBUG_H
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "util/u_debug.h"
 
 struct st_context;
@@ -41,6 +41,7 @@ struct st_context;
 #define DEBUG_WIREFRAME       BITFIELD_BIT(4)
 #define DEBUG_GREMEDY         BITFIELD_BIT(5)
 #define DEBUG_NOREADPIXCACHE  BITFIELD_BIT(6)
+#define DEBUG_PRINT_XFB       BITFIELD_BIT(7)
 
 extern int ST_DEBUG;
 

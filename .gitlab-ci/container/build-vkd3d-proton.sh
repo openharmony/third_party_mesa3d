@@ -1,18 +1,23 @@
 #!/bin/bash
 
+# When changing this file, you need to bump the following
+# .gitlab-ci/image-tags.yml tags:
+# DEBIAN_TEST_VK_TAG
+# KERNEL_ROOTFS_TAG
 set -ex
 
-VKD3D_PROTON_COMMIT="5b73139f182d86cd58a757e4b5f0d4cfad96d319"
+uncollapsed_section_start vkd3d-proton "Building vkd3d-proton"
+
+VKD3D_PROTON_COMMIT="b121e6d746341e0aaba7663e3d85f3194e8e20e1"
 
 VKD3D_PROTON_DST_DIR="/vkd3d-proton-tests"
 VKD3D_PROTON_SRC_DIR="/vkd3d-proton-src"
-VKD3D_PROTON_BUILD_DIR="/vkd3d-proton-$VKD3D_PROTON_VERSION"
+VKD3D_PROTON_BUILD_DIR="/vkd3d-proton-build"
 
 function build_arch {
   local arch="$1"
-  shift
 
-  meson "$@"                               \
+  meson setup                              \
         -Denable_tests=true                \
         --buildtype release                \
         --prefix "$VKD3D_PROTON_DST_DIR"   \
@@ -33,7 +38,14 @@ git submodule update --init --recursive
 git submodule update --recursive
 build_arch 64
 build_arch 86
+mkdir "$VKD3D_PROTON_DST_DIR/tests"
+cp \
+  "tests/test-runner.sh" \
+  "tests/d3d12_tests.h" \
+  "$VKD3D_PROTON_DST_DIR/tests/"
 popd
 
 rm -rf "$VKD3D_PROTON_BUILD_DIR"
 rm -rf "$VKD3D_PROTON_SRC_DIR"
+
+section_end vkd3d-proton

@@ -35,7 +35,6 @@ struct lima_screen;
 struct panfrost_minmax_cache;
 
 struct lima_resource_level {
-   uint32_t width;
    uint32_t stride;
    uint32_t offset;
    uint32_t layer_stride;
@@ -94,6 +93,9 @@ lima_transfer(struct pipe_transfer *trans)
 
 void
 lima_resource_screen_init(struct lima_screen *screen);
+
+void
+lima_resource_screen_destroy(struct lima_screen *screen);
 
 void
 lima_resource_context_init(struct lima_context *ctx);

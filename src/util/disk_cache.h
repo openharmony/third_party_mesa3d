@@ -45,6 +45,7 @@ extern "C" {
 
 #define CACHE_DIR_NAME "mesa_shader_cache"
 #define CACHE_DIR_NAME_SF "mesa_shader_cache_sf"
+#define CACHE_DIR_NAME_DB "mesa_shader_cache_db"
 
 typedef uint8_t cache_key[CACHE_KEY_SIZE];
 
@@ -77,21 +78,6 @@ struct cache_item_metadata {
 };
 
 struct disk_cache;
-
-static inline char *
-disk_cache_format_hex_id(char *buf, const uint8_t *hex_id, unsigned size)
-{
-   static const char hex_digits[] = "0123456789abcdef";
-   unsigned i;
-
-   for (i = 0; i < size; i += 2) {
-      buf[i] = hex_digits[hex_id[i >> 1] >> 4];
-      buf[i + 1] = hex_digits[hex_id[i >> 1] & 0x0f];
-   }
-   buf[i] = '\0';
-
-   return buf;
-}
 
 #ifdef HAVE_DLADDR
 static inline bool
@@ -178,6 +164,11 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
 struct disk_cache *
 disk_cache_create(const char *gpu_name, const char *timestamp,
                   uint64_t driver_flags);
+
+struct disk_cache *
+disk_cache_create_custom(const char *gpu_name, const char *driver_id,
+                         uint64_t driver_flags, const char *cache_dir_name,
+                         uint32_t max_size);
 
 /**
  * Destroy a cache object, (freeing all associated resources).
@@ -288,9 +279,17 @@ disk_cache_create(const char *gpu_name, const char *timestamp,
    return NULL;
 }
 
+static inline struct disk_cache *
+disk_cache_create_custom(const char *gpu_name, const char *driver_id,
+                         uint64_t driver_flags, const char *cache_dir_name,
+                         uint32_t max_size)
+{
+   return NULL;
+}
+
 static inline void
-disk_cache_destroy(struct disk_cache *cache) {
-   return;
+disk_cache_destroy(struct disk_cache *cache)
+{
 }
 
 static inline void
@@ -298,7 +297,6 @@ disk_cache_put(struct disk_cache *cache, const cache_key key,
                const void *data, size_t size,
                struct cache_item_metadata *cache_item_metadata)
 {
-   return;
 }
 
 static inline void
@@ -306,13 +304,11 @@ disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
                       void *data, size_t size,
                       struct cache_item_metadata *cache_item_metadata)
 {
-   return;
 }
 
 static inline void
 disk_cache_remove(struct disk_cache *cache, const cache_key key)
 {
-   return;
 }
 
 static inline uint8_t *
@@ -324,7 +320,6 @@ disk_cache_get(struct disk_cache *cache, const cache_key key, size_t *size)
 static inline void
 disk_cache_put_key(struct disk_cache *cache, const cache_key key)
 {
-   return;
 }
 
 static inline bool
@@ -335,16 +330,14 @@ disk_cache_has_key(struct disk_cache *cache, const cache_key key)
 
 static inline void
 disk_cache_compute_key(struct disk_cache *cache, const void *data, size_t size,
-                       const cache_key key)
+                       cache_key key)
 {
-   return;
 }
 
 static inline void
 disk_cache_set_callbacks(struct disk_cache *cache, disk_cache_put_cb put,
                          disk_cache_get_cb get)
 {
-   return;
 }
 
 #endif /* ENABLE_SHADER_CACHE */

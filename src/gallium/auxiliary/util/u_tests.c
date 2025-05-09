@@ -134,8 +134,8 @@ util_set_max_viewport(struct cso_context *cso, struct pipe_resource *tex)
    cso_set_viewport(cso, &viewport);
 }
 
-static void
-util_set_interleaved_vertex_elements(struct cso_context *cso,
+static struct cso_velems_state
+util_get_interleaved_vertex_elements(struct cso_context *cso,
                                      unsigned num_elements)
 {
    struct cso_velems_state velem;
@@ -146,9 +146,10 @@ util_set_interleaved_vertex_elements(struct cso_context *cso,
    for (i = 0; i < num_elements; i++) {
       velem.velems[i].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
       velem.velems[i].src_offset = i * 16;
+      velem.velems[i].src_stride = num_elements * 4 * sizeof(float);
    }
 
-   cso_set_vertex_elements(cso, &velem);
+   return velem;
 }
 
 static void *
@@ -160,7 +161,7 @@ util_set_passthrough_vertex_shader(struct cso_context *cso,
       TGSI_SEMANTIC_POSITION,
       TGSI_SEMANTIC_GENERIC
    };
-   static const uint vs_indices[] = {0, 0};
+   static const unsigned vs_indices[] = {0, 0};
    void *vs;
 
    vs = util_make_vertex_passthrough_shader(ctx, 2, vs_attribs, vs_indices,
@@ -193,8 +194,9 @@ util_draw_fullscreen_quad(struct cso_context *cso)
       1,  1, 0, 1,   1, 1, 0, 0,
       1, -1, 0, 1,   1, 0, 0, 0
    };
-   util_set_interleaved_vertex_elements(cso, 2);
-   util_draw_user_vertex_buffer(cso, vertices, PIPE_PRIM_QUADS, 4, 2);
+   struct cso_velems_state ve = util_get_interleaved_vertex_elements(cso, 2);
+
+   util_draw_user_vertices(cso, &ve, vertices, MESA_PRIM_QUADS, 4);
 }
 
 static void
@@ -207,8 +209,9 @@ util_draw_fullscreen_quad_fill(struct cso_context *cso,
       1,  1, 0, 1,   r, g, b, a,
       1, -1, 0, 1,   r, g, b, a,
    };
-   util_set_interleaved_vertex_elements(cso, 2);
-   util_draw_user_vertex_buffer(cso, vertices, PIPE_PRIM_QUADS, 4, 2);
+   struct cso_velems_state ve = util_get_interleaved_vertex_elements(cso, 2);
+
+   util_draw_user_vertices(cso, &ve, vertices, MESA_PRIM_QUADS, 4);
 }
 
 /**
@@ -321,8 +324,7 @@ tgsi_vs_window_space_position(struct pipe_context *ctx)
    bool pass = true;
    static const float red[] = {1, 0, 0, 1};
 
-   if (!ctx->screen->get_param(ctx->screen,
-                               PIPE_CAP_VS_WINDOW_SPACE_POSITION)) {
+   if (!ctx->screen->caps.vs_window_space_position) {
       util_report_result(SKIP);
       return;
    }
@@ -334,7 +336,7 @@ tgsi_vs_window_space_position(struct pipe_context *ctx)
 
    /* Fragment shader. */
    fs = util_make_fragment_passthrough_shader(ctx, TGSI_SEMANTIC_GENERIC,
-                                       TGSI_INTERPOLATE_LINEAR, TRUE);
+                                       TGSI_INTERPOLATE_LINEAR, true);
    cso_set_fragment_shader_handle(cso, fs);
 
    /* Vertex shader. */
@@ -348,8 +350,9 @@ tgsi_vs_window_space_position(struct pipe_context *ctx)
         256, 256, 0, 0,   1,  0, 0, 1,
         256,   0, 0, 0,   1,  0, 0, 1,
       };
-      util_set_interleaved_vertex_elements(cso, 2);
-      util_draw_user_vertex_buffer(cso, vertices, PIPE_PRIM_QUADS, 4, 2);
+      struct cso_velems_state ve = util_get_interleaved_vertex_elements(cso, 2);
+
+      util_draw_user_vertices(cso, &ve, vertices, MESA_PRIM_QUADS, 4);
    }
 
    /* Probe pixels. */
@@ -381,7 +384,7 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
    unsigned num_expected = tgsi_tex_target == TGSI_TEXTURE_BUFFER ? 1 : 2;
 
    if (tgsi_tex_target == TGSI_TEXTURE_BUFFER &&
-       !ctx->screen->get_param(ctx->screen, PIPE_CAP_TEXTURE_BUFFER_OBJECTS)) {
+       !ctx->screen->caps.texture_buffer_objects) {
       util_report_result_helper(SKIP, "%s: %s", __func__,
                                 tgsi_texture_names[tgsi_tex_target]);
       return;
@@ -396,7 +399,6 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
 
    /* Fragment shader. */
    fs = util_make_fragment_tex_shader(ctx, tgsi_tex_target,
-                                      TGSI_INTERPOLATE_LINEAR,
                                       TGSI_RETURN_TYPE_FLOAT,
                                       TGSI_RETURN_TYPE_FLOAT, false, false);
    cso_set_fragment_shader_handle(cso, fs);
@@ -517,7 +519,7 @@ disabled_fragment_shader(struct pipe_context *ctx)
    util_report_result(qresult.u64 == 2);
 }
 
-#if defined(PIPE_OS_LINUX) && defined(HAVE_LIBDRM)
+#if DETECT_OS_LINUX && defined(HAVE_LIBDRM)
 #include <libsync.h>
 #else
 #define sync_merge(str, fd1, fd2) (-1)
@@ -531,7 +533,7 @@ test_sync_file_fences(struct pipe_context *ctx)
    bool pass = true;
    enum pipe_fd_type fd_type = PIPE_FD_TYPE_NATIVE_SYNC;
 
-   if (!screen->get_param(screen, PIPE_CAP_NATIVE_FENCE_FD))
+   if (!screen->caps.native_fence_fd)
       return;
 
    struct cso_context *cso = cso_create_context(ctx, 0);
@@ -595,7 +597,7 @@ test_sync_file_fences(struct pipe_context *ctx)
    pass = pass && screen->fence_finish(screen, NULL, final_fence, 0);
 
    /* Cleanup. */
-#ifndef PIPE_OS_WINDOWS
+#if !DETECT_OS_WINDOWS
    if (buf_fd >= 0)
       close(buf_fd);
    if (tex_fd >= 0)
@@ -635,12 +637,12 @@ test_texture_barrier(struct pipe_context *ctx, bool use_fbfetch,
    snprintf(name, sizeof(name), "%s: %s, %u samples", __func__,
             use_fbfetch ? "FBFETCH" : "sampler", MAX2(num_samples, 1));
 
-   if (!ctx->screen->get_param(ctx->screen, PIPE_CAP_TEXTURE_BARRIER)) {
+   if (!ctx->screen->caps.texture_barrier) {
       util_report_result_helper(SKIP, name);
       return;
    }
    if (use_fbfetch &&
-       !ctx->screen->get_param(ctx->screen, PIPE_CAP_FBFETCH)) {
+       !ctx->screen->caps.fbfetch) {
       util_report_result_helper(SKIP, name);
       return;
    }
@@ -654,7 +656,7 @@ test_texture_barrier(struct pipe_context *ctx, bool use_fbfetch,
    if (num_samples > 1) {
       void *fs =
          util_make_fragment_passthrough_shader(ctx, TGSI_SEMANTIC_GENERIC,
-                                               TGSI_INTERPOLATE_LINEAR, TRUE);
+                                               TGSI_INTERPOLATE_LINEAR, true);
       cso_set_fragment_shader_handle(cso, fs);
 
       /* Vertex shader. */
@@ -797,7 +799,7 @@ test_texture_barrier(struct pipe_context *ctx, bool use_fbfetch,
 }
 
 static void
-test_compute_clear_image(struct pipe_context *ctx)
+test_compute_clear_image_shader(struct pipe_context *ctx)
 {
    struct pipe_resource *cb;
    const char *text;
@@ -863,6 +865,70 @@ test_compute_clear_image(struct pipe_context *ctx)
    /* Cleanup. */
    ctx->delete_compute_state(ctx, compute_shader);
    pipe_resource_reference(&cb, NULL);
+
+   util_report_result(pass);
+}
+
+static void
+test_compute_clear_texture(struct pipe_context *ctx)
+{
+   struct pipe_resource *tex;
+
+   tex = util_create_texture2d(ctx->screen, 256, 256,
+                              PIPE_FORMAT_R8G8B8A8_UNORM, 1);
+   srand(time(NULL));
+   uint8_t data[] = {rand() % 256, rand() % 256, rand() % 256, rand() % 256};
+   float expected[] = {
+      ubyte_to_float(data[0]),
+      ubyte_to_float(data[1]),
+      ubyte_to_float(data[2]),
+      ubyte_to_float(data[3]),
+   };
+
+   struct pipe_box box;
+   u_box_2d(0, 0, tex->width0, tex->height0, &box);
+   ctx->clear_texture(ctx, tex, 0, &box, &data);
+
+   /* Check pixels. */
+   bool pass = util_probe_rect_rgba(ctx, tex, 0, 0,
+                                    tex->width0, tex->height0, expected);
+
+   /* Cleanup. */
+   pipe_resource_reference(&tex, NULL);
+
+   util_report_result(pass);
+}
+
+static void
+test_compute_resource_copy_region(struct pipe_context *ctx)
+{
+   struct pipe_resource *src, *dst;
+
+   src = util_create_texture2d(ctx->screen, 256, 256,
+                              PIPE_FORMAT_R8G8B8A8_UNORM, 1);
+   dst = util_create_texture2d(ctx->screen, 256, 256,
+                              PIPE_FORMAT_R8G8B8A8_UNORM, 1);
+   srand(time(NULL));
+   uint8_t data[] = {rand() % 256, rand() % 256, rand() % 256, rand() % 256};
+   float expected[] = {
+      ubyte_to_float(data[0]),
+      ubyte_to_float(data[1]),
+      ubyte_to_float(data[2]),
+      ubyte_to_float(data[3]),
+   };
+
+   struct pipe_box box;
+   u_box_2d(0, 0, src->width0, src->height0, &box);
+   ctx->clear_texture(ctx, src, 0, &box, &data);
+   ctx->resource_copy_region(ctx, dst, 0, 0, 0, 0, src, 0, &box);
+
+   /* Check pixels. */
+   bool pass = util_probe_rect_rgba(ctx, dst, 0, 0,
+                                    dst->width0, dst->height0, expected);
+
+   /* Cleanup. */
+   pipe_resource_reference(&src, NULL);
+   pipe_resource_reference(&dst, NULL);
 
    util_report_result(pass);
 }
@@ -1046,7 +1112,9 @@ util_run_tests(struct pipe_screen *screen)
    ctx->destroy(ctx);
 
    ctx = screen->context_create(screen, NULL, PIPE_CONTEXT_COMPUTE_ONLY);
-   test_compute_clear_image(ctx);
+   test_compute_clear_image_shader(ctx);
+   test_compute_clear_texture(ctx);
+   test_compute_resource_copy_region(ctx);
    ctx->destroy(ctx);
 
    test_nv12(screen);

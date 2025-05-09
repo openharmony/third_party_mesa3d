@@ -26,7 +26,7 @@
 
 #include "wrapper_sw_winsys.h"
 
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_state.h"
 
 #include "frontend/sw_winsys.h"
@@ -306,7 +306,7 @@ wrapper_sw_winsys_wrap_pipe_screen(struct pipe_screen *screen)
    if (!wsw->pipe)
       goto err_free;
 
-   if(screen->get_param(screen, PIPE_CAP_NPOT_TEXTURES))
+   if(screen->caps.npot_textures)
       wsw->target = PIPE_TEXTURE_2D;
    else
       wsw->target = PIPE_TEXTURE_RECT;

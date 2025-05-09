@@ -23,7 +23,6 @@
 #include "api/util.hpp"
 #include "core/program.hpp"
 #include "core/platform.hpp"
-#include "spirv/invocation.hpp"
 #include "util/u_debug.h"
 
 #include <limits>
@@ -44,7 +43,7 @@ namespace {
    class build_notifier {
    public:
       build_notifier(cl_program prog,
-                     void (*notifer)(cl_program, void *), void *data) :
+                     void (CL_CALLBACK * notifer)(cl_program, void *), void *data) :
                      prog_(prog), notifer(notifer), data_(data) { }
 
       ~build_notifier() {
@@ -54,14 +53,14 @@ namespace {
 
    private:
       cl_program prog_;
-      void (*notifer)(cl_program, void *);
+      void (CL_CALLBACK * notifer)(cl_program, void *);
       void *data_;
    };
 
    void
    validate_build_common(const program &prog, cl_uint num_devs,
                          const cl_device_id *d_devs,
-                         void (*pfn_notify)(cl_program, void *),
+                         void (CL_CALLBACK * pfn_notify)(cl_program, void *),
                          void *user_data) {
       if (!pfn_notify && user_data)
          throw error(CL_INVALID_VALUE);
@@ -80,22 +79,7 @@ namespace {
                             const cl_version opencl_version,
                             const context::notify_action &notify) {
 
-      enum program::il_type il_type = program::il_type::none;
-
-#ifdef HAVE_CLOVER_SPIRV
-      if (spirv::is_binary_spirv(il)) {
-         std::string log;
-         if (!spirv::is_valid_spirv(il, opencl_version, log)) {
-            if (notify) {
-               notify(log.c_str());
-            }
-            throw error(CL_INVALID_VALUE);
-         }
-         il_type = program::il_type::spirv;
-      }
-#endif
-
-      return il_type;
+      return program::il_type::none;
    }
 }
 
@@ -267,7 +251,7 @@ clReleaseProgram(cl_program d_prog) try {
 CLOVER_API cl_int
 clBuildProgram(cl_program d_prog, cl_uint num_devs,
                const cl_device_id *d_devs, const char *p_opts,
-               void (*pfn_notify)(cl_program, void *),
+               void (CL_CALLBACK * pfn_notify)(cl_program, void *),
                void *user_data) try {
    auto &prog = obj(d_prog);
    auto devs =
@@ -301,7 +285,7 @@ clCompileProgram(cl_program d_prog, cl_uint num_devs,
                  const cl_device_id *d_devs, const char *p_opts,
                  cl_uint num_headers, const cl_program *d_header_progs,
                  const char **header_names,
-                 void (*pfn_notify)(cl_program, void *),
+                 void (CL_CALLBACK * pfn_notify)(cl_program, void *),
                  void *user_data) try {
    auto &prog = obj(d_prog);
    auto devs =
@@ -426,7 +410,7 @@ namespace {
 CLOVER_API cl_program
 clLinkProgram(cl_context d_ctx, cl_uint num_devs, const cl_device_id *d_devs,
               const char *p_opts, cl_uint num_progs, const cl_program *d_progs,
-              void (*pfn_notify) (cl_program, void *), void *user_data,
+              void (CL_CALLBACK * pfn_notify) (cl_program, void *), void *user_data,
               cl_int *r_errcode) try {
    auto &ctx = obj(d_ctx);
    const auto opts = build_options(p_opts, "CLOVER_EXTRA_LINK_OPTIONS");

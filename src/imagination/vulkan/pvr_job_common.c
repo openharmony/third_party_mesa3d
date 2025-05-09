@@ -26,7 +26,9 @@
 
 #include "hwdef/rogue_hw_defs.h"
 #include "hwdef/rogue_hw_utils.h"
+#include "pvr_csb_enum_helpers.h"
 #include "pvr_device_info.h"
+#include "pvr_formats.h"
 #include "pvr_job_common.h"
 #include "pvr_private.h"
 #include "util/macros.h"
@@ -35,127 +37,46 @@
 #include "vk_format.h"
 #include "vk_object.h"
 
-/* clang-format off */
-static enum PVRX(PBESTATE_SWIZ)
-pvr_get_pbe_hw_swizzle(VkComponentSwizzle comp, enum pipe_swizzle swz)
-/* clang-format on */
-{
-   switch (swz) {
-   case PIPE_SWIZZLE_0:
-      return ROGUE_PBESTATE_SWIZ_ZERO;
-   case PIPE_SWIZZLE_1:
-      return ROGUE_PBESTATE_SWIZ_ONE;
-   case PIPE_SWIZZLE_X:
-      return ROGUE_PBESTATE_SWIZ_SOURCE_CHAN0;
-   case PIPE_SWIZZLE_Y:
-      return ROGUE_PBESTATE_SWIZ_SOURCE_CHAN1;
-   case PIPE_SWIZZLE_Z:
-      return ROGUE_PBESTATE_SWIZ_SOURCE_CHAN2;
-   case PIPE_SWIZZLE_W:
-      return ROGUE_PBESTATE_SWIZ_SOURCE_CHAN3;
-   case PIPE_SWIZZLE_NONE:
-      if (comp == VK_COMPONENT_SWIZZLE_A)
-         return ROGUE_PBESTATE_SWIZ_ONE;
-      else
-         return ROGUE_PBESTATE_SWIZ_ZERO;
-   default:
-      unreachable("Unknown enum pipe_swizzle");
-   };
-}
-
 void pvr_pbe_get_src_format_and_gamma(VkFormat vk_format,
                                       enum pvr_pbe_gamma default_gamma,
                                       bool with_packed_usc_channel,
                                       uint32_t *const src_format_out,
                                       enum pvr_pbe_gamma *const gamma_out)
 {
-   uint32_t chan_0_width = vk_format_get_channel_width(vk_format, 0);
+   const struct util_format_description *desc =
+      vk_format_description(vk_format);
+   uint32_t chan_0_width = desc->channel[0].size;
 
    *gamma_out = default_gamma;
 
-   if (vk_format_has_32bit_component(vk_format) ||
+   if (pvr_vk_format_has_32bit_component(vk_format) ||
        vk_format_is_int(vk_format)) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
    } else if (vk_format_is_float(vk_format)) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
    } else if (vk_format_is_srgb(vk_format)) {
       *gamma_out = PVR_PBE_GAMMA_ENABLED;
 
       /* F16 source for gamma'd formats. */
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
    } else if (vk_format_has_depth(vk_format) &&
               vk_format_get_component_bits(vk_format,
                                            UTIL_FORMAT_COLORSPACE_ZS,
                                            0) > 16) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
    } else if (vk_format_has_stencil(vk_format) &&
               vk_format_get_component_bits(vk_format,
                                            UTIL_FORMAT_COLORSPACE_ZS,
                                            1) > 0) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
    } else if (chan_0_width > 16) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
    } else if (chan_0_width > 8) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
    } else if (!with_packed_usc_channel) {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL);
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
    } else {
-      *src_format_out = PVRX(PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL);
-   }
-}
-
-static void pvr_pbe_get_src_pos(const struct pvr_device_info *dev_info,
-                                enum pvr_pbe_source_start_pos source_start,
-                                uint32_t *const src_pos_out,
-                                bool *const src_pos_offset_128_out)
-{
-   *src_pos_offset_128_out = false;
-
-   switch (source_start) {
-   case PVR_PBE_STARTPOS_BIT32:
-      *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT32);
-      break;
-
-   case PVR_PBE_STARTPOS_BIT64:
-      *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT64);
-      break;
-
-   case PVR_PBE_STARTPOS_BIT96:
-      *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT96);
-      break;
-
-   case PVR_PBE_STARTPOS_BIT0:
-   default:
-      if (PVR_HAS_FEATURE(dev_info, eight_output_registers)) {
-         switch (source_start) {
-         case PVR_PBE_STARTPOS_BIT128:
-            *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT0);
-            *src_pos_offset_128_out = true;
-            break;
-
-         case PVR_PBE_STARTPOS_BIT160:
-            *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT32);
-            *src_pos_offset_128_out = true;
-            break;
-
-         case PVR_PBE_STARTPOS_BIT192:
-            *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT64);
-            *src_pos_offset_128_out = true;
-            break;
-
-         case PVR_PBE_STARTPOS_BIT224:
-            *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT96);
-            *src_pos_offset_128_out = true;
-            break;
-
-         default:
-            *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT0);
-            break;
-         }
-      } else {
-         *src_pos_out = PVRX(PBESTATE_SOURCE_POS_START_BIT0);
-      }
-      break;
+      *src_format_out = ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
    }
 }
 
@@ -201,10 +122,13 @@ void pvr_pbe_pack_state(
 
       state.source_format = surface_params->source_format;
 
-      pvr_pbe_get_src_pos(dev_info,
-                          render_params->source_start,
-                          &state.source_pos,
-                          &state.source_pos_offset_128);
+      state.source_pos = pvr_pbestate_source_pos(render_params->source_start);
+      if (PVR_HAS_FEATURE(dev_info, eight_output_registers)) {
+         state.source_pos_offset_128 = render_params->source_start >=
+                                       PVR_PBE_STARTPOS_BIT128;
+      } else {
+         assert(render_params->source_start < PVR_PBE_STARTPOS_BIT128);
+      }
 
       /* MRT index (Use 0 for a single render target)/ */
       state.mrt_index = render_params->mrt_index;
@@ -220,21 +144,21 @@ void pvr_pbe_pack_state(
 
       switch (surface_params->mem_layout) {
       case PVR_MEMLAYOUT_TWIDDLED:
-         reg.memlayout = PVRX(PBESTATE_MEMLAYOUT_TWIDDLE_2D);
+         reg.memlayout = ROGUE_PBESTATE_MEMLAYOUT_TWIDDLE_2D;
          break;
 
       case PVR_MEMLAYOUT_3DTWIDDLED:
-         reg.memlayout = PVRX(PBESTATE_MEMLAYOUT_TWIDDLE_3D);
+         reg.memlayout = ROGUE_PBESTATE_MEMLAYOUT_TWIDDLE_3D;
          break;
 
       case PVR_MEMLAYOUT_LINEAR:
       default:
-         reg.memlayout = PVRX(PBESTATE_MEMLAYOUT_LINEAR);
+         reg.memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR;
          break;
       }
 
       /* FIXME: Remove rotation and y_flip hardcoding if needed. */
-      reg.rotation = PVRX(PBESTATE_ROTATION_TYPE_0_DEG);
+      reg.rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG;
       reg.y_flip = false;
 
       /* Note: Due to gamma being overridden above, anything other than
@@ -245,21 +169,113 @@ void pvr_pbe_pack_state(
 
          if (surface_params->nr_components == 2)
             reg.twocomp_gamma =
-               PVRX(PBESTATE_TWOCOMP_GAMMA_GAMMA_BOTH_CHANNELS);
+               ROGUE_PBESTATE_TWOCOMP_GAMMA_GAMMA_BOTH_CHANNELS;
       }
 
       reg.linestride = (surface_params->stride - 1) /
-                       PVRX(PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE);
+                       ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
       reg.minclip_x = render_params->min_x_clip;
 
-      reg.swiz_chan0 = pvr_get_pbe_hw_swizzle(VK_COMPONENT_SWIZZLE_R,
-                                              surface_params->swizzle[0]);
-      reg.swiz_chan1 = pvr_get_pbe_hw_swizzle(VK_COMPONENT_SWIZZLE_G,
-                                              surface_params->swizzle[1]);
-      reg.swiz_chan2 = pvr_get_pbe_hw_swizzle(VK_COMPONENT_SWIZZLE_B,
-                                              surface_params->swizzle[2]);
-      reg.swiz_chan3 = pvr_get_pbe_hw_swizzle(VK_COMPONENT_SWIZZLE_A,
-                                              surface_params->swizzle[3]);
+      /* r, y or depth*/
+      switch (surface_params->swizzle[0]) {
+      case PIPE_SWIZZLE_X:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN0;
+         break;
+      case PIPE_SWIZZLE_Y:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN0;
+         break;
+      case PIPE_SWIZZLE_Z:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN0;
+         break;
+      case PIPE_SWIZZLE_W:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN0;
+         break;
+      case PIPE_SWIZZLE_0:
+      case PIPE_SWIZZLE_NONE:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_ZERO;
+         break;
+      case PIPE_SWIZZLE_1:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_ONE;
+         break;
+      default:
+         unreachable("Unknown enum pipe_swizzle");
+         break;
+      }
+      /* g, u or stencil*/
+      switch (surface_params->swizzle[1]) {
+      case PIPE_SWIZZLE_X:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN1;
+         break;
+      case PIPE_SWIZZLE_Y:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN1;
+         break;
+      case PIPE_SWIZZLE_Z:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN1;
+         break;
+      case PIPE_SWIZZLE_W:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN1;
+         break;
+      case PIPE_SWIZZLE_0:
+      case PIPE_SWIZZLE_NONE:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_ZERO;
+         break;
+      case PIPE_SWIZZLE_1:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_ONE;
+         break;
+      default:
+         unreachable("Unknown enum pipe_swizzle");
+         break;
+      }
+      /* b or v*/
+      switch (surface_params->swizzle[2]) {
+      case PIPE_SWIZZLE_X:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN2;
+         break;
+      case PIPE_SWIZZLE_Y:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN2;
+         break;
+      case PIPE_SWIZZLE_Z:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN2;
+         break;
+      case PIPE_SWIZZLE_W:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN2;
+         break;
+      case PIPE_SWIZZLE_0:
+      case PIPE_SWIZZLE_NONE:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_ZERO;
+         break;
+      case PIPE_SWIZZLE_1:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_ONE;
+         break;
+      default:
+         unreachable("Unknown enum pipe_swizzle");
+         break;
+      }
+      /* a */
+      switch (surface_params->swizzle[3]) {
+      case PIPE_SWIZZLE_X:
+         reg.swiz_chan0 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN3;
+         break;
+      case PIPE_SWIZZLE_Y:
+         reg.swiz_chan1 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN3;
+         break;
+      case PIPE_SWIZZLE_Z:
+         reg.swiz_chan2 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN3;
+         break;
+      case PIPE_SWIZZLE_W:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_SOURCE_CHAN3;
+         break;
+      case PIPE_SWIZZLE_0:
+      case PIPE_SWIZZLE_NONE:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_ZERO;
+         break;
+      case PIPE_SWIZZLE_1:
+         reg.swiz_chan3 = ROGUE_PBESTATE_SWIZ_ONE;
+         break;
+      default:
+         unreachable("Unknown enum pipe_swizzle");
+         break;
+      }
 
       if (surface_params->mem_layout == PVR_MEMLAYOUT_3DTWIDDLED)
          reg.size_z = util_logbase2_ceil(surface_params->depth);
@@ -319,13 +335,13 @@ void pvr_setup_tiles_in_flight(
 
    isp_samples = PVR_GET_FEATURE_VALUE(dev_info, isp_samples_per_pixel, 1);
    if (isp_samples == 2) {
-      if (msaa_mode != PVRX(CR_ISP_AA_MODE_TYPE_AA_NONE))
+      if (msaa_mode != ROGUE_CR_ISP_AA_MODE_TYPE_AA_NONE)
          partition_size *= 2U;
    } else if (isp_samples == 4) {
-      if (msaa_mode == PVRX(CR_ISP_AA_MODE_TYPE_AA_4X) ||
-          msaa_mode == PVRX(CR_ISP_AA_MODE_TYPE_AA_8X))
+      if (msaa_mode == ROGUE_CR_ISP_AA_MODE_TYPE_AA_4X ||
+          msaa_mode == ROGUE_CR_ISP_AA_MODE_TYPE_AA_8X)
          partition_size *= 4U;
-      else if (msaa_mode == PVRX(CR_ISP_AA_MODE_TYPE_AA_2X))
+      else if (msaa_mode == ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X)
          partition_size *= 2U;
    }
 
@@ -450,18 +466,18 @@ void pvr_setup_tiles_in_flight(
 
    pvr_csb_pack (pixel_ctl_out, CR_USC_PIXEL_OUTPUT_CTRL, reg) {
       if (pixel_width == 1 && usc_min_output_regs == 1) {
-         reg.width = PVRX(CR_PIXEL_WIDTH_1REGISTER);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_1REGISTER;
       } else if (pixel_width == 2) {
-         reg.width = PVRX(CR_PIXEL_WIDTH_2REGISTERS);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_2REGISTERS;
       } else if (pixel_width == 4) {
-         reg.width = PVRX(CR_PIXEL_WIDTH_4REGISTERS);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_4REGISTERS;
       } else if (pixel_width == 8 &&
                  PVR_HAS_FEATURE(dev_info, eight_output_registers)) {
-         reg.width = PVRX(CR_PIXEL_WIDTH_8REGISTERS);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_8REGISTERS;
       } else if (usc_min_output_regs == 1) {
-         reg.width = PVRX(CR_PIXEL_WIDTH_1REGISTER);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_1REGISTER;
       } else {
-         reg.width = PVRX(CR_PIXEL_WIDTH_2REGISTERS);
+         reg.width = ROGUE_CR_PIXEL_WIDTH_2REGISTERS;
       }
 
       if (PVR_HAS_FEATURE(dev_info, usc_pixel_partition_mask)) {

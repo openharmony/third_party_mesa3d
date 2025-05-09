@@ -24,36 +24,36 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-static bool
-nir_scale_fdiv_instr(nir_builder *b, nir_instr *instr, UNUSED void *_data)
-{
-   if (instr->type != nir_instr_type_alu)
-      return false;
+#include "util/u_math.h"
 
-   nir_alu_instr *alu = nir_instr_as_alu(instr);
+static bool
+nir_scale_fdiv_instr(nir_builder *b, nir_alu_instr *alu, UNUSED void *_data)
+{
    if (alu->op != nir_op_fdiv || alu->src[0].src.ssa->bit_size != 32)
       return false;
 
    b->cursor = nir_before_instr(&alu->instr);
 
-   nir_ssa_def *fabs = nir_fabs(b, alu->src[1].src.ssa);
-   nir_ssa_def *big = nir_flt(b, nir_imm_int(b, 0x7e800000), fabs);
-   nir_ssa_def *small = nir_flt(b, fabs, nir_imm_int(b, 0x00800000));
+   nir_def *orig_a = nir_ssa_for_alu_src(b, alu, 0);
+   nir_def *orig_b = nir_ssa_for_alu_src(b, alu, 1);
+   nir_def *fabs = nir_fabs(b, orig_b);
+   nir_def *big = nir_fgt_imm(b, fabs, uif(0x7e800000));
+   nir_def *small = nir_flt_imm(b, fabs, uif(0x00800000));
 
-   nir_ssa_def *scaled_down_a = nir_fmul_imm(b, alu->src[0].src.ssa, 0.25);
-   nir_ssa_def *scaled_down_b = nir_fmul_imm(b, alu->src[1].src.ssa, 0.25);
-   nir_ssa_def *scaled_up_a = nir_fmul_imm(b, alu->src[0].src.ssa, 16777216.0);
-   nir_ssa_def *scaled_up_b = nir_fmul_imm(b, alu->src[1].src.ssa, 16777216.0);
+   nir_def *scaled_down_a = nir_fmul_imm(b, orig_a, 0.25);
+   nir_def *scaled_down_b = nir_fmul_imm(b, orig_b, 0.25);
+   nir_def *scaled_up_a = nir_fmul_imm(b, orig_a, 16777216.0);
+   nir_def *scaled_up_b = nir_fmul_imm(b, orig_b, 16777216.0);
 
-   nir_ssa_def *final_a =
+   nir_def *final_a =
       nir_bcsel(b, big, scaled_down_a,
-     (nir_bcsel(b, small, scaled_up_a, alu->src[0].src.ssa)));
-   nir_ssa_def *final_b =
+                (nir_bcsel(b, small, scaled_up_a, orig_a)));
+   nir_def *final_b =
       nir_bcsel(b, big, scaled_down_b,
-     (nir_bcsel(b, small, scaled_up_b, alu->src[1].src.ssa)));
+                (nir_bcsel(b, small, scaled_up_b, orig_b)));
 
-   nir_instr_rewrite_src_ssa(instr, &alu->src[0].src, final_a);
-   nir_instr_rewrite_src_ssa(instr, &alu->src[1].src, final_b);
+   nir_def *new_div = nir_fdiv(b, final_a, final_b);
+   nir_def_rewrite_uses(&alu->def, new_div);
 
    return true;
 }
@@ -68,8 +68,7 @@ nir_scale_fdiv_instr(nir_builder *b, nir_instr *instr, UNUSED void *_data)
 bool
 nir_scale_fdiv(nir_shader *shader)
 {
-   return nir_shader_instructions_pass(shader, nir_scale_fdiv_instr,
-                                       nir_metadata_block_index |
-                                       nir_metadata_dominance,
-                                       NULL);
+   return nir_shader_alu_pass(shader, nir_scale_fdiv_instr,
+                              nir_metadata_control_flow,
+                              NULL);
 }

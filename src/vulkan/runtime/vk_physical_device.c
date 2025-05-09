@@ -24,20 +24,29 @@
 #include "vk_physical_device.h"
 
 #include "vk_common_entrypoints.h"
+#include "vk_device.h"
 #include "vk_util.h"
 
 VkResult
 vk_physical_device_init(struct vk_physical_device *pdevice,
                         struct vk_instance *instance,
                         const struct vk_device_extension_table *supported_extensions,
+                        const struct vk_features *supported_features,
+                        const struct vk_properties *properties,
                         const struct vk_physical_device_dispatch_table *dispatch_table)
 {
    memset(pdevice, 0, sizeof(*pdevice));
-   vk_object_base_init(NULL, &pdevice->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+   vk_object_base_instance_init(instance, &pdevice->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
    pdevice->instance = instance;
 
    if (supported_extensions != NULL)
       pdevice->supported_extensions = *supported_extensions;
+
+   if (supported_features != NULL)
+      pdevice->supported_features = *supported_features;
+
+   if (properties != NULL)
+      pdevice->properties = *properties;
 
    pdevice->dispatch_table = *dispatch_table;
 
@@ -84,7 +93,7 @@ vk_common_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
       if (!pdevice->supported_extensions.extensions[i])
          continue;
 
-#ifdef ANDROID
+#ifdef ANDROID_STRICT
       if (!vk_android_allowed_device_extensions.extensions[i])
          continue;
 #endif
@@ -230,7 +239,7 @@ VKAPI_ATTR void VKAPI_CALL
 vk_common_GetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice physicalDevice,
                                                        VkFormat format,
                                                        VkImageType type,
-                                                       uint32_t samples,
+                                                       VkSampleCountFlagBits samples,
                                                        VkImageUsageFlags usage,
                                                        VkImageTiling tiling,
                                                        uint32_t *pNumProperties,
@@ -271,6 +280,33 @@ vk_common_GetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice physical
       pProperties[i] = props2[i].properties;
 
    STACK_ARRAY_FINISH(props2);
+}
+
+/* VK_KHR_calibrated_timestamps */
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_common_GetPhysicalDeviceCalibrateableTimeDomainsKHR(
+   VkPhysicalDevice physicalDevice, uint32_t *pTimeDomainCount,
+   VkTimeDomainKHR *pTimeDomains)
+{
+   VK_OUTARRAY_MAKE_TYPED(VkTimeDomainKHR, out, pTimeDomains, pTimeDomainCount);
+
+   vk_outarray_append_typed(VkTimeDomainKHR, &out, p)
+      *p = VK_TIME_DOMAIN_DEVICE_KHR;
+
+   const VkTimeDomainKHR host_time_domains[] = {
+      VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR,
+      VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR,
+   };
+   for (uint32_t i = 0; i < ARRAY_SIZE(host_time_domains); i++) {
+      const VkTimeDomainKHR domain = host_time_domains[i];
+      uint64_t ts;
+      if (vk_device_get_timestamp(NULL, domain, &ts) == VK_SUCCESS) {
+         vk_outarray_append_typed(VkTimeDomainKHR, &out, p)
+            *p = domain;
+      }
+   }
+
+   return vk_outarray_status(&out);
 }
 
 /* VK_EXT_tooling_info */

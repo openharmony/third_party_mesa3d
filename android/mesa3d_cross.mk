@@ -63,34 +63,41 @@ MESON_OUT_DIR                            := $($(M_TARGET_PREFIX)TARGET_OUT_INTER
 MESON_GEN_DIR                            := $(MESON_OUT_DIR)_GEN
 MESON_GEN_FILES_TARGET                   := $(MESON_GEN_DIR)/.timestamp
 
-MESA3D_GALLIUM_DRI_DIR                   := $(MESON_OUT_DIR)/install/usr/local/lib/dri
-$(M_TARGET_PREFIX)MESA3D_GALLIUM_DRI_BIN := $(MESON_OUT_DIR)/install/usr/local/lib/libgallium_dri.so
-$(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libEGL.so.1.0.0
-$(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv1_CM.so.1.1.0
-$(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv2.so.2.0.0
-$(M_TARGET_PREFIX)MESA3D_LIBGLAPI_BIN    := $(MESON_OUT_DIR)/install/usr/local/lib/libglapi.so.0.0.0
-$(M_TARGET_PREFIX)MESA3D_LIBGBM_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libgbm.so.1.0.0
+MESA3D_GALLIUM_DIR                       := $(MESON_OUT_DIR)/install/usr/local/lib
+$(M_TARGET_PREFIX)MESA3D_GALLIUM_BIN     := $(MESON_OUT_DIR)/install/usr/local/lib/libgallium_dri.so
+$(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libEGL.so
+$(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv1_CM.so
+$(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv2.so
+$(M_TARGET_PREFIX)MESA3D_LIBGBM_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/$(MESA_LIBGBM_NAME).so
+$(M_TARGET_PREFIX)MESA3D_DRI_GBM_BIN     := $(MESON_OUT_DIR)/install/usr/local/lib/gbm/dri_gbm.so
 
+
+MESA3D_GBM_BINS := \
+    $($(M_TARGET_PREFIX)MESA3D_LIBGBM_BIN) \
+    $($(M_TARGET_PREFIX)MESA3D_DRI_GBM_BIN)   \
 
 MESA3D_GLES_BINS := \
+    $($(M_TARGET_PREFIX)MESA3D_GALLIUM_BIN) \
     $($(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN)    \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN) \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN) \
-    $($(M_TARGET_PREFIX)MESA3D_LIBGLAPI_BIN)  \
 
 MESON_GEN_NINJA := \
 	cd $(MESON_OUT_DIR) && PATH=/usr/bin:/usr/local/bin:$$PATH meson ./build     \
 	--cross-file $(call relative-to-absolute,$(MESON_GEN_DIR))/aosp_cross        \
 	--buildtype=release                                                          \
-	-Ddri-search-path=/vendor/$(MESA3D_LIB_DIR)/dri                              \
 	-Dplatforms=android                                                          \
 	-Dplatform-sdk-version=$(PLATFORM_SDK_VERSION)                               \
-	-Ddri-drivers=$(subst $(space),$(comma),$(BOARD_MESA3D_CLASSIC_DRIVERS))     \
 	-Dgallium-drivers=$(subst $(space),$(comma),$(BOARD_MESA3D_GALLIUM_DRIVERS)) \
 	-Dvulkan-drivers=$(subst $(space),$(comma),$(subst radeon,amd,$(BOARD_MESA3D_VULKAN_DRIVERS)))   \
 	-Dgbm=enabled                                                                \
-	-Degl=enabled                                                                \
+	-Dgbm-backends-path=/vendor/$(MESA3D_LIB_DIR)                                \
+	-Degl=$(if $(BOARD_MESA3D_GALLIUM_DRIVERS),enabled,disabled)                 \
+	-Dllvm=$(if $(MESON_GEN_LLVM_STUB),enabled,disabled)                         \
 	-Dcpp_rtti=false                                                             \
+	-Dlmsensors=disabled                                                         \
+	-Dandroid-libbacktrace=disabled                                              \
+	$(BOARD_MESA3D_MESON_ARGS)                                                   \
 
 MESON_BUILD := PATH=/usr/bin:/bin:/sbin:$$PATH ninja -C $(MESON_OUT_DIR)/build
 
@@ -148,6 +155,7 @@ $(MESON_GEN_FILES_TARGET): PRIVATE_TARGET_CRTEND_SO_O := $(my_target_crtend_so_o
 ##
 
 define m-lld-flags
+  -Wl,-e,main \
   -nostdlib -Wl,--gc-sections \
   $(PRIVATE_TARGET_CRTBEGIN_SO_O) \
   $(PRIVATE_ALL_OBJECTS) \
@@ -168,13 +176,14 @@ define m-lld-flags
 endef
 
 define m-lld-flags-cleaned
+  $(patsubst -Wl$(comma)--build-id=%,, \
   $(subst prebuilts/,$(AOSP_ABSOLUTE_PATH)/prebuilts/, \
   $(subst $(OUT_DIR)/,$(call relative-to-absolute,$(OUT_DIR))/, \
   $(subst -Wl$(comma)--fatal-warnings,,                \
   $(subst -Wl$(comma)--no-undefined-version,,          \
   $(subst -Wl$(comma)--gc-sections,,                   \
   $(patsubst %dummy.o,,                                \
-    $(m-lld-flags)))))))
+    $(m-lld-flags))))))))
 endef
 
 define m-cpp-flags
@@ -200,7 +209,9 @@ define m-c-flags
 endef
 
 define filter-c-flags
-  $(filter-out -std=gnu++17 -std=gnu++14 -std=gnu99 -fno-rtti, \
+  $(filter-out -std=gnu++17 -std=gnu++14 -std=gnu99 -fno-rtti \
+    -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang \
+    -ftrivial-auto-var-init=zero,
     $(patsubst  -W%,, $1))
 endef
 
@@ -249,7 +260,7 @@ $(MESON_GEN_FILES_TARGET): $(sort $(shell find -L $(MESA3D_TOP) -not -path '*/\.
 		"pkgconfig = ['env', 'PKG_CONFIG_LIBDIR=' + '$(call relative-to-absolute,$(MESON_GEN_DIR))', '/usr/bin/pkg-config']\n\n" \
 		"llvm-config = '/dev/null'\n"                                                                                     \
 		"[host_machine]\n"                                                                                                \
-		"system = 'linux'\n"                                                                                              \
+		"system = 'android'\n"                                                                                              \
 		"cpu_family = '$(MESON_CPU_FAMILY)'\n"                                                                            \
 		"cpu = '$(MESON_CPU_FAMILY)'\n"                                                                                   \
 		"endian = 'little'" > $(dir $@)/aosp_cross
@@ -277,19 +288,14 @@ endif
 	$(MESON_BUILD)
 	touch $@
 
-MESON_COPY_LIBGALLIUM := \
-	cp `ls -1 $(MESA3D_GALLIUM_DRI_DIR)/* | head -1` $($(M_TARGET_PREFIX)MESA3D_GALLIUM_DRI_BIN)
-
-$(MESON_OUT_DIR)/install/.install.timestamp: MESON_COPY_LIBGALLIUM:=$(MESON_COPY_LIBGALLIUM)
 $(MESON_OUT_DIR)/install/.install.timestamp: MESON_BUILD:=$(MESON_BUILD)
 $(MESON_OUT_DIR)/install/.install.timestamp: $(MESON_OUT_DIR)/.build.timestamp
 	rm -rf $(dir $@)
 	mkdir -p $(dir $@)
 	DESTDIR=$(call relative-to-absolute,$(dir $@)) $(MESON_BUILD) install
-	$(MESON_COPY_LIBGALLIUM)
 	touch $@
 
-$($(M_TARGET_PREFIX)MESA3D_LIBGBM_BIN) $(MESA3D_GLES_BINS): $(MESON_OUT_DIR)/install/.install.timestamp
+$(MESA3D_GBM_BINS) $(MESA3D_GLES_BINS): $(MESON_OUT_DIR)/install/.install.timestamp
 	echo "Build $@"
 	touch $@
 
@@ -301,18 +307,3 @@ $(MESON_OUT_DIR)/install/usr/local/lib/libvulkan_$(MESA_VK_LIB_SUFFIX_$1).so: $(
 endef
 
 $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), $(eval $(call vulkan_target,$(driver))))
-
-$($(M_TARGET_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)/dri/.targets.timestamp: MESA3D_GALLIUM_DRI_DIR:=$(MESA3D_GALLIUM_DRI_DIR)
-$($(M_TARGET_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)/dri/.targets.timestamp: $(MESON_OUT_DIR)/install/.install.timestamp
-	mkdir -p $(dir $@)
-	# Create Symlinks for gallium and kmsro drivers
-	ls -1 $(MESA3D_GALLIUM_DRI_DIR)/ | PATH=/usr/bin:$$PATH xargs -I{} ln -s -f libgallium_dri.so $(dir $@)/{}
-	# Remove unwanted Symlinks created for classic dri drivers
-	$(foreach d,$(BOARD_MESA3D_CLASSIC_DRIVERS), rm $(dir $@)/$(d)_dri.so;)
-	# Copy classic dri drivers
-	$(foreach d,$(BOARD_MESA3D_CLASSIC_DRIVERS), cp $(MESA3D_GALLIUM_DRI_DIR)/$(d)_dri.so $(dir $@)/$(d)_dri.so;)
-	touch $@
-
-$($(M_TARGET_PREFIX)MESA3D_GALLIUM_DRI_BIN): $(TARGET_OUT_VENDOR)/$(MESA3D_LIB_DIR)/dri/.targets.timestamp
-	echo "Build $@"
-	touch $@

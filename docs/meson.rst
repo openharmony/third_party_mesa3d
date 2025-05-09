@@ -7,12 +7,9 @@ Compilation and Installation Using Meson
 For general information about Meson see the `Meson
 website <https://mesonbuild.com/>`__.
 
-**Mesa's Meson build system is generally considered stable and ready for
-production.**
-
 .. note::
 
-   Mesa requires Meson >= 0.53.0 to build.
+   Mesa requires Meson >= 0.60.0 to build.
 
    If your distribution doesn't have something recent enough in its
    repositories, you can `try the methods suggested here
@@ -28,13 +25,13 @@ Unix-like OSes
 If Meson is not already installed on your system, you can typically
 install it with your package installer. For example:
 
-.. code-block:: console
+.. code-block:: sh
 
    sudo apt-get install meson   # Ubuntu
 
 or
 
-.. code-block:: console
+.. code-block:: sh
 
    sudo dnf install meson   # Fedora
 
@@ -45,6 +42,70 @@ You'll also need `Ninja <https://ninja-build.org/>`__. If it's not
 already installed, use apt-get or dnf to install the *ninja-build*
 package.
 
+Dependencies
+++++++++++++
+
+Following are the dependencies you would need to install on linux to build and install mesa main. You can install these packages using your linux distibutions' package manager.
+On Debian, Ubuntu and similar, ``sudo apt-get build-dep mesa`` installs
+most of these with just one command. On Fedora and similar, ``sudo dnf
+builddep mesa`` does the same.
+
+.. note::
+   All these dependencies are for latest linux distros and is tested on ubuntu-24 only for now.
+
+   Also note, some packages below might not be available in your OS with the exact name, in such case you can search for it and install the distribution specific one.
+
+   For some packages (eg: libclc etc), you will need the full content of the packages, so make sure to also install ``-dev``/``-devel``/``-headers``/etc. packages (if available) on distributions that split the files into multiple packages.
+
+1. glslang-tools
+2. python3-pyyaml
+3. python3-mako
+4. libdrm (This will get libdrm for intel, amd, qualcomm, nvidia, etc. If you are building a specific driver out of these, you can install only that specific libdrm)
+5. libclc-<version>
+6. llvm-<version>
+7. libllvmspirvlib-<version>
+8. libclang-<version>
+9. byacc (or) bison
+10. flex
+
+.. note::
+   You should make sure that all the llvm related packages (libclc, libclc-dev, llvm, libllvmspirvlib, libclang) are of the same version. You can go with the latest version available on your OS if you are not aware of which version to select.
+
+wayland specific:
+
+1. libwayland
+2. libwayland-egl-backend
+
+x11 specific:
+
+1. libx11
+2. libxext
+3. libxfixes
+4. libxcb-glx
+5. libxcb-shm
+6. libx11-xcb
+7. libxcb-dri2
+8. libxcb-dri3
+9. libxcb-present
+10. libxshmfence
+11. libxxf86vm
+12. libxrandr
+
+for intel vulkan ray-tracing:
+
+1. python3-ply
+
+radeon specific:
+
+1. libelf
+
+nouveau/rusticl specific:
+
+1. rustc
+2. rustfmt
+3. bindgen
+4. cbindgen
+
 Windows
 ^^^^^^^
 
@@ -54,22 +115,22 @@ modules (Mako). You also need pkg-config (a hard dependency of Meson),
 Flex, and Bison. The easiest way to install everything you need is with
 `Chocolatey <https://chocolatey.org/>`__.
 
-.. code-block:: console
+.. code-block:: sh
 
    choco install python3 winflexbison pkgconfiglite
 
 You can even use Chocolatey to install MinGW and Ninja (Ninja can be
 used with MSVC as well)
 
-.. code-block:: console
+.. code-block:: sh
 
    choco install ninja mingw
 
 Then install Meson using pip
 
-.. code-block:: console
+.. code-block:: sh
 
-   py -3 -m pip install meson mako
+   py -3 -m pip install meson packaging mako
 
 You may need to add the Python 3 scripts directory to your path for
 Meson.
@@ -90,25 +151,24 @@ for each configuration you might want to use.
 
 Basic configuration is done with:
 
-.. code-block:: console
+.. code-block:: sh
 
-   meson build/
+   meson setup build/
 
 This will create the build directory. If any dependencies are missing,
 you can install them, or try to remove the dependency with a Meson
-configuration option (see below).
+configuration option (see below). Meson will print a summary of the
+build options at the end.
 
 To review the options which Meson chose, run:
 
-.. code-block:: console
+.. code-block:: sh
 
    meson configure build/
 
-Meson does not currently support listing configuration options before
-running "meson build/" but this feature is being discussed upstream. For
-now, we have a ``bin/meson-options.py`` script that prints the options
-for you. If that script doesn't work for some reason, you can always
-look in the
+Recent version of Meson can print the available options and their
+default values by running ``meson configure`` in the source directory.
+If your Meson version is too old, you can always look in the
 `meson_options.txt <https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/meson_options.txt>`__
 file at the root of the project.
 
@@ -116,7 +176,7 @@ With additional arguments ``meson configure`` can be used to change
 options for a previously configured build directory. All options passed
 to this command are in the form ``-D "option"="value"``. For example:
 
-.. code-block:: console
+.. code-block:: sh
 
    meson configure build/ -Dprefix=/tmp/install -Dglx=true
 
@@ -129,7 +189,7 @@ an empty list (``-D platforms=[]``).
 Once you've run the initial ``meson`` command successfully you can use
 your configured backend to build the project in your build directory:
 
-.. code-block:: console
+.. code-block:: sh
 
    ninja -C build/
 
@@ -137,9 +197,23 @@ The next step is to install the Mesa libraries, drivers, etc. This also
 finishes up some final steps of the build process (such as creating
 symbolic links for drivers). To install:
 
-.. code-block:: console
+.. code-block:: sh
 
    ninja -C build/ install
+
+After installation, you can check if the installation happened properly or not by running the command:
+
+.. code-block:: sh
+
+   glxinfo | grep OpenGL
+
+If the installation succeeded, you should see the Mesa devel version and also the commit hash of the latest commit.
+
+In case you don't see the devel version, you can run
+
+.. code-block:: sh
+
+   sudo ldconfig
 
 Windows specific instructions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -172,13 +246,13 @@ Developers will often want to install Mesa to a testing directory rather
 than the system library directory. This can be done with the --prefix
 option. For example:
 
-.. code-block:: console
+.. code-block:: sh
 
    meson --prefix="${PWD}/build/install" build/
 
 will put the final libraries and drivers into the build/install/
-directory. Then you can set LD_LIBRARY_PATH and LIBGL_DRIVERS_PATH to
-that location to run/test the driver.
+directory. Then you can set LD_LIBRARY_PATH to that location to run/test
+the driver.
 
 Meson also honors ``DESTDIR`` for installs.
 
@@ -195,24 +269,24 @@ they are guaranteed to persist across rebuilds and reconfigurations.
 This example sets -fmax-errors for compiling C sources and -DMAGIC=123
 for C++ sources:
 
-.. code-block:: console
+.. code-block:: sh
 
-   meson builddir/ -Dc_args=-fmax-errors=10 -Dcpp_args=-DMAGIC=123
+   meson setup builddir/ -Dc_args=-fmax-errors=10 -Dcpp_args=-DMAGIC=123
 
 Compiler Specification
 ^^^^^^^^^^^^^^^^^^^^^^
 
 Meson supports the standard CC and CXX environment variables for
 changing the default compiler. Note that Meson does not allow changing
-the compilers in a configured builddir so you will need to create a new
-build dir for a different compiler.
+the compilers in a configured build directory so you will need to create
+a new build dir for a different compiler.
 
 This is an example of specifying the Clang compilers and cleaning the
 build directory before reconfiguring with an extra C option:
 
-.. code-block:: console
+.. code-block:: sh
 
-   CC=clang CXX=clang++ meson build-clang
+   CC=clang CXX=clang++ meson setup build-clang
    ninja -C build-clang
    ninja -C build-clang clean
    meson configure build -Dc_args="-Wno-typedef-redefinition"
@@ -234,14 +308,14 @@ CMake finder it will only find static libraries, it will never find
 which points to the root of an alternative installation (the prefix).
 For example:
 
-.. code-block:: console
+.. code-block:: sh
 
-   meson builddir -Dcmake_module_path=/home/user/mycmake/prefix
+   meson setup builddir -Dcmake_module_path=/home/user/mycmake/prefix
 
 As of Meson 0.49.0 Meson also has the concept of a `"native
 file" <https://mesonbuild.com/Native-environments.html>`__, these files
 provide information about the native build environment (as opposed to a
-cross build environment). They are ini formatted and can override where
+cross build environment). They are INI formatted and can override where
 to find llvm-config:
 
 .. code-block:: ini
@@ -252,9 +326,9 @@ to find llvm-config:
 
 Then configure Meson:
 
-.. code-block:: console
+.. code-block:: sh
 
-   meson builddir/ --native-file custom-llvm.ini
+   meson setup builddir/ --native-file custom-llvm.ini
 
 For selecting llvm-config for cross compiling a `"cross
 file" <https://mesonbuild.com/Cross-compilation.html#defining-the-environment>`__
@@ -268,13 +342,13 @@ should be used. It uses the same format as the native file above:
    llvm-config = '/usr/lib/llvm-config-32'
    cmake = '/usr/bin/cmake-for-my-arch'
 
-Obviously, only cmake or llvm-config is required.
+Obviously, only CMake or llvm-config is required.
 
 Then configure Meson:
 
-.. code-block:: console
+.. code-block:: sh
 
-   meson builddir/ --cross-file cross-llvm.ini
+   meson setup builddir/ --cross-file cross-llvm.ini
 
 See the :ref:`Cross Compilation <cross-compilation>` section for more
 information.
@@ -359,12 +433,12 @@ Options
 ^^^^^^^
 
 One of the oddities of Meson is that some options are different when
-passed to the ``meson`` than to ``meson configure``. These options are
-passed as --option=foo to ``meson``, but -Doption=foo to
+passed to :program:`meson` than to ``meson configure``. These options are
+passed as --option=foo to :program:`meson`, but -Doption=foo to
 ``meson configure``. Mesa defined options are always passed as
 -Doption=foo.
 
-For those coming from autotools be aware of the following:
+For those coming from Autotools be aware of the following:
 
 ``--buildtype/-Dbuildtype``
    This option will set the compiler debug/optimization levels to aid
@@ -404,11 +478,36 @@ This file can live at any location, but you can use the bare filename
 Below are a few example of cross files, but keep in mind that you will
 likely have to alter them for your system.
 
-Those running on ArchLinux can use the AUR-maintained packages for some
+Those running on Arch Linux can use the AUR-maintained packages for some
 of those, as they'll have the right values for your system:
 
 -  `meson-cross-x86-linux-gnu <https://aur.archlinux.org/packages/meson-cross-x86-linux-gnu>`__
--  `meson-cross-aarch64-linux-gnu <https://aur.archlinux.org/packages/meson-cross-aarch64-linux-gnu>`__
+-  `meson-cross-aarch64-linux-gnu <https://github.com/dcbaker/archlinux-meson-cross-aarch64-linux-gnu>`__
+
+Cross-compilation requires cross-compiled versions of the same build
+dependencies listed at the top of this page.
+
+On Debian, Ubuntu and similar, the command ``sudo apt-rdepends
+--build-depends --follow=DEPENDS mesa`` provides a complete and
+up-to-date list of all build dependencies. Append the ``:i386`` suffix
+(or your desired architecture) to package names and install the ones you
+need like this: ``sudo apt install libwayland-dev:i386 libelf-dev:i386
+...``
+
+On Fedora and similar, try ``sudo setarch i686 dnf builddep mesa``. If
+that fails, ``sudo dnf builddep mesa`` prints all native dependencies
+even when they are already installed. Replace the ``.x86_64`` suffix
+with ``.686`` (or your desired architecture) and install the ones you
+need.
+
+You do not need a cross-compiled version of the dependencies like
+``python3``, ``bison``, ``flex``, ``bindgen``,...  that are *used only at
+build time*. Some unnecessary ones may even confuse your system
+configuration. Also, remember that some dependencies are optional
+depending on how you configure your ``meson setup ...`` command - this
+is not specific to cross-compilation; see details above. So you may want
+to proceed with trial-and-error and install only cross-compiled packages
+needed to fix build error messages.
 
 32-bit build on x86 linux:
 
@@ -417,12 +516,19 @@ of those, as they'll have the right values for your system:
    [binaries]
    c = '/usr/bin/gcc'
    cpp = '/usr/bin/g++'
+   # ccache is not automatically used when specifying [binaries].
+   # To accelerate cross-compilation as much as native compilation:
+   # c =   ['ccache', 'gcc']
+   # cpp = ['ccache', 'g++']
    ar = '/usr/bin/gcc-ar'
    strip = '/usr/bin/strip'
-   pkgconfig = '/usr/bin/pkg-config-32'
    llvm-config = '/usr/bin/llvm-config32'
+   pkg-config = '/usr/bin/pkg-config-32'
+   # As of version 40, Fedora uses a full target platform prefix for
+   # pkg-config instead, like the ARM and Windows examples below:
+   # pkg-config = 'i686-redhat-linux-gnu-pkg-config'
 
-   [properties]
+   [built-in options]
    c_args = ['-m32']
    c_link_args = ['-m32']
    cpp_args = ['-m32']
@@ -443,7 +549,7 @@ of those, as they'll have the right values for your system:
    cpp = '/usr/bin/aarch64-linux-gnu-g++'
    ar = '/usr/bin/aarch64-linux-gnu-gcc-ar'
    strip = '/usr/bin/aarch64-linux-gnu-strip'
-   pkgconfig = '/usr/bin/aarch64-linux-gnu-pkg-config'
+   pkg-config = '/usr/bin/aarch64-linux-gnu-pkg-config'
    exe_wrapper = '/usr/bin/qemu-aarch64-static'
 
    [host_machine]
@@ -461,7 +567,7 @@ of those, as they'll have the right values for your system:
    cpp = '/usr/bin/x86_64-w64-mingw32-g++'
    ar = '/usr/bin/x86_64-w64-mingw32-ar'
    strip = '/usr/bin/x86_64-w64-mingw32-strip'
-   pkgconfig = '/usr/bin/x86_64-w64-mingw32-pkg-config'
+   pkg-config = '/usr/bin/x86_64-w64-mingw32-pkg-config'
    exe_wrapper = 'wine'
 
    [host_machine]

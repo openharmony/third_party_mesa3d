@@ -42,9 +42,9 @@ wrap_matrix(struct vtn_builder *b, struct vtn_ssa_value *val)
    if (glsl_type_is_matrix(val->type))
       return val;
 
-   struct vtn_ssa_value *dest = rzalloc(b, struct vtn_ssa_value);
+   struct vtn_ssa_value *dest = vtn_zalloc(b, struct vtn_ssa_value);
    dest->type = glsl_get_bare_type(val->type);
-   dest->elems = ralloc_array(b, struct vtn_ssa_value *, 1);
+   dest->elems = vtn_alloc_array(b, struct vtn_ssa_value *, 1);
    dest->elems[0] = val;
 
    return dest;
@@ -94,38 +94,16 @@ matrix_multiply(struct vtn_builder *b,
       transpose_result = true;
    }
 
-   if (src0_transpose && !src1_transpose &&
-       glsl_get_base_type(src0->type) == GLSL_TYPE_FLOAT) {
-      /* We already have the rows of src0 and the columns of src1 available,
-       * so we can just take the dot product of each row with each column to
-       * get the result.
-       */
-
-      for (unsigned i = 0; i < src1_columns; i++) {
-         nir_ssa_def *vec_src[4];
-         for (unsigned j = 0; j < src0_rows; j++) {
-            vec_src[j] = nir_fdot(&b->nb, src0_transpose->elems[j]->def,
-                                          src1->elems[i]->def);
-         }
-         dest->elems[i]->def = nir_vec(&b->nb, vec_src, src0_rows);
-      }
-   } else {
-      /* We don't handle the case where src1 is transposed but not src0, since
-       * the general case only uses individual components of src1 so the
-       * optimizer should chew through the transpose we emitted for src1.
-       */
-
-      for (unsigned i = 0; i < src1_columns; i++) {
-         /* dest[i] = sum(src0[j] * src1[i][j] for all j) */
+   for (unsigned i = 0; i < src1_columns; i++) {
+      /* dest[i] = sum(src0[j] * src1[i][j] for all j) */
+      dest->elems[i]->def =
+         nir_fmul(&b->nb, src0->elems[src0_columns - 1]->def,
+                  nir_channel(&b->nb, src1->elems[i]->def, src0_columns - 1));
+      for (int j = src0_columns - 2; j >= 0; j--) {
          dest->elems[i]->def =
-            nir_fmul(&b->nb, src0->elems[src0_columns - 1]->def,
-                     nir_channel(&b->nb, src1->elems[i]->def, src0_columns - 1));
-         for (int j = src0_columns - 2; j >= 0; j--) {
-            dest->elems[i]->def =
-               nir_ffma(&b->nb, src0->elems[j]->def,
-                                nir_channel(&b->nb, src1->elems[i]->def, j),
-                                dest->elems[i]->def);
-         }
+            nir_ffma(&b->nb, src0->elems[j]->def,
+                             nir_channel(&b->nb, src1->elems[i]->def, j),
+                             dest->elems[i]->def);
       }
    }
 
@@ -140,7 +118,7 @@ matrix_multiply(struct vtn_builder *b,
 static struct vtn_ssa_value *
 mat_times_scalar(struct vtn_builder *b,
                  struct vtn_ssa_value *mat,
-                 nir_ssa_def *scalar)
+                 nir_def *scalar)
 {
    struct vtn_ssa_value *dest = vtn_create_ssa_value(b, mat->type);
    for (unsigned i = 0; i < glsl_get_matrix_columns(mat->type); i++) {
@@ -153,8 +131,8 @@ mat_times_scalar(struct vtn_builder *b,
    return dest;
 }
 
-nir_ssa_def *
-vtn_mediump_downconvert(struct vtn_builder *b, enum glsl_base_type base_type, nir_ssa_def *def)
+nir_def *
+vtn_mediump_downconvert(struct vtn_builder *b, enum glsl_base_type base_type, nir_def *def)
 {
    if (def->bit_size == 16)
       return def;
@@ -408,20 +386,69 @@ vtn_nir_alu_op_for_spirv_opcode(struct vtn_builder *b,
    case SpvOpPtrCastToGeneric:   return nir_op_mov;
    case SpvOpGenericCastToPtr:   return nir_op_mov;
 
-   /* Derivatives: */
-   case SpvOpDPdx:         return nir_op_fddx;
-   case SpvOpDPdy:         return nir_op_fddy;
-   case SpvOpDPdxFine:     return nir_op_fddx_fine;
-   case SpvOpDPdyFine:     return nir_op_fddy_fine;
-   case SpvOpDPdxCoarse:   return nir_op_fddx_coarse;
-   case SpvOpDPdyCoarse:   return nir_op_fddy_coarse;
-
    case SpvOpIsNormal:     return nir_op_fisnormal;
    case SpvOpIsFinite:     return nir_op_fisfinite;
 
    default:
       vtn_fail("No NIR equivalent: %u", opcode);
    }
+}
+
+static void
+handle_fp_fast_math(struct vtn_builder *b, UNUSED struct vtn_value *val,
+                 UNUSED int member, const struct vtn_decoration *dec,
+                 UNUSED void *_void)
+{
+   vtn_assert(dec->scope == VTN_DEC_DECORATION);
+   if (dec->decoration != SpvDecorationFPFastMathMode)
+      return;
+
+   SpvFPFastMathModeMask can_fast_math =
+      SpvFPFastMathModeAllowRecipMask |
+      SpvFPFastMathModeAllowContractMask |
+      SpvFPFastMathModeAllowReassocMask |
+      SpvFPFastMathModeAllowTransformMask;
+
+   if ((dec->operands[0] & can_fast_math) != can_fast_math)
+      b->nb.exact = true;
+
+   /* Decoration overrides defaults */
+   b->nb.fp_fast_math = 0;
+   if (!(dec->operands[0] & SpvFPFastMathModeNSZMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP16 |
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP32 |
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP64;
+   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_NAN_PRESERVE_FP16 |
+         FLOAT_CONTROLS_NAN_PRESERVE_FP32 |
+         FLOAT_CONTROLS_NAN_PRESERVE_FP64;
+   if (!(dec->operands[0] & SpvFPFastMathModeNotInfMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_INF_PRESERVE_FP16 |
+         FLOAT_CONTROLS_INF_PRESERVE_FP32 |
+         FLOAT_CONTROLS_INF_PRESERVE_FP64;
+}
+
+void
+vtn_handle_fp_fast_math(struct vtn_builder *b, struct vtn_value *val)
+{
+   /* Take the NaN/Inf/SZ preserve bits from the execution mode and set them
+    * on the builder, so the generated instructions can take it from it.
+    * We only care about some of them, check nir_alu_instr for details.
+    * We also copy all bit widths, because we can't easily get the correct one
+    * here.
+    */
+#define FLOAT_CONTROLS2_BITS (FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP16 | \
+                              FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP32 | \
+                              FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP64)
+   static_assert(FLOAT_CONTROLS2_BITS == BITSET_MASK(9),
+      "enum float_controls and fp_fast_math out of sync!");
+   b->nb.fp_fast_math = b->shader->info.float_controls_execution_mode &
+      FLOAT_CONTROLS2_BITS;
+   vtn_foreach_decoration(b, val, handle_fp_fast_math, NULL);
+#undef FLOAT_CONTROLS2_BITS
 }
 
 static void
@@ -559,8 +586,8 @@ vtn_alu_op_mediump_16bit(struct vtn_builder *b, SpvOp opcode, struct vtn_value *
    }
 }
 
-static nir_ssa_def *
-vtn_mediump_upconvert(struct vtn_builder *b, enum glsl_base_type base_type, nir_ssa_def *def)
+static nir_def *
+vtn_mediump_upconvert(struct vtn_builder *b, enum glsl_base_type base_type, nir_def *def)
 {
    if (def->bit_size != 16)
       return def;
@@ -590,6 +617,49 @@ vtn_mediump_upconvert_value(struct vtn_builder *b, struct vtn_ssa_value *value)
    }
 }
 
+static nir_def *
+vtn_handle_deriv(struct vtn_builder *b, SpvOp opcode, nir_def *src)
+{
+   /* SPV_NV_compute_shader_derivatives:
+    * In the GLCompute Execution Model:
+    * Selection of the four invocations is determined by the DerivativeGroup*NV
+    * execution mode that was specified for the entry point.
+    * If neither derivative group mode was specified, the derivatives return zero.
+    */
+   if (b->nb.shader->info.stage == MESA_SHADER_COMPUTE &&
+       b->nb.shader->info.derivative_group == DERIVATIVE_GROUP_NONE) {
+      return nir_imm_zero(&b->nb, src->num_components, src->bit_size);
+   }
+
+   switch (opcode) {
+   case SpvOpDPdx:
+      return nir_ddx(&b->nb, src);
+   case SpvOpDPdxFine:
+      return nir_ddx_fine(&b->nb, src);
+   case SpvOpDPdxCoarse:
+      return nir_ddx_coarse(&b->nb, src);
+   case SpvOpDPdy:
+      return nir_ddy(&b->nb, src);
+   case SpvOpDPdyFine:
+      return nir_ddy_fine(&b->nb, src);
+   case SpvOpDPdyCoarse:
+      return nir_ddy_coarse(&b->nb, src);
+   case SpvOpFwidth:
+      return nir_fadd(&b->nb,
+                      nir_fabs(&b->nb, nir_ddx(&b->nb, src)),
+                      nir_fabs(&b->nb, nir_ddy(&b->nb, src)));
+   case SpvOpFwidthFine:
+      return nir_fadd(&b->nb,
+                      nir_fabs(&b->nb, nir_ddx_fine(&b->nb, src)),
+                      nir_fabs(&b->nb, nir_ddy_fine(&b->nb, src)));
+   case SpvOpFwidthCoarse:
+      return nir_fadd(&b->nb,
+                      nir_fabs(&b->nb, nir_ddx_coarse(&b->nb, src)),
+                      nir_fabs(&b->nb, nir_ddy_coarse(&b->nb, src)));
+   default: unreachable("Not a derivative opcode");
+   }
+}
+
 void
 vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
                const uint32_t *w, unsigned count)
@@ -597,7 +667,13 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    struct vtn_value *dest_val = vtn_untyped_value(b, w[2]);
    const struct glsl_type *dest_type = vtn_get_type(b, w[1])->type;
 
+   if (glsl_type_is_cmat(dest_type)) {
+      vtn_handle_cooperative_alu(b, dest_val, dest_type, opcode, w, count);
+      return;
+   }
+
    vtn_handle_no_contraction(b, dest_val);
+   vtn_handle_fp_fast_math(b, dest_val);
    bool mediump_16bit = vtn_alu_op_mediump_16bit(b, opcode, dest_val);
 
    /* Collect the various SSA sources */
@@ -622,7 +698,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    }
 
    struct vtn_ssa_value *dest = vtn_create_ssa_value(b, dest_type);
-   nir_ssa_def *src[4] = { NULL, };
+   nir_def *src[4] = { NULL, };
    for (unsigned i = 0; i < num_inputs; i++) {
       vtn_assert(glsl_type_is_vector_or_scalar(vtn_src[i]->type));
       src[i] = vtn_src[i]->def;
@@ -664,7 +740,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    case SpvOpUMulExtended: {
       vtn_assert(glsl_type_is_struct_or_ifc(dest_type));
       if (src[0]->bit_size == 32) {
-         nir_ssa_def *umul = nir_umul_2x32_64(&b->nb, src[0], src[1]);
+         nir_def *umul = nir_umul_2x32_64(&b->nb, src[0], src[1]);
          dest->elems[0]->def = nir_unpack_64_2x32_split_x(&b->nb, umul);
          dest->elems[1]->def = nir_unpack_64_2x32_split_y(&b->nb, umul);
       } else {
@@ -677,7 +753,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    case SpvOpSMulExtended: {
       vtn_assert(glsl_type_is_struct_or_ifc(dest_type));
       if (src[0]->bit_size == 32) {
-         nir_ssa_def *umul = nir_imul_2x32_64(&b->nb, src[0], src[1]);
+         nir_def *umul = nir_imul_2x32_64(&b->nb, src[0], src[1]);
          dest->elems[0]->def = nir_unpack_64_2x32_split_x(&b->nb, umul);
          dest->elems[1]->def = nir_unpack_64_2x32_split_y(&b->nb, umul);
       } else {
@@ -687,20 +763,16 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
       break;
    }
 
+   case SpvOpDPdx:
+   case SpvOpDPdxFine:
+   case SpvOpDPdxCoarse:
+   case SpvOpDPdy:
+   case SpvOpDPdyFine:
+   case SpvOpDPdyCoarse:
    case SpvOpFwidth:
-      dest->def = nir_fadd(&b->nb,
-                               nir_fabs(&b->nb, nir_fddx(&b->nb, src[0])),
-                               nir_fabs(&b->nb, nir_fddy(&b->nb, src[0])));
-      break;
    case SpvOpFwidthFine:
-      dest->def = nir_fadd(&b->nb,
-                               nir_fabs(&b->nb, nir_fddx_fine(&b->nb, src[0])),
-                               nir_fabs(&b->nb, nir_fddy_fine(&b->nb, src[0])));
-      break;
    case SpvOpFwidthCoarse:
-      dest->def = nir_fadd(&b->nb,
-                               nir_fabs(&b->nb, nir_fddx_coarse(&b->nb, src[0])),
-                               nir_fabs(&b->nb, nir_fddy_coarse(&b->nb, src[0])));
+      dest->def = vtn_handle_deriv(b, opcode, src[0]);
       break;
 
    case SpvOpVectorTimesScalar:
@@ -738,7 +810,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    }
 
    case SpvOpIsInf: {
-      nir_ssa_def *inf = nir_imm_floatN_t(&b->nb, INFINITY, src[0]->bit_size);
+      nir_def *inf = nir_imm_floatN_t(&b->nb, INFINITY, src[0]->bit_size);
       dest->def = nir_ieq(&b->nb, nir_fabs(&b->nb, src[0]), inf);
       break;
    }
@@ -779,7 +851,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
                                                   src_bit_size, dst_bit_size);
 
       if (swap) {
-         nir_ssa_def *tmp = src[0];
+         nir_def *tmp = src[0];
          src[0] = src[1];
          src[1] = tmp;
       }
@@ -840,7 +912,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    case SpvOpFConvert:
    case SpvOpSatConvertSToU:
    case SpvOpSatConvertUToS: {
-      unsigned src_bit_size = glsl_get_bit_size(vtn_src[0]->type);
+      unsigned src_bit_size = src[0]->bit_size;
       unsigned dst_bit_size = glsl_get_bit_size(dest_type);
       nir_alu_type src_type = convert_op_src_type(opcode) | src_bit_size;
       nir_alu_type dst_type = convert_op_dst_type(opcode) | dst_bit_size;
@@ -856,9 +928,8 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
 
       if (b->shader->info.stage == MESA_SHADER_KERNEL) {
          if (opts.rounding_mode == nir_rounding_mode_undef && !opts.saturate) {
-            nir_op op = nir_type_conversion_op(src_type, dst_type,
-                                               nir_rounding_mode_undef);
-            dest->def = nir_build_alu(&b->nb, op, src[0], NULL, NULL, NULL);
+            dest->def = nir_type_convert(&b->nb, src[0], src_type, dst_type,
+                                         nir_rounding_mode_undef);
          } else {
             dest->def = nir_convert_alu_types(&b->nb, dst_bit_size, src[0],
                                               src_type, dst_type,
@@ -869,9 +940,8 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
                      dst_type != nir_type_float16,
                      "Rounding modes are only allowed on conversions to "
                      "16-bit float types");
-         nir_op op = nir_type_conversion_op(src_type, dst_type,
-                                            opts.rounding_mode);
-         dest->def = nir_build_alu(&b->nb, op, src[0], NULL, NULL, NULL);
+         dest->def = nir_type_convert(&b->nb, src[0], src_type, dst_type,
+                                      opts.rounding_mode);
       }
       break;
    }
@@ -929,7 +999,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
       /* bit_count always returns int32, but the SPIR-V opcode just says the return
        * value needs to be big enough to store the number of bits.
        */
-      dest->def = nir_u2u(&b->nb, nir_bit_count(&b->nb, src[0]), glsl_get_bit_size(dest_type));
+      dest->def = nir_u2uN(&b->nb, nir_bit_count(&b->nb, src[0]), glsl_get_bit_size(dest_type));
       break;
    }
 
@@ -951,7 +1021,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
                                                   src_bit_size, dst_bit_size);
 
       if (swap) {
-         nir_ssa_def *tmp = src[0];
+         nir_def *tmp = src[0];
          src[0] = src[1];
          src[1] = tmp;
       }
@@ -1023,7 +1093,7 @@ vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
    vtn_assert(count >= num_inputs + 3);
 
    struct vtn_ssa_value *vtn_src[3] = { NULL, };
-   nir_ssa_def *src[3] = { NULL, };
+   nir_def *src[3] = { NULL, };
 
    for (unsigned i = 0; i < num_inputs; i++) {
       vtn_src[i] = vtn_ssa_value(b, w[i + 3]);
@@ -1101,37 +1171,29 @@ vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
       vtn_fail_with_opcode("Invalid source types.", opcode);
    }
 
-   nir_ssa_def *dest = NULL;
+   nir_def *dest = NULL;
 
    if (src[0]->num_components > 1) {
-      const nir_op s_conversion_op =
-         nir_type_conversion_op(nir_type_int, nir_type_int | dest_size,
-                                nir_rounding_mode_undef);
-
-      const nir_op u_conversion_op =
-         nir_type_conversion_op(nir_type_uint, nir_type_uint | dest_size,
-                                nir_rounding_mode_undef);
-
-      nir_op src0_conversion_op;
-      nir_op src1_conversion_op;
+      nir_def *(*src0_conversion)(nir_builder *, nir_def *, unsigned);
+      nir_def *(*src1_conversion)(nir_builder *, nir_def *, unsigned);
 
       switch (opcode) {
       case SpvOpSDotKHR:
       case SpvOpSDotAccSatKHR:
-         src0_conversion_op = s_conversion_op;
-         src1_conversion_op = s_conversion_op;
+         src0_conversion = nir_i2iN;
+         src1_conversion = nir_i2iN;
          break;
 
       case SpvOpUDotKHR:
       case SpvOpUDotAccSatKHR:
-         src0_conversion_op = u_conversion_op;
-         src1_conversion_op = u_conversion_op;
+         src0_conversion = nir_u2uN;
+         src1_conversion = nir_u2uN;
          break;
 
       case SpvOpSUDotKHR:
       case SpvOpSUDotAccSatKHR:
-         src0_conversion_op = s_conversion_op;
-         src1_conversion_op = u_conversion_op;
+         src0_conversion = nir_i2iN;
+         src1_conversion = nir_u2uN;
          break;
 
       default:
@@ -1152,15 +1214,13 @@ vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
          glsl_get_vector_elements(vtn_src[0]->type);
 
       for (unsigned i = 0; i < vector_components; i++) {
-         nir_ssa_def *const src0 =
-            nir_build_alu(&b->nb, src0_conversion_op,
-                          nir_channel(&b->nb, src[0], i), NULL, NULL, NULL);
+         nir_def *const src0 =
+            src0_conversion(&b->nb, nir_channel(&b->nb, src[0], i), dest_size);
 
-         nir_ssa_def *const src1 =
-            nir_build_alu(&b->nb, src1_conversion_op,
-                          nir_channel(&b->nb, src[1], i), NULL, NULL, NULL);
+         nir_def *const src1 =
+            src1_conversion(&b->nb, nir_channel(&b->nb, src[1], i), dest_size);
 
-         nir_ssa_def *const mul_result = nir_imul(&b->nb, src0, src1);
+         nir_def *const mul_result = nir_imul(&b->nb, src0, src1);
 
          dest = (i == 0) ? mul_result : nir_iadd(&b->nb, dest, mul_result);
       }
@@ -1190,7 +1250,7 @@ vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
       assert(src[0]->num_components == 1 && src[1]->num_components == 1);
       assert(src[0]->bit_size == 32 && src[1]->bit_size == 32);
 
-      nir_ssa_def *const zero = nir_imm_zero(&b->nb, 1, 32);
+      nir_def *const zero = nir_imm_zero(&b->nb, 1, 32);
       bool is_signed = opcode == SpvOpSDotKHR || opcode == SpvOpSUDotKHR ||
                        opcode == SpvOpSDotAccSatKHR || opcode == SpvOpSUDotAccSatKHR;
 
@@ -1270,12 +1330,12 @@ vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
           */
          if (num_inputs == 3) {
             dest = is_signed
-               ? nir_iadd_sat(&b->nb, nir_i2i(&b->nb, dest, dest_size), src[2])
-               : nir_uadd_sat(&b->nb, nir_u2u(&b->nb, dest, dest_size), src[2]);
+               ? nir_iadd_sat(&b->nb, nir_i2iN(&b->nb, dest, dest_size), src[2])
+               : nir_uadd_sat(&b->nb, nir_u2uN(&b->nb, dest, dest_size), src[2]);
          } else {
             dest = is_signed
-               ? nir_i2i(&b->nb, dest, dest_size)
-               : nir_u2u(&b->nb, dest, dest_size);
+               ? nir_i2iN(&b->nb, dest, dest_size)
+               : nir_u2uN(&b->nb, dest, dest_size);
          }
       }
    }
@@ -1309,13 +1369,18 @@ vtn_handle_bitcast(struct vtn_builder *b, const uint32_t *w, unsigned count)
     */
 
    struct vtn_type *type = vtn_get_type(b, w[1]);
-   struct nir_ssa_def *src = vtn_get_nir_ssa(b, w[3]);
+   if (type->base_type == vtn_base_type_cooperative_matrix) {
+      vtn_handle_cooperative_instruction(b, SpvOpBitcast, w, count);
+      return;
+   }
+
+   struct nir_def *src = vtn_get_nir_ssa(b, w[3]);
 
    vtn_fail_if(src->num_components * src->bit_size !=
                glsl_get_vector_elements(type->type) * glsl_get_bit_size(type->type),
-               "Source and destination of OpBitcast must have the same "
-               "total number of bits");
-   nir_ssa_def *val =
+               "Source (%%%u) and destination (%%%u) of OpBitcast must have the same "
+               "total number of bits", w[3], w[2]);
+   nir_def *val =
       nir_bitcast_vector(&b->nb, src, glsl_get_bit_size(type->type));
    vtn_push_nir_ssa(b, w[2], val);
 }

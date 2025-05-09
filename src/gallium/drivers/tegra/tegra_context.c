@@ -210,7 +210,7 @@ tegra_create_sampler_state(struct pipe_context *pcontext,
 }
 
 static void
-tegra_bind_sampler_states(struct pipe_context *pcontext, unsigned shader,
+tegra_bind_sampler_states(struct pipe_context *pcontext, enum pipe_shader_type shader,
                           unsigned start_slot, unsigned num_samplers,
                           void **samplers)
 {
@@ -475,7 +475,7 @@ tegra_set_clip_state(struct pipe_context *pcontext,
 }
 
 static void
-tegra_set_constant_buffer(struct pipe_context *pcontext, unsigned int shader,
+tegra_set_constant_buffer(struct pipe_context *pcontext, enum pipe_shader_type shader,
                           unsigned int index, bool take_ownership,
                           const struct pipe_constant_buffer *buf)
 {
@@ -559,7 +559,7 @@ tegra_set_viewport_states(struct pipe_context *pcontext, unsigned start_slot,
 }
 
 static void
-tegra_set_sampler_views(struct pipe_context *pcontext, unsigned shader,
+tegra_set_sampler_views(struct pipe_context *pcontext, enum pipe_shader_type shader,
                         unsigned start_slot, unsigned num_views,
                         unsigned unbind_num_trailing_slots,
                         bool take_ownership,
@@ -610,7 +610,7 @@ tegra_set_debug_callback(struct pipe_context *pcontext,
 }
 
 static void
-tegra_set_shader_buffers(struct pipe_context *pcontext, unsigned int shader,
+tegra_set_shader_buffers(struct pipe_context *pcontext, enum pipe_shader_type shader,
                          unsigned start, unsigned count,
                          const struct pipe_shader_buffer *buffers,
                          unsigned writable_bitmask)
@@ -622,7 +622,7 @@ tegra_set_shader_buffers(struct pipe_context *pcontext, unsigned int shader,
 }
 
 static void
-tegra_set_shader_images(struct pipe_context *pcontext, unsigned int shader,
+tegra_set_shader_images(struct pipe_context *pcontext, enum pipe_shader_type shader,
                         unsigned start, unsigned count,
                         unsigned unbind_num_trailing_slots,
                         const struct pipe_image_view *images)
@@ -634,9 +634,8 @@ tegra_set_shader_images(struct pipe_context *pcontext, unsigned int shader,
 }
 
 static void
-tegra_set_vertex_buffers(struct pipe_context *pcontext, unsigned start_slot,
-                         unsigned num_buffers, unsigned unbind_num_trailing_slots,
-                         bool take_ownership,
+tegra_set_vertex_buffers(struct pipe_context *pcontext,
+                         unsigned num_buffers,
                          const struct pipe_vertex_buffer *buffers)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
@@ -654,9 +653,7 @@ tegra_set_vertex_buffers(struct pipe_context *pcontext, unsigned start_slot,
       buffers = buf;
    }
 
-   context->gpu->set_vertex_buffers(context->gpu, start_slot, num_buffers,
-                                    unbind_num_trailing_slots,
-                                    take_ownership, buffers);
+   context->gpu->set_vertex_buffers(context->gpu, num_buffers, buffers);
 }
 
 static struct pipe_stream_output_target *
@@ -687,12 +684,13 @@ static void
 tegra_set_stream_output_targets(struct pipe_context *pcontext,
                                 unsigned num_targets,
                                 struct pipe_stream_output_target **targets,
-                                const unsigned *offsets)
+                                const unsigned *offsets,
+                                enum mesa_prim output_prim)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
 
    context->gpu->set_stream_output_targets(context->gpu, num_targets,
-                                           targets, offsets);
+                                           targets, offsets, output_prim);
 }
 
 static void
@@ -1000,7 +998,7 @@ tegra_texture_subdata(struct pipe_context *pcontext,
                       const struct pipe_box *box,
                       const void *data,
                       unsigned stride,
-                      unsigned layer_stride)
+                      uintptr_t layer_stride)
 {
    struct tegra_resource *resource = to_tegra_resource(presource);
    struct tegra_context *context = to_tegra_context(pcontext);

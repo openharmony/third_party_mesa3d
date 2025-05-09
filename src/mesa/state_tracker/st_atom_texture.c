@@ -104,9 +104,8 @@ st_get_sampler_views(struct st_context *st,
       return 0;
 
    unsigned num_textures = util_last_bit(samplers_used);
-
-   /* prog->sh.data is NULL if it's ARB_fragment_program */
-   bool glsl130 = (prog->sh.data ? prog->sh.data->Version : 0) >= 130;
+   const bool glsl130 =
+      (prog->shader_program ? prog->shader_program->GLSL_Version : 0) >= 130;
 
    /* loop over sampler units (aka tex image units) */
    for (unit = 0; unit < num_textures; unit++) {
@@ -175,8 +174,32 @@ st_get_sampler_views(struct st_context *st,
          continue;
 
       switch (st_get_view_format(stObj)) {
+      case PIPE_FORMAT_NV16:
+         if (stObj->pt->format == PIPE_FORMAT_R8_G8B8_422_UNORM)
+            /* no additional views needed */
+            break;
+
+         /* we need one additional R8G8 view: */
+         tmpl.format = PIPE_FORMAT_RG88_UNORM;
+         tmpl.swizzle_g = PIPE_SWIZZLE_Y;   /* tmpl from Y plane is R8 */
+         extra = u_bit_scan(&free_slots);
+         sampler_views[extra] =
+               pipe->create_sampler_view(pipe, stObj->pt->next, &tmpl);
+         break;
       case PIPE_FORMAT_NV12:
          if (stObj->pt->format == PIPE_FORMAT_R8_G8B8_420_UNORM)
+            /* no additional views needed */
+            break;
+
+         /* we need one additional R8G8 view: */
+         tmpl.format = PIPE_FORMAT_RG88_UNORM;
+         tmpl.swizzle_g = PIPE_SWIZZLE_Y;   /* tmpl from Y plane is R8 */
+         extra = u_bit_scan(&free_slots);
+         sampler_views[extra] =
+               pipe->create_sampler_view(pipe, stObj->pt->next, &tmpl);
+         break;
+      case PIPE_FORMAT_NV21:
+         if (stObj->pt->format == PIPE_FORMAT_R8_B8G8_420_UNORM)
             /* no additional views needed */
             break;
 
@@ -190,6 +213,7 @@ st_get_sampler_views(struct st_context *st,
       case PIPE_FORMAT_P010:
       case PIPE_FORMAT_P012:
       case PIPE_FORMAT_P016:
+      case PIPE_FORMAT_P030:
          /* we need one additional R16G16 view: */
          tmpl.format = PIPE_FORMAT_RG1616_UNORM;
          tmpl.swizzle_g = PIPE_SWIZZLE_Y;   /* tmpl from Y plane is R16 */
@@ -198,6 +222,11 @@ st_get_sampler_views(struct st_context *st,
                pipe->create_sampler_view(pipe, stObj->pt->next, &tmpl);
          break;
       case PIPE_FORMAT_IYUV:
+         if (stObj->pt->format == PIPE_FORMAT_R8_G8_B8_420_UNORM ||
+             stObj->pt->format == PIPE_FORMAT_R8_B8_G8_420_UNORM)
+            /* no additional views needed */
+            break;
+
          /* we need two additional R8 views: */
          tmpl.format = PIPE_FORMAT_R8_UNORM;
          extra = u_bit_scan(&free_slots);
@@ -208,7 +237,9 @@ st_get_sampler_views(struct st_context *st,
                pipe->create_sampler_view(pipe, stObj->pt->next->next, &tmpl);
          break;
       case PIPE_FORMAT_YUYV:
-         if (stObj->pt->format == PIPE_FORMAT_R8G8_R8B8_UNORM)
+      case PIPE_FORMAT_YVYU:
+         if (stObj->pt->format == PIPE_FORMAT_R8G8_R8B8_UNORM ||
+             stObj->pt->format == PIPE_FORMAT_R8B8_R8G8_UNORM)
             /* no additional views needed */
             break;
 
@@ -221,7 +252,9 @@ st_get_sampler_views(struct st_context *st,
                pipe->create_sampler_view(pipe, stObj->pt->next, &tmpl);
          break;
       case PIPE_FORMAT_UYVY:
-         if (stObj->pt->format == PIPE_FORMAT_G8R8_B8R8_UNORM)
+      case PIPE_FORMAT_VYUY:
+         if (stObj->pt->format == PIPE_FORMAT_G8R8_B8R8_UNORM ||
+             stObj->pt->format == PIPE_FORMAT_B8R8_G8R8_UNORM)
             /* no additional views needed */
             break;
 

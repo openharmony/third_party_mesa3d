@@ -129,12 +129,19 @@ st_generate_mipmap(struct gl_context *ctx, GLenum target,
    if (texObj->Sampler.Attrib.sRGBDecode == GL_SKIP_DECODE_EXT)
       format = util_format_linear(format);
 
+   /* For fallback formats, we need to update both the compressed and
+    * uncompressed images.
+    */
+   if (st_compressed_format_fallback(st, _mesa_base_tex_image(texObj)->TexFormat)) {
+      _mesa_generate_mipmap(ctx, target, texObj);
+      return;
+   }
+
    /* First see if the driver supports hardware mipmap generation,
     * if not then generate the mipmap by rendering/texturing.
     * If that fails, use the software fallback.
     */
-   if (!st->screen->get_param(st->screen,
-                              PIPE_CAP_GENERATE_MIPMAP) ||
+   if (!st->screen->caps.generate_mipmap ||
        !st->pipe->generate_mipmap(st->pipe, pt, format, baseLevel,
                                   lastLevel, first_layer, last_layer)) {
 

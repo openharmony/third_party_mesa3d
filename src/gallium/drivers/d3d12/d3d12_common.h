@@ -26,18 +26,33 @@
 
 #pragma once
 
-#ifndef _WIN32
 #include <wsl/winadapter.h>
-#else
-#include <unknwn.h>
-#endif
 
 #define D3D12_IGNORE_SDK_LAYERS
+#ifndef _GAMING_XBOX
 #include <directx/d3d12.h>
 #include <directx/d3d12video.h>
+#elif defined(__cplusplus)
+#ifdef _GAMING_XBOX_SCARLETT
+#include <d3d12_xs.h>
+#include <d3d12video_xs.h>
+#else
+#include <d3d12_x.h>
+#include <d3d12video_x.h>
+#endif
+#ifdef IID_PPV_ARGS
+#undef IID_PPV_ARGS
+#endif
+#define IID_PPV_ARGS IID_GRAPHICS_PPV_ARGS
+#define D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT (D3D12_HEAP_FLAGS) 0x800
+#endif /* _GAMING_XBOX */
+
+#ifndef D3D12_TEXTURE_DATA_PITCH_ALIGNMENT
+#define D3D12_TEXTURE_DATA_PITCH_ALIGNMENT D3D12XBOX_TEXTURE_DATA_PITCH_ALIGNMENT
+#endif /* D3D12_TEXTURE_DATA_PITCH_ALIGNMENT */
 
 #if defined(__cplusplus)
-#if !defined(_WIN32) || defined(_MSC_VER) || D3D12_SDK_VERSION < 606
+#if !defined(_WIN32) || defined(_MSC_VER)
 inline D3D12_CPU_DESCRIPTOR_HANDLE
 GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
 {
@@ -47,6 +62,11 @@ inline D3D12_GPU_DESCRIPTOR_HANDLE
 GetGPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
 {
    return heap->GetGPUDescriptorHandleForHeapStart();
+}
+D3D12_HEAP_DESC
+inline GetDesc(ID3D12Heap* heap)
+{
+   return heap->GetDesc();
 }
 inline D3D12_RESOURCE_DESC
 GetDesc(ID3D12Resource *res)
@@ -68,6 +88,11 @@ GetOutputStreamDesc(ID3D12VideoProcessor *proc)
 {
    return proc->GetOutputStreamDesc();
 }
+inline D3D12_RESOURCE_ALLOCATION_INFO
+GetResourceAllocationInfo(ID3D12Device *dev, UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs)
+{
+   return dev->GetResourceAllocationInfo(visibleMask, numResourceDescs, pResourceDescs);
+}
 #else
 inline D3D12_CPU_DESCRIPTOR_HANDLE
 GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
@@ -81,6 +106,13 @@ GetGPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
 {
    D3D12_GPU_DESCRIPTOR_HANDLE ret;
    heap->GetGPUDescriptorHandleForHeapStart(&ret);
+   return ret;
+}
+D3D12_HEAP_DESC
+inline GetDesc(ID3D12Heap* heap)
+{
+   D3D12_HEAP_DESC ret;
+   heap->GetDesc(&ret);
    return ret;
 }
 inline D3D12_RESOURCE_DESC
@@ -109,6 +141,13 @@ GetOutputStreamDesc(ID3D12VideoProcessor *proc)
 {
    D3D12_VIDEO_PROCESS_OUTPUT_STREAM_DESC ret;
    proc->GetOutputStreamDesc(&ret);
+   return ret;
+}
+inline D3D12_RESOURCE_ALLOCATION_INFO
+GetResourceAllocationInfo(ID3D12Device *dev, UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs)
+{
+   D3D12_RESOURCE_ALLOCATION_INFO ret;
+   dev->GetResourceAllocationInfo(&ret, visibleMask, numResourceDescs, pResourceDescs);
    return ret;
 }
 #endif

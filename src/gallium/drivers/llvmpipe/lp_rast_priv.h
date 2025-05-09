@@ -45,14 +45,14 @@
 /* If we crash in a jitted function, we can examine jit_line and jit_state
  * to get some info.  This is not thread-safe, however.
  */
-#ifdef DEBUG
+#if MESA_DEBUG && !THREAD_SANITIZER
 
 struct lp_rasterizer_task;
 extern int jit_line;
 extern const struct lp_rast_state *jit_state;
 extern const struct lp_rasterizer_task *jit_task;
 
-#define BEGIN_JIT_CALL(state, task)                  \
+#define BEGIN_JIT_CALL(state, task) \
    do { \
       jit_line = __LINE__; \
       jit_state = state; \
@@ -100,8 +100,11 @@ struct lp_rasterizer_task
    /** Non-interpolated passthru state and occlude counter for visible pixels */
    struct lp_jit_thread_data thread_data;
 
-   pipe_semaphore work_ready;
-   pipe_semaphore work_done;
+   util_semaphore work_ready;
+   util_semaphore work_done;
+#ifdef _WIN32
+   util_semaphore exited;
+#endif
 };
 
 
@@ -112,8 +115,8 @@ struct lp_rasterizer_task
  */
 struct lp_rasterizer
 {
-   boolean exit_flag;
-   boolean no_rast;  /**< For debugging/profiling */
+   bool exit_flag;
+   bool no_rast;  /**< For debugging/profiling */
 
    /** The incoming queue of scenes ready to rasterize */
    struct lp_scene_queue *full_scenes;
@@ -154,7 +157,7 @@ lp_rast_shade_quads_mask(struct lp_rasterizer_task *task,
 static inline uint8_t *
 lp_rast_get_color_block_pointer(struct lp_rasterizer_task *task,
                                 unsigned buf, unsigned x, unsigned y,
-                                unsigned layer)
+                                unsigned layer, unsigned view_index)
 {
    assert(x < task->scene->tiles_x * TILE_SIZE);
    assert(y < task->scene->tiles_y * TILE_SIZE);
@@ -175,9 +178,9 @@ lp_rast_get_color_block_pointer(struct lp_rasterizer_task *task,
                            py * task->scene->cbufs[buf].stride;
    uint8_t *color = task->color_tiles[buf] + pixel_offset;
 
-   if (layer) {
+   if (layer || view_index) {
       assert(layer <= task->scene->fb_max_layer);
-      color += layer * task->scene->cbufs[buf].layer_stride;
+      color += (layer + view_index) * task->scene->cbufs[buf].layer_stride;
    }
 
    assert(lp_check_alignment(color, llvmpipe_get_format_alignment(task->scene->fb.cbufs[buf]->format)));
@@ -191,7 +194,7 @@ lp_rast_get_color_block_pointer(struct lp_rasterizer_task *task,
  */
 static inline uint8_t *
 lp_rast_get_depth_block_pointer(struct lp_rasterizer_task *task,
-                                unsigned x, unsigned y, unsigned layer)
+                                unsigned x, unsigned y, unsigned layer, unsigned view_index)
 {
    assert(x < task->scene->tiles_x * TILE_SIZE);
    assert(y < task->scene->tiles_y * TILE_SIZE);
@@ -206,14 +209,13 @@ lp_rast_get_depth_block_pointer(struct lp_rasterizer_task *task,
                            py * task->scene->zsbuf.stride;
    uint8_t *depth = task->depth_tile + pixel_offset;
 
-   if (layer) {
-      depth += layer * task->scene->zsbuf.layer_stride;
+   if (layer || view_index) {
+      depth += (layer + view_index) * task->scene->zsbuf.layer_stride;
    }
 
    assert(lp_check_alignment(depth, llvmpipe_get_format_alignment(task->scene->fb.zsbuf->format)));
    return depth;
 }
-
 
 
 /**
@@ -222,9 +224,9 @@ lp_rast_get_depth_block_pointer(struct lp_rasterizer_task *task,
  * \param x, y location of 4x4 block in window coords
  */
 static inline void
-lp_rast_shade_quads_all( struct lp_rasterizer_task *task,
-                         const struct lp_rast_shader_inputs *inputs,
-                         unsigned x, unsigned y )
+lp_rast_shade_quads_all(struct lp_rasterizer_task *task,
+                        const struct lp_rast_shader_inputs *inputs,
+                        unsigned x, unsigned y)
 {
    const struct lp_scene *scene = task->scene;
    const struct lp_rast_state *state = task->state;
@@ -235,6 +237,7 @@ lp_rast_shade_quads_all( struct lp_rasterizer_task *task,
    uint8_t *depth = NULL;
    unsigned depth_stride = 0;
    unsigned depth_sample_stride = 0;
+   unsigned view_index = inputs->view_index;
 
    /* color buffer */
    for (unsigned i = 0; i < scene->fb.nr_cbufs; i++) {
@@ -242,9 +245,8 @@ lp_rast_shade_quads_all( struct lp_rasterizer_task *task,
          stride[i] = scene->cbufs[i].stride;
          sample_stride[i] = scene->cbufs[i].sample_stride;
          color[i] = lp_rast_get_color_block_pointer(task, i, x, y,
-                                                    inputs->layer + inputs->view_index);
-      }
-      else {
+                                                    inputs->layer, view_index);
+      } else {
          stride[i] = 0;
          sample_stride[i] = 0;
          color[i] = NULL;
@@ -252,7 +254,7 @@ lp_rast_shade_quads_all( struct lp_rasterizer_task *task,
    }
 
    if (scene->zsbuf.map) {
-      depth = lp_rast_get_depth_block_pointer(task, x, y, inputs->layer + inputs->view_index);
+      depth = lp_rast_get_depth_block_pointer(task, x, y, inputs->layer, view_index);
       depth_sample_stride = scene->zsbuf.sample_stride;
       depth_stride = scene->zsbuf.stride;
    }
@@ -272,20 +274,21 @@ lp_rast_shade_quads_all( struct lp_rasterizer_task *task,
 
       /* run shader on 4x4 block */
       BEGIN_JIT_CALL(state, task);
-      variant->jit_function[RAST_WHOLE]( &state->jit_context,
-                                         x, y,
-                                         inputs->frontfacing,
-                                         GET_A0(inputs),
-                                         GET_DADX(inputs),
-                                         GET_DADY(inputs),
-                                         color,
-                                         depth,
-                                         mask,
-                                         &task->thread_data,
-                                         stride,
-                                         depth_stride,
-                                         sample_stride,
-                                         depth_sample_stride);
+      variant->jit_function[RAST_WHOLE](&state->jit_context,
+                                        &state->jit_resources,
+                                        x, y,
+                                        inputs->frontfacing,
+                                        GET_A0(inputs),
+                                        GET_DADX(inputs),
+                                        GET_DADY(inputs),
+                                        color,
+                                        depth,
+                                        mask,
+                                        &task->thread_data,
+                                        stride,
+                                        depth_stride,
+                                        sample_stride,
+                                        depth_sample_stride);
       END_JIT_CALL();
    }
 }

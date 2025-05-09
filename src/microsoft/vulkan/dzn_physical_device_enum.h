@@ -24,13 +24,9 @@
 #ifndef DZN_PHYSICAL_DEVICE_ENUM_H
 #define DZN_PHYSICAL_DEVICE_ENUM_H
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
-#include <unknwn.h>
-
-#ifndef _WIN32
 #include <wsl/winadapter.h>
-#endif
 
 #include <stdbool.h>
 
@@ -38,7 +34,7 @@
 extern "C" {
 #endif
 
-struct dzn_instance;
+struct vk_instance;
 
 struct dzn_physical_device_desc {
    uint32_t vendor_id;
@@ -54,13 +50,13 @@ struct dzn_physical_device_desc {
 };
 
 VkResult
-dzn_enumerate_physical_devices_dxgi(struct dzn_instance *instance);
+dzn_enumerate_physical_devices_dxgi(struct vk_instance *instance);
 
 VkResult
-dzn_enumerate_physical_devices_dxcore(struct dzn_instance *instance);
+dzn_enumerate_physical_devices_dxcore(struct vk_instance *instance);
 
 VkResult
-dzn_instance_add_physical_device(struct dzn_instance *instance,
+dzn_instance_add_physical_device(struct vk_instance *instance,
                                  IUnknown *adapter,
                                  const struct dzn_physical_device_desc *desc);
 

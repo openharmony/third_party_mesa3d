@@ -1,27 +1,7 @@
 /* -*- mesa-c++  -*-
- *
- * Copyright (c) 2022 Collabora LTD
- *
+ * Copyright 2022 Collabora LTD
  * Author: Gert Wollny <gert.wollny@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef SFN_LIFERANGEEVALUATOR_HELPERS_H
@@ -45,8 +25,7 @@ enum ProgramScopeType {
 class ProgramScope {
 public:
    ProgramScope();
-   ProgramScope(ProgramScope *parent, ProgramScopeType type, int id,
-                int depth, int begin);
+   ProgramScope(ProgramScope *parent, ProgramScopeType type, int id, int depth, int begin);
 
    ProgramScopeType type() const;
    ProgramScope *parent() const;
@@ -95,14 +74,17 @@ public:
    RegisterCompAccess();
    RegisterCompAccess(LiveRange range);
 
-   void record_read(int line, ProgramScope *scope, LiveRangeEntry::EUse use);
-   void record_write(int line, ProgramScope *scope);
+   void record_read(int block,int line, ProgramScope *scope, LiveRangeEntry::EUse use);
+   void record_write(int block, int line, ProgramScope *scope);
 
    void update_required_live_range();
 
-   const auto& range() { return m_range;}
+   const auto& range() { return m_range; }
 
    const auto& use_type() { return m_use_type; }
+
+   auto alu_clause_local() { return alu_block_id > block_id_uninitalized;}
+
 private:
    void propagate_live_range_to_dominant_write_scope();
    bool conditional_ifelse_write_in_loop() const;
@@ -120,6 +102,8 @@ private:
    int last_write;
    int first_read;
 
+   int alu_block_id{block_id_uninitalized};
+
    /* This member variable tracks the current resolution of conditional writing
     * to this temporary in IF/ELSE clauses.
     *
@@ -127,13 +111,15 @@ private:
     * temporary has not yet been written to within an if clause.
     *
     * A positive (other than "conditionality_untouched") number refers to the
-    * last loop id for which the write was resolved as unconditional. With each
-    * new loop this value will be overwitten by "conditionality_unresolved"
-    * on entering the first IF clause writing this temporary.
+    * last loop id for which the write was resolved as unconditional. With
+    * each new loop this value will be overwritten by
+    * "conditionality_unresolved" on entering the first IF clause writing this
+    * temporary.
     *
     * The value "conditionality_unresolved" indicates that no resolution has
     * been achieved so far. If the variable is set to this value at the end of
-    * the processing of the whole shader it also indicates a conditional write.
+    * the processing of the whole shader it also indicates a conditional
+    * write.
     *
     * The value "write_is_conditional" marks that the variable is written
     * conditionally (i.e. not in all relevant IF/ELSE code path pairs) in at
@@ -146,8 +132,10 @@ private:
    static const int conditionality_unresolved = 0;
    static const int conditionality_untouched;
    static const int write_is_unconditional;
+   static const int block_id_not_unique = -1;
+   static const int block_id_uninitalized = 0;
 
-   /* A bit field tracking the nexting levels of if-else clauses where the
+   /* A bit field tracking the nesting levels of if-else clauses where the
     * temporary has (so far) been written to in the if branch, but not in the
     * else branch.
     */
@@ -176,7 +164,7 @@ public:
 
    RegisterAccess(const std::array<size_t, 4>& sizes);
 
-   RegisterCompAccess& operator() (const Register& reg);
+   RegisterCompAccess& operator()(const Register& reg);
 
    auto& component(int i) { return m_access_record[i]; }
 
@@ -184,5 +172,5 @@ private:
    std::array<RegisterCompAccessVector, 4> m_access_record;
 };
 
-}
+} // namespace r600
 #endif // SFN_LIFERANGEEVALUATOR_HELPERS_H

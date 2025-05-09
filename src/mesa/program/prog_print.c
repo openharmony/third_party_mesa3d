@@ -31,7 +31,7 @@
 
 #include <inttypes.h>  /* for PRIx64 macro */
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/context.h"
 
 #include "prog_instruction.h"
@@ -63,8 +63,6 @@ _mesa_register_file_name(gl_register_file f)
       return "UNIFORM";
    case PROGRAM_ADDRESS:
       return "ADDR";
-   case PROGRAM_SYSTEM_VALUE:
-      return "SYSVAL";
    case PROGRAM_UNDEFINED:
       return "UNDEFINED";
    default:
@@ -394,9 +392,6 @@ reg_string(gl_register_file f, GLint index, gl_prog_print_mode mode,
       case PROGRAM_UNIFORM: /* extension */
          sprintf(str, "uniform[%s%d]", addr, index);
          break;
-      case PROGRAM_SYSTEM_VALUE:
-         sprintf(str, "sysvalue[%s%d]", addr, index);
-         break;
       case PROGRAM_STATE_VAR:
          {
             struct gl_program_parameter *param
@@ -610,12 +605,6 @@ _mesa_fprint_instruction_opt(FILE *f,
 {
    GLint i;
 
-   if (inst->Opcode == OPCODE_ELSE ||
-       inst->Opcode == OPCODE_ENDIF ||
-       inst->Opcode == OPCODE_ENDLOOP ||
-       inst->Opcode == OPCODE_ENDSUB) {
-      indent -= 3;
-   }
    for (i = 0; i < indent; i++) {
       fprintf(f, " ");
    }
@@ -680,51 +669,6 @@ _mesa_fprint_instruction_opt(FILE *f,
       fprint_dst_reg(f, &inst->DstReg, mode, prog);
       fprintf(f, ", ");
       fprint_src_reg(f, &inst->SrcReg[0], mode, prog);
-      fprintf(f, ";\n");
-      break;
-   case OPCODE_IF:
-      fprintf(f, "IF ");
-      fprint_src_reg(f, &inst->SrcReg[0], mode, prog);
-      fprintf(f, "; ");
-      fprintf(f, " # (if false, goto %d)", inst->BranchTarget);
-      fprintf(f, ";\n");
-      return indent + 3;
-   case OPCODE_ELSE:
-      fprintf(f, "ELSE; # (goto %d)\n", inst->BranchTarget);
-      return indent + 3;
-   case OPCODE_ENDIF:
-      fprintf(f, "ENDIF;\n");
-      break;
-   case OPCODE_BGNLOOP:
-      fprintf(f, "BGNLOOP; # (end at %d)\n", inst->BranchTarget);
-      return indent + 3;
-   case OPCODE_ENDLOOP:
-      fprintf(f, "ENDLOOP; # (goto %d)\n", inst->BranchTarget);
-      break;
-   case OPCODE_BRK:
-   case OPCODE_CONT:
-      fprintf(f, "%s; # (goto %d)",
-	      _mesa_opcode_string(inst->Opcode),
-	      inst->BranchTarget);
-      fprintf(f, ";\n");
-      break;
-
-   case OPCODE_BGNSUB:
-      fprintf(f, "BGNSUB");
-      fprintf(f, ";\n");
-      return indent + 3;
-   case OPCODE_ENDSUB:
-      if (mode == PROG_PRINT_DEBUG) {
-         fprintf(f, "ENDSUB");
-         fprintf(f, ";\n");
-      }
-      break;
-   case OPCODE_CAL:
-      fprintf(f, "CAL %u", inst->BranchTarget);
-      fprintf(f, ";\n");
-      break;
-   case OPCODE_RET:
-      fprintf(f, "RET");
       fprintf(f, ";\n");
       break;
 

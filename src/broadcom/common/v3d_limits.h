@@ -40,18 +40,22 @@
 
 #define V3D_MAX_SAMPLES 4
 
-#define V3D_MAX_DRAW_BUFFERS 4
+#define V3D_MAX_DRAW_BUFFERS 8
+#define V3D_MAX_RENDER_TARGETS(ver) (ver < 71 ? 4 : 8)
 
 #define V3D_MAX_POINT_SIZE 512.0f
 #define V3D_MAX_LINE_WIDTH 32
 
-#define V3D_MAX_BUFFER_RANGE (1 << 27)
+#define V3D_MAX_BUFFER_RANGE (1 << 30)
 
-/* Sub-pixel precission bits in the rasterizer */
+/* Sub-pixel precision bits in the rasterizer */
 #define V3D_COORD_SHIFT 6
 
 /* Size of a cache line */
 #define V3D_NON_COHERENT_ATOM_SIZE 256
+
+/* Minimum alignment for texel buffers */
+#define V3D_TMU_TEXEL_ALIGN 64
 
 #define V3D_MAX_IMAGE_DIMENSION 4096
 
@@ -62,5 +66,7 @@
 #define V3D_MAX_MIP_LEVELS 13
 
 #define V3D_MAX_ARRAY_LAYERS 2048
+
+#define V3D_MAX_VERTEX_ATTRIB_DIVISOR 0xffff
 
 #endif /* V3D_LIMITS_H */

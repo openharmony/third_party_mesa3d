@@ -1,26 +1,7 @@
 /*
  * Copyright 2016 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 /* This file implements randomized texture blit tests. */
@@ -396,7 +377,7 @@ static void set_random_image_attrs(struct pipe_resource *templ, bool allow_msaa,
       templ->array_size = (rand() % max_tex_size) + 1;
 
    /* Keep reducing the size until it we get a small enough size. */
-   while ((uint64_t)util_format_get_nblocks(templ->format, templ->width0, templ->height0) *
+   while (util_format_get_nblocks(templ->format, templ->width0, templ->height0) *
           templ->depth0 * templ->array_size * util_format_get_blocksize(templ->format) >
           MAX_ALLOC_SIZE) {
       switch (rand() % 3) {
@@ -556,8 +537,10 @@ void si_test_image_copy_region(struct si_screen *sscreen)
 
       /* clear dst pixels */
       uint32_t zero = 0;
-      si_clear_buffer(sctx, dst, 0, sdst->surface.surf_size, &zero, 4, SI_OP_SYNC_BEFORE_AFTER,
-                      SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
+      si_barrier_before_simple_buffer_op(sctx, 0, dst, NULL);
+      si_clear_buffer(sctx, dst, 0, sdst->surface.surf_size, &zero, 4,
+                      SI_AUTO_SELECT_CLEAR_METHOD, false);
+      si_barrier_after_simple_buffer_op(sctx, 0, dst, NULL);
 
       for (j = 0; j < num_partial_copies; j++) {
          int width, height, depth;
@@ -734,10 +717,16 @@ void si_test_blit(struct si_screen *sscreen, unsigned test_flags)
 
       /* clear dst pixels */
       uint32_t zero = 0;
+
+      /* Using 2 consecutive barriers calls results in a single merged barrier for both resources. */
+      si_barrier_before_simple_buffer_op(sctx, 0, gfx_dst, NULL);
+      si_barrier_before_simple_buffer_op(sctx, 0, comp_dst, NULL);
       si_clear_buffer(sctx, gfx_dst, 0, ((struct si_texture *)gfx_dst)->surface.surf_size, &zero,
-                      4, SI_OP_SYNC_BEFORE_AFTER, SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
+                      4, SI_AUTO_SELECT_CLEAR_METHOD, false);
       si_clear_buffer(sctx, comp_dst, 0, ((struct si_texture *)comp_dst)->surface.surf_size, &zero,
-                      4, SI_OP_SYNC_BEFORE_AFTER, SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
+                      4, SI_AUTO_SELECT_CLEAR_METHOD, false);
+      si_barrier_after_simple_buffer_op(sctx, 0, gfx_dst, NULL);
+      si_barrier_after_simple_buffer_op(sctx, 0, comp_dst, NULL);
 
       /* TODO: These two fix quite a lot of BCn cases. */
       /*si_clear_buffer(sctx, gfx_src, 0, ((struct si_texture *)gfx_src)->surface.surf_size, &zero,
@@ -770,13 +759,9 @@ void si_test_blit(struct si_screen *sscreen, unsigned test_flags)
 
       printf("%4u: dst = (", i);
       print_image_attrs(sscreen, (struct si_texture *)gfx_dst);
-      printf(", %20s as %20s), src = (",
-             util_format_description(tdst.format)->short_name,
-             util_format_short_name(info.dst.format));
+      printf(", %20s), src = (", util_format_short_name(info.dst.format));
       print_image_attrs(sscreen, (struct si_texture *)gfx_src);
-      printf(", %20s as %20s)",
-             util_format_description(tsrc.format)->short_name,
-             util_format_short_name(info.src.format));
+      printf(", %20s)", util_format_short_name(info.src.format));
       fflush(stdout);
 
       int src_width, src_height, src_depth, dst_width, dst_height, dst_depth;
@@ -950,9 +935,9 @@ void si_test_blit(struct si_screen *sscreen, unsigned test_flags)
 
       bool success;
       if (only_cb_resolve)
-         success = si_msaa_resolve_blit_via_CB(ctx, &info);
+         success = si_msaa_resolve_blit_via_CB(ctx, &info, false);
       else
-         success = false;
+         success = si_compute_blit(sctx, &info, NULL, 0, 0, false);
 
       if (success) {
          printf(" %-7s", only_cb_resolve ? "resolve" : "comp");

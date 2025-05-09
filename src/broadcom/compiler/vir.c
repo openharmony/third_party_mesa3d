@@ -23,9 +23,9 @@
 
 #include "broadcom/common/v3d_device_info.h"
 #include "v3d_compiler.h"
-#include "util/u_prim.h"
 #include "compiler/nir/nir_schedule.h"
 #include "compiler/nir/nir_builder.h"
+#include "util/perf/cpu_trace.h"
 
 int
 vir_get_nsrc(struct qinst *inst)
@@ -89,7 +89,7 @@ vir_has_side_effects(struct v3d_compile *c, struct qinst *inst)
          * pointer, so each read has a side effect (we don't care for ldunif
          * because we reconstruct the uniform stream buffer after compiling
          * with the surviving uniforms), so allowing DCE to remove
-         * one would break follow-up loads. We could fix this by emiting a
+         * one would break follow-up loads. We could fix this by emitting a
          * unifa for each ldunifa, but each unifa requires 3 delay slots
          * before a ldunifa, so that would be quite expensive.
          */
@@ -113,10 +113,10 @@ vir_is_raw_mov(struct qinst *inst)
                 return false;
         }
 
-        if (inst->qpu.alu.add.a_unpack != V3D_QPU_UNPACK_NONE ||
-            inst->qpu.alu.add.b_unpack != V3D_QPU_UNPACK_NONE ||
-            inst->qpu.alu.mul.a_unpack != V3D_QPU_UNPACK_NONE ||
-            inst->qpu.alu.mul.b_unpack != V3D_QPU_UNPACK_NONE) {
+        if (inst->qpu.alu.add.a.unpack != V3D_QPU_UNPACK_NONE ||
+            inst->qpu.alu.add.b.unpack != V3D_QPU_UNPACK_NONE ||
+            inst->qpu.alu.mul.a.unpack != V3D_QPU_UNPACK_NONE ||
+            inst->qpu.alu.mul.b.unpack != V3D_QPU_UNPACK_NONE) {
                 return false;
         }
 
@@ -156,30 +156,12 @@ vir_is_tex(const struct v3d_device_info *devinfo, struct qinst *inst)
 }
 
 bool
-vir_writes_r3(const struct v3d_device_info *devinfo, struct qinst *inst)
+vir_writes_r4_implicitly(const struct v3d_device_info *devinfo,
+                         struct qinst *inst)
 {
-        for (int i = 0; i < vir_get_nsrc(inst); i++) {
-                switch (inst->src[i].file) {
-                case QFILE_VPM:
-                        return true;
-                default:
-                        break;
-                }
-        }
+        if (!devinfo->has_accumulators)
+                return false;
 
-        if (devinfo->ver < 41 && (inst->qpu.sig.ldvary ||
-                                  inst->qpu.sig.ldtlb ||
-                                  inst->qpu.sig.ldtlbu ||
-                                  inst->qpu.sig.ldvpm)) {
-                return true;
-        }
-
-        return false;
-}
-
-bool
-vir_writes_r4(const struct v3d_device_info *devinfo, struct qinst *inst)
-{
         switch (inst->dst.file) {
         case QFILE_MAGIC:
                 switch (inst->dst.index) {
@@ -195,9 +177,6 @@ vir_writes_r4(const struct v3d_device_info *devinfo, struct qinst *inst)
                 break;
         }
 
-        if (devinfo->ver < 41 && inst->qpu.sig.ldtmu)
-                return true;
-
         return false;
 }
 
@@ -209,15 +188,15 @@ vir_set_unpack(struct qinst *inst, int src,
 
         if (vir_is_add(inst)) {
                 if (src == 0)
-                        inst->qpu.alu.add.a_unpack = unpack;
+                        inst->qpu.alu.add.a.unpack = unpack;
                 else
-                        inst->qpu.alu.add.b_unpack = unpack;
+                        inst->qpu.alu.add.b.unpack = unpack;
         } else {
                 assert(vir_is_mul(inst));
                 if (src == 0)
-                        inst->qpu.alu.mul.a_unpack = unpack;
+                        inst->qpu.alu.mul.a.unpack = unpack;
                 else
-                        inst->qpu.alu.mul.b_unpack = unpack;
+                        inst->qpu.alu.mul.b.unpack = unpack;
         }
 }
 
@@ -541,6 +520,19 @@ v3d_compiler_free(const struct v3d_compiler *compiler)
         ralloc_free((void *)compiler);
 }
 
+struct v3d_compiler_strategy {
+        const char *name;
+        uint32_t max_threads;
+        uint32_t min_threads;
+        bool disable_general_tmu_sched;
+        bool disable_gcm;
+        bool disable_loop_unrolling;
+        bool disable_ubo_load_sorting;
+        bool move_buffer_loads;
+        bool disable_tmu_pipelining;
+        uint32_t max_tmu_spills;
+};
+
 static struct v3d_compile *
 vir_compile_init(const struct v3d_compiler *compiler,
                  struct v3d_key *key,
@@ -550,13 +542,7 @@ vir_compile_init(const struct v3d_compiler *compiler,
                  void *debug_output_data,
                  int program_id, int variant_id,
                  uint32_t compile_strategy_idx,
-                 uint32_t max_threads,
-                 uint32_t min_threads_for_reg_alloc,
-                 uint32_t max_tmu_spills,
-                 bool disable_general_tmu_sched,
-                 bool disable_loop_unrolling,
-                 bool disable_constant_ubo_load_sorting,
-                 bool disable_tmu_pipelining,
+                 const struct v3d_compiler_strategy *strategy,
                  bool fallback_scheduler)
 {
         struct v3d_compile *c = rzalloc(NULL, struct v3d_compile);
@@ -567,18 +553,21 @@ vir_compile_init(const struct v3d_compiler *compiler,
         c->program_id = program_id;
         c->variant_id = variant_id;
         c->compile_strategy_idx = compile_strategy_idx;
-        c->threads = max_threads;
+        c->threads = strategy->max_threads;
         c->debug_output = debug_output;
         c->debug_output_data = debug_output_data;
         c->compilation_result = V3D_COMPILATION_SUCCEEDED;
-        c->min_threads_for_reg_alloc = min_threads_for_reg_alloc;
-        c->max_tmu_spills = max_tmu_spills;
+        c->min_threads_for_reg_alloc = strategy->min_threads;
+        c->max_tmu_spills = strategy->max_tmu_spills;
         c->fallback_scheduler = fallback_scheduler;
-        c->disable_general_tmu_sched = disable_general_tmu_sched;
-        c->disable_tmu_pipelining = disable_tmu_pipelining;
-        c->disable_constant_ubo_load_sorting = disable_constant_ubo_load_sorting;
-        c->disable_loop_unrolling = V3D_DEBUG & V3D_DEBUG_NO_LOOP_UNROLL
-                ? true : disable_loop_unrolling;
+        c->disable_general_tmu_sched = strategy->disable_general_tmu_sched;
+        c->disable_tmu_pipelining = strategy->disable_tmu_pipelining;
+        c->disable_constant_ubo_load_sorting = strategy->disable_ubo_load_sorting;
+        c->move_buffer_loads = strategy->move_buffer_loads;
+        c->disable_gcm = strategy->disable_gcm;
+        c->disable_loop_unrolling = V3D_DBG(NO_LOOP_UNROLL)
+                ? true : strategy->disable_loop_unrolling;
+
 
         s = nir_shader_clone(c, s);
         c->s = s;
@@ -604,11 +593,149 @@ type_size_vec4(const struct glsl_type *type, bool bindless)
         return glsl_count_attribute_slots(type, false);
 }
 
+static enum nir_lower_tex_packing
+lower_tex_packing_cb(const nir_tex_instr *tex, const void *data)
+{
+   struct v3d_compile *c = (struct v3d_compile *) data;
+
+   int sampler_index = nir_tex_instr_need_sampler(tex) ?
+      tex->sampler_index : tex->backend_flags;
+
+   assert(sampler_index < c->key->num_samplers_used);
+   return c->key->sampler[sampler_index].return_size == 16 ?
+      nir_lower_tex_packing_16 : nir_lower_tex_packing_none;
+}
+
+static bool
+v3d_nir_lower_null_pointers_cb(nir_builder *b,
+                               nir_intrinsic_instr *intr,
+                               void *_state)
+{
+        uint32_t buffer_src_idx;
+
+        switch (intr->intrinsic) {
+        case nir_intrinsic_load_ubo:
+        case nir_intrinsic_load_ssbo:
+                buffer_src_idx = 0;
+                break;
+        case nir_intrinsic_store_ssbo:
+                buffer_src_idx = 1;
+                break;
+        default:
+                return false;
+        }
+
+        /* If index if constant we are good */
+        nir_src *src = &intr->src[buffer_src_idx];
+        if (nir_src_is_const(*src))
+                return false;
+
+        /* Otherwise, see if it comes from a bcsel including a null pointer */
+        if (src->ssa->parent_instr->type != nir_instr_type_alu)
+                return false;
+
+        nir_alu_instr *alu = nir_instr_as_alu(src->ssa->parent_instr);
+        if (alu->op != nir_op_bcsel)
+                return false;
+
+        /* A null pointer is specified using block index 0xffffffff */
+        int32_t null_src_idx = -1;
+        for (int i = 1; i < 3; i++) {
+                 /* FIXME: since we are running this before optimization maybe
+                  * we need to also handle the case where we may have bcsel
+                  * chain that we need to recurse?
+                  */
+                if (!nir_src_is_const(alu->src[i].src))
+                        continue;
+                if (nir_src_comp_as_uint(alu->src[i].src, 0) != 0xffffffff)
+                        continue;
+
+                /* One of the bcsel srcs is a null pointer reference */
+                null_src_idx = i;
+                break;
+        }
+
+        if (null_src_idx < 0)
+                return false;
+
+        assert(null_src_idx == 1 || null_src_idx == 2);
+        int32_t copy_src_idx = null_src_idx == 1 ? 2 : 1;
+
+        /* Rewrite the null pointer reference so we use the same buffer index
+         * as the other bcsel branch. This will allow optimization to remove
+         * the bcsel and we should then end up with a constant buffer index
+         * like we need.
+         */
+        b->cursor = nir_before_instr(&alu->instr);
+        nir_def *copy = nir_mov(b, alu->src[copy_src_idx].src.ssa);
+        nir_src_rewrite(&alu->src[null_src_idx].src, copy);
+
+        return true;
+}
+
+static bool
+v3d_nir_lower_null_pointers(nir_shader *s)
+{
+        return nir_shader_intrinsics_pass(s, v3d_nir_lower_null_pointers_cb,
+                                            nir_metadata_control_flow, NULL);
+}
+
+static unsigned
+lower_bit_size_cb(const nir_instr *instr, void *_data)
+{
+        if (instr->type != nir_instr_type_alu)
+                return 0;
+
+        nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+        switch (alu->op) {
+        case nir_op_mov:
+        case nir_op_vec2:
+        case nir_op_vec3:
+        case nir_op_vec4:
+        case nir_op_vec5:
+        case nir_op_vec8:
+        case nir_op_vec16:
+        case nir_op_b2i8:
+        case nir_op_b2f16:
+        case nir_op_b2i16:
+        case nir_op_b2f32:
+        case nir_op_b2i32:
+        case nir_op_f2f16:
+        case nir_op_f2f16_rtne:
+        case nir_op_f2f16_rtz:
+        case nir_op_f2f32:
+        case nir_op_f2i32:
+        case nir_op_f2u32:
+        case nir_op_i2i8:
+        case nir_op_i2i16:
+        case nir_op_i2f16:
+        case nir_op_i2f32:
+        case nir_op_i2i32:
+        case nir_op_u2u8:
+        case nir_op_u2u16:
+        case nir_op_u2f16:
+        case nir_op_u2f32:
+        case nir_op_u2u32:
+        case nir_op_pack_32_2x16_split:
+        case nir_op_pack_32_4x8_split:
+        case nir_op_pack_half_2x16_split:
+                return 0;
+
+        /* we need to handle those here as they only work with 32 bits */
+        default:
+                if (alu->src[0].src.ssa->bit_size != 1 && alu->src[0].src.ssa->bit_size < 32)
+                        return 32;
+                return 0;
+        }
+}
+
 static void
 v3d_lower_nir(struct v3d_compile *c)
 {
         struct nir_lower_tex_options tex_options = {
                 .lower_txd = true,
+                .lower_tg4_offsets = true,
                 .lower_tg4_broadcom_swizzle = true,
 
                 .lower_rect = false, /* XXX: Use this on V3D 3.x */
@@ -627,38 +754,30 @@ v3d_lower_nir(struct v3d_compile *c)
                         tex_options.swizzles[i][j] = c->key->tex[i].swizzle[j];
         }
 
-        assert(c->key->num_samplers_used <= ARRAY_SIZE(c->key->sampler));
-        for (int i = 0; i < c->key->num_samplers_used; i++) {
-                if (c->key->sampler[i].return_size == 16) {
-                        tex_options.lower_tex_packing[i] =
-                                nir_lower_tex_packing_16;
-                }
-        }
-
-        /* CS textures may not have return_size reflecting the shadow state. */
-        nir_foreach_uniform_variable(var, c->s) {
-                const struct glsl_type *type = glsl_without_array(var->type);
-                unsigned array_len = MAX2(glsl_get_length(var->type), 1);
-
-                if (!glsl_type_is_sampler(type) ||
-                    !glsl_sampler_type_is_shadow(type))
-                        continue;
-
-                for (int i = 0; i < array_len; i++) {
-                        tex_options.lower_tex_packing[var->data.binding + i] =
-                                nir_lower_tex_packing_16;
-                }
-        }
+        tex_options.lower_tex_packing_cb = lower_tex_packing_cb;
+        tex_options.lower_tex_packing_data = c;
 
         NIR_PASS(_, c->s, nir_lower_tex, &tex_options);
         NIR_PASS(_, c->s, nir_lower_system_values);
-        NIR_PASS(_, c->s, nir_lower_compute_system_values, NULL);
 
-        NIR_PASS(_, c->s, nir_lower_vars_to_scratch,
-                 nir_var_function_temp,
-                 0,
-                 glsl_get_natural_size_align_bytes);
-        NIR_PASS(_, c->s, v3d_nir_lower_scratch);
+        if (c->s->info.zero_initialize_shared_memory &&
+            c->s->info.shared_size > 0) {
+                /* All our BOs allocate full pages, so the underlying allocation
+                 * for shared memory will always be a multiple of 4KB. This
+                 * ensures that we can do an exact number of full chunk_size
+                 * writes to initialize the memory independently of the actual
+                 * shared_size used by the shader, which is a requirement of
+                 * the initialization pass.
+                 */
+                const unsigned chunk_size = 16; /* max single store size */
+                NIR_PASS(_, c->s, nir_zero_initialize_shared_memory,
+                         align(c->s->info.shared_size, chunk_size), chunk_size);
+        }
+
+        NIR_PASS(_, c->s, nir_lower_compute_system_values, NULL);
+        NIR_PASS(_, c->s, nir_lower_is_helper_invocation);
+        NIR_PASS(_, c->s, v3d_nir_lower_null_pointers);
+        NIR_PASS(_, c->s, nir_lower_bit_size, lower_bit_size_cb, NULL);
 }
 
 static void
@@ -718,6 +837,9 @@ v3d_vs_set_prog_data(struct v3d_compile *c,
         if (prog_data->uses_iid)
                 prog_data->vpm_input_size++;
 
+        prog_data->writes_psiz =
+            c->s->info.outputs_written & (1 << VARYING_SLOT_PSIZ);
+
         /* Input/output segment size are in sectors (8 rows of 32 bits per
          * channel).
          */
@@ -726,6 +848,10 @@ v3d_vs_set_prog_data(struct v3d_compile *c,
 
         /* Set us up for shared input/output segments.  This is apparently
          * necessary for our VCM setup to avoid varying corruption.
+         *
+         * FIXME: initial testing on V3D 7.1 seems to work fine when using
+         * separate segments. So we could try to reevaluate in the future, if
+         * there is any advantage of using separate segments.
          */
         prog_data->separate_segments = false;
         prog_data->vpm_output_size = MAX2(prog_data->vpm_output_size,
@@ -829,7 +955,7 @@ v3d_fs_set_prog_data(struct v3d_compile *c,
                 c->uses_implicit_point_line_varyings;
         prog_data->lock_scoreboard_on_first_thrsw =
                 c->lock_scoreboard_on_first_thrsw;
-        prog_data->force_per_sample_msaa = c->force_per_sample_msaa;
+        prog_data->force_per_sample_msaa = c->s->info.fs.uses_sample_shading;
         prog_data->uses_pid = c->fs_uses_primitive_id;
 }
 
@@ -855,6 +981,7 @@ v3d_set_prog_data(struct v3d_compile *c,
         prog_data->spill_size = c->spill_size;
         prog_data->tmu_spills = c->spills;
         prog_data->tmu_fills = c->fills;
+        prog_data->tmu_count = c->tmu.total_count;
         prog_data->qpu_read_stalls = c->qpu_inst_stalled_count;
         prog_data->compile_strategy_idx = c->compile_strategy_idx;
         prog_data->tmu_dirty_rcl = c->tmu_dirty_rcl;
@@ -1016,11 +1143,11 @@ v3d_nir_lower_gs_late(struct v3d_compile *c)
 {
         if (c->key->ucp_enables) {
                 NIR_PASS(_, c->s, nir_lower_clip_gs, c->key->ucp_enables,
-                         false, NULL);
+                         true, NULL);
         }
 
         /* Note: GS output scalarizing must happen after nir_lower_clip_gs. */
-        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_out);
+        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
 }
 
 static void
@@ -1028,13 +1155,13 @@ v3d_nir_lower_vs_late(struct v3d_compile *c)
 {
         if (c->key->ucp_enables) {
                 NIR_PASS(_, c->s, nir_lower_clip_vs, c->key->ucp_enables,
-                         false, false, NULL);
+                         false, true, NULL);
                 NIR_PASS_V(c->s, nir_lower_io_to_scalar,
-                           nir_var_shader_out);
+                           nir_var_shader_out, NULL, NULL);
         }
 
         /* Note: VS output scalarizing must happen after nir_lower_clip_vs. */
-        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_out);
+        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
 }
 
 static void
@@ -1048,9 +1175,9 @@ v3d_nir_lower_fs_late(struct v3d_compile *c)
          * are using.
          */
         if (c->key->ucp_enables)
-                NIR_PASS(_, c->s, nir_lower_clip_fs, c->key->ucp_enables, true);
+                NIR_PASS(_, c->s, nir_lower_clip_fs, c->key->ucp_enables, true, false);
 
-        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_in);
+        NIR_PASS_V(c->s, nir_lower_io_to_scalar, nir_var_shader_in, NULL, NULL);
 }
 
 static uint32_t
@@ -1137,7 +1264,7 @@ v3d_instr_delay_cb(nir_instr *instr, void *data)
    struct v3d_compile *c = (struct v3d_compile *) data;
 
    switch (instr->type) {
-   case nir_instr_type_ssa_undef:
+   case nir_instr_type_undef:
    case nir_instr_type_load_const:
    case nir_instr_type_alu:
    case nir_instr_type_deref:
@@ -1150,34 +1277,48 @@ v3d_instr_delay_cb(nir_instr *instr, void *data)
    /* We should not use very large delays for TMU instructions. Typically,
     * thread switches will be sufficient to hide all or most of the latency,
     * so we typically only need a little bit of extra room. If we over-estimate
-    * the latency here we may end up unnecesarily delaying the critical path in
+    * the latency here we may end up unnecessarily delaying the critical path in
     * the shader, which would have a negative effect in performance, so here
     * we are trying to strike a balance based on empirical testing.
     */
    case nir_instr_type_intrinsic: {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
       if (!c->disable_general_tmu_sched) {
-         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
          switch (intr->intrinsic) {
+         case nir_intrinsic_decl_reg:
+         case nir_intrinsic_load_reg:
+         case nir_intrinsic_store_reg:
+            return 0;
          case nir_intrinsic_load_ssbo:
          case nir_intrinsic_load_scratch:
          case nir_intrinsic_load_shared:
          case nir_intrinsic_image_load:
             return 3;
          case nir_intrinsic_load_ubo:
-            if (nir_src_is_divergent(intr->src[1]))
+            if (nir_src_is_divergent(&intr->src[1]))
                return 3;
             FALLTHROUGH;
          default:
             return 1;
          }
       } else {
-         return 1;
+         switch (intr->intrinsic) {
+         case nir_intrinsic_decl_reg:
+         case nir_intrinsic_load_reg:
+         case nir_intrinsic_store_reg:
+            return 0;
+         default:
+            return 1;
+         }
       }
       break;
    }
 
    case nir_instr_type_tex:
       return 5;
+
+   case nir_instr_type_debug_info:
+      return 0;
    }
 
    return 0;
@@ -1245,7 +1386,7 @@ v3d_nir_sort_constant_ubo_load(nir_block *block, nir_intrinsic_instr *ref)
                         continue;
 
                 /* We only produce unifa sequences for non-divergent loads */
-                if (nir_src_is_divergent(intr->src[1]))
+                if (nir_src_is_divergent(&intr->src[1]))
                         continue;
 
                 /* If there are any UBO loads that are not constant or that
@@ -1312,7 +1453,7 @@ v3d_nir_sort_constant_ubo_load(nir_block *block, nir_intrinsic_instr *ref)
                         if (tmp_intr->intrinsic != nir_intrinsic_load_ubo)
                                 continue;
 
-                        if (nir_src_is_divergent(tmp_intr->src[1]))
+                        if (nir_src_is_divergent(&tmp_intr->src[1]))
                                 continue;
 
                         /* Stop if we find a unifa UBO load that breaks the
@@ -1425,16 +1566,13 @@ v3d_nir_sort_constant_ubo_loads_block(struct v3d_compile *c,
 static bool
 v3d_nir_sort_constant_ubo_loads(nir_shader *s, struct v3d_compile *c)
 {
-        nir_foreach_function(function, s) {
-                if (function->impl) {
-                        nir_foreach_block(block, function->impl) {
-                                c->sorted_any_ubo_loads |=
-                                        v3d_nir_sort_constant_ubo_loads_block(c, block);
-                        }
-                        nir_metadata_preserve(function->impl,
-                                              nir_metadata_block_index |
-                                              nir_metadata_dominance);
+        nir_foreach_function_impl(impl, s) {
+                nir_foreach_block(block, impl) {
+                        c->sorted_any_ubo_loads |=
+                                v3d_nir_sort_constant_ubo_loads_block(c, block);
                 }
+                nir_metadata_preserve(impl,
+                                      nir_metadata_control_flow);
         }
         return c->sorted_any_ubo_loads;
 }
@@ -1452,9 +1590,8 @@ lower_load_num_subgroups(struct v3d_compile *c,
                 DIV_ROUND_UP(c->s->info.workgroup_size[0] *
                              c->s->info.workgroup_size[1] *
                              c->s->info.workgroup_size[2], V3D_CHANNELS);
-        nir_ssa_def *result = nir_imm_int(b, num_subgroups);
-        nir_ssa_def_rewrite_uses(&intr->dest.ssa, result);
-        nir_instr_remove(&intr->instr);
+        nir_def *result = nir_imm_int(b, num_subgroups);
+        nir_def_replace(&intr->def, result);
 }
 
 static bool
@@ -1480,6 +1617,36 @@ lower_subgroup_intrinsics(struct v3d_compile *c,
                 case nir_intrinsic_load_subgroup_size:
                 case nir_intrinsic_load_subgroup_invocation:
                 case nir_intrinsic_elect:
+                case nir_intrinsic_ballot:
+                case nir_intrinsic_inverse_ballot:
+                case nir_intrinsic_ballot_bitfield_extract:
+                case nir_intrinsic_ballot_bit_count_reduce:
+                case nir_intrinsic_ballot_find_lsb:
+                case nir_intrinsic_ballot_find_msb:
+                case nir_intrinsic_ballot_bit_count_exclusive:
+                case nir_intrinsic_ballot_bit_count_inclusive:
+                case nir_intrinsic_reduce:
+                case nir_intrinsic_inclusive_scan:
+                case nir_intrinsic_exclusive_scan:
+                case nir_intrinsic_read_invocation:
+                case nir_intrinsic_read_first_invocation:
+                case nir_intrinsic_load_subgroup_eq_mask:
+                case nir_intrinsic_load_subgroup_ge_mask:
+                case nir_intrinsic_load_subgroup_gt_mask:
+                case nir_intrinsic_load_subgroup_le_mask:
+                case nir_intrinsic_load_subgroup_lt_mask:
+                case nir_intrinsic_shuffle:
+                case nir_intrinsic_shuffle_xor:
+                case nir_intrinsic_shuffle_up:
+                case nir_intrinsic_shuffle_down:
+                case nir_intrinsic_vote_all:
+                case nir_intrinsic_vote_any:
+                case nir_intrinsic_vote_feq:
+                case nir_intrinsic_vote_ieq:
+                case nir_intrinsic_quad_broadcast:
+                case nir_intrinsic_quad_swap_horizontal:
+                case nir_intrinsic_quad_swap_vertical:
+                case nir_intrinsic_quad_swap_diagonal:
                         c->has_subgroups = true;
                         break;
                 default:
@@ -1494,20 +1661,42 @@ static bool
 v3d_nir_lower_subgroup_intrinsics(nir_shader *s, struct v3d_compile *c)
 {
         bool progress = false;
-        nir_foreach_function(function, s) {
-                if (function->impl) {
-                        nir_builder b;
-                        nir_builder_init(&b, function->impl);
+        nir_foreach_function_impl(impl, s) {
+                nir_builder b = nir_builder_create(impl);
 
-                        nir_foreach_block(block, function->impl)
-                                progress |= lower_subgroup_intrinsics(c, block, &b);
+                nir_foreach_block(block, impl)
+                        progress |= lower_subgroup_intrinsics(c, block, &b);
 
-                        nir_metadata_preserve(function->impl,
-                                              nir_metadata_block_index |
-                                              nir_metadata_dominance);
-                }
+                nir_metadata_preserve(impl,
+                                      nir_metadata_control_flow);
         }
         return progress;
+}
+
+static bool
+should_lower_robustness(const nir_intrinsic_instr *intr, const void *data)
+{
+        const struct v3d_key *key = data;
+
+        switch (intr->intrinsic) {
+        case nir_intrinsic_load_ubo:
+                return key->robust_uniform_access;
+
+        case nir_intrinsic_load_ssbo:
+        case nir_intrinsic_store_ssbo:
+        case nir_intrinsic_ssbo_atomic:
+        case nir_intrinsic_ssbo_atomic_swap:
+                return key->robust_storage_access;
+
+        case nir_intrinsic_image_load:
+        case nir_intrinsic_image_store:
+        case nir_intrinsic_image_atomic:
+        case nir_intrinsic_image_atomic_swap:
+                return key->robust_image_access;
+
+        default:
+                return false;
+        }
 }
 
 static void
@@ -1560,16 +1749,19 @@ v3d_attempt_compile(struct v3d_compile *c)
         }
 
         NIR_PASS(_, c->s, v3d_nir_lower_io, c);
-        NIR_PASS(_, c->s, v3d_nir_lower_txf_ms, c);
-        NIR_PASS(_, c->s, v3d_nir_lower_image_load_store);
+        NIR_PASS(_, c->s, v3d_nir_lower_txf_ms);
+        NIR_PASS(_, c->s, v3d_nir_lower_image_load_store, c);
+
+        NIR_PASS(_, c->s, nir_opt_idiv_const, 8);
         nir_lower_idiv_options idiv_options = {
-                .imprecise_32bit_lowering = true,
                 .allow_fp16 = true,
         };
         NIR_PASS(_, c->s, nir_lower_idiv, &idiv_options);
+        NIR_PASS(_, c->s, nir_lower_alu);
 
-        if (c->key->robust_buffer_access) {
-                /* v3d_nir_lower_robust_buffer_access assumes constant buffer
+        if (c->key->robust_uniform_access || c->key->robust_storage_access ||
+            c->key->robust_image_access) {
+                /* nir_lower_robust_access assumes constant buffer
                  * indices on ubo/ssbo intrinsics so run copy propagation and
                  * constant folding passes before we run the lowering to warrant
                  * this. We also want to run the lowering before v3d_optimize to
@@ -1577,14 +1769,38 @@ v3d_attempt_compile(struct v3d_compile *c)
                  */
                 NIR_PASS(_, c->s, nir_copy_prop);
                 NIR_PASS(_, c->s, nir_opt_constant_folding);
-                NIR_PASS(_, c->s, v3d_nir_lower_robust_buffer_access, c);
+
+                NIR_PASS(_, c->s, nir_lower_robust_access,
+                         should_lower_robustness, c->key);
         }
 
-        NIR_PASS(_, c->s, nir_lower_wrmasks, should_split_wrmask, c->s);
+        NIR_PASS(_, c->s, nir_lower_vars_to_scratch,
+                 nir_var_function_temp,
+                 0,
+                 glsl_get_natural_size_align_bytes,
+                 glsl_get_natural_size_align_bytes);
 
-        NIR_PASS(_, c->s, v3d_nir_lower_load_store_bitsize, c);
+        NIR_PASS(_, c->s, v3d_nir_lower_global_2x32);
+        NIR_PASS(_, c->s, nir_lower_wrmasks, should_split_wrmask, c->s);
+        NIR_PASS(_, c->s, v3d_nir_lower_load_store_bitsize);
+        NIR_PASS(_, c->s, v3d_nir_lower_scratch);
+
+        /* needs to run after load_store_bitsize */
+        NIR_PASS(_, c->s, nir_lower_pack);
 
         NIR_PASS(_, c->s, v3d_nir_lower_subgroup_intrinsics, c);
+
+        const nir_lower_subgroups_options subgroup_opts = {
+                .subgroup_size = V3D_CHANNELS,
+                .ballot_components = 1,
+                .ballot_bit_size = 32,
+                .lower_to_scalar = true,
+                .lower_inverse_ballot = true,
+                .lower_subgroup_masks = true,
+                .lower_relative_shuffle = true,
+                .lower_quad = true,
+        };
+        NIR_PASS(_, c->s, nir_lower_subgroups, &subgroup_opts);
 
         v3d_optimize_nir(c, c->s);
 
@@ -1606,7 +1822,7 @@ v3d_attempt_compile(struct v3d_compile *c)
         NIR_PASS(_, c->s, nir_lower_bool_to_int32);
         NIR_PASS(_, c->s, nir_convert_to_lcssa, true, true);
         NIR_PASS_V(c->s, nir_divergence_analysis);
-        NIR_PASS(_, c->s, nir_convert_from_ssa, true);
+        NIR_PASS(_, c->s, nir_convert_from_ssa, true, true);
 
         struct nir_schedule_options schedule_options = {
                 /* Schedule for about half our register space, to enable more
@@ -1615,7 +1831,7 @@ v3d_attempt_compile(struct v3d_compile *c)
                 .threshold = c->threads == 4 ? 24 : 48,
 
                 /* Vertex shaders share the same memory for inputs and outputs,
-                 * fragement and geometry shaders do not.
+                 * fragment and geometry shaders do not.
                  */
                 .stages_with_shared_io_memory =
                 (((1 << MESA_ALL_SHADER_STAGES) - 1) &
@@ -1635,8 +1851,13 @@ v3d_attempt_compile(struct v3d_compile *c)
         if (!c->disable_constant_ubo_load_sorting)
                 NIR_PASS(_, c->s, v3d_nir_sort_constant_ubo_loads, c);
 
+        const nir_move_options buffer_opts = c->move_buffer_loads ?
+                (nir_move_load_ubo | nir_move_load_ssbo) : 0;
         NIR_PASS(_, c->s, nir_opt_move, nir_move_load_uniform |
-                                       nir_move_const_undef);
+                                        nir_move_const_undef |
+                                        buffer_opts);
+
+        NIR_PASS_V(c->s, nir_trivialize_registers);
 
         v3d_nir_to_vir(c);
 }
@@ -1695,32 +1916,25 @@ int v3d_shaderdb_dump(struct v3d_compile *c,
  * register allocation to any particular thread count). This is fine
  * because v3d_nir_to_vir will cap this to the actual minimum.
  */
-struct v3d_compiler_strategy {
-        const char *name;
-        uint32_t max_threads;
-        uint32_t min_threads;
-        bool disable_general_tmu_sched;
-        bool disable_loop_unrolling;
-        bool disable_ubo_load_sorting;
-        bool disable_tmu_pipelining;
-        uint32_t max_tmu_spills;
-} static const strategies[] = {
-  /*0*/  { "default",                        4, 4, false, false, false, false,  0 },
-  /*1*/  { "disable general TMU sched",      4, 4, true,  false, false, false,  0 },
-  /*2*/  { "disable loop unrolling",         4, 4, true,  true,  false, false,  0 },
-  /*3*/  { "disable UBO load sorting",       4, 4, true,  true,  true,  false,  0 },
-  /*4*/  { "disable TMU pipelining",         4, 4, true,  true,  true,  true,   0 },
-  /*5*/  { "lower thread count",             2, 1, false, false, false, false, -1 },
-  /*6*/  { "disable general TMU sched (2t)", 2, 1, true,  false, false, false, -1 },
-  /*7*/  { "disable loop unrolling (2t)",    2, 1, true,  true,  false, false, -1 },
-  /*8*/  { "disable UBO load sorting (2t)",  2, 1, true,  true,  true,  false, -1 },
-  /*9*/  { "disable TMU pipelining (2t)",    2, 1, true,  true,  true,  true,  -1 },
-  /*10*/ { "fallback scheduler",             2, 1, true,  true,  true,  true,  -1 }
+static const struct v3d_compiler_strategy strategies[] = {
+        /*0*/  { "default",                        4, 4, false, false, false, false, false, false,  0 },
+        /*1*/  { "disable general TMU sched",      4, 4, true,  false, false, false, false, false,  0 },
+        /*2*/  { "disable gcm",                    4, 4, true,  true,  false, false, false, false,  0 },
+        /*3*/  { "disable loop unrolling",         4, 4, true,  true,  true,  false, false, false,  0 },
+        /*4*/  { "disable UBO load sorting",       4, 4, true,  true,  true,  true,  false, false,  0 },
+        /*5*/  { "disable TMU pipelining",         4, 4, true,  true,  true,  true,  false, true,   0 },
+        /*6*/  { "lower thread count",             2, 1, false, false, false, false, false, false, -1 },
+        /*7*/  { "disable general TMU sched (2t)", 2, 1, true,  false, false, false, false, false, -1 },
+        /*8*/  { "disable gcm (2t)",               2, 1, true,  true,  false, false, false, false, -1 },
+        /*9*/  { "disable loop unrolling (2t)",    2, 1, true,  true,  true,  false, false, false, -1 },
+        /*10*/ { "Move buffer loads (2t)",         2, 1, true,  true,  true,  true,  true,  false, -1 },
+        /*11*/ { "disable TMU pipelining (2t)",    2, 1, true,  true,  true,  true,  true,  true,  -1 },
+        /*12*/ { "fallback scheduler",             2, 1, true,  true,  true,  true,  true,  true,  -1 }
 };
 
 /**
  * If a particular optimization didn't make any progress during a compile
- * attempt disabling it alone won't allow us to compile the shader successfuly,
+ * attempt disabling it alone won't allow us to compile the shader successfully,
  * since we'll end up with the same code. Detect these scenarios so we can
  * avoid wasting time with useless compiles. We should also consider if the
  * gy changes other aspects of the compilation process though, like
@@ -1744,27 +1958,47 @@ skip_compile_strategy(struct v3d_compile *c, uint32_t idx)
    switch (idx) {
    /* General TMU sched.: skip if we didn't emit any TMU loads */
    case 1:
-   case 6:
-           return !c->has_general_tmu_load;
-   /* Loop unrolling: skip if we didn't unroll any loops */
-   case 2:
    case 7:
+           return !c->has_general_tmu_load;
+   /* Global code motion: skip if nir_opt_gcm didn't make any progress */
+   case 2:
+   case 8:
+           return !c->gcm_progress;
+   /* Loop unrolling: skip if we didn't unroll any loops */
+   case 3:
+   case 9:
            return !c->unrolled_any_loops;
    /* UBO load sorting: skip if we didn't sort any loads */
-   case 3:
-   case 8:
-           return !c->sorted_any_ubo_loads;
-   /* TMU pipelining: skip if we didn't pipeline any TMU ops */
    case 4:
-   case 9:
+           return !c->sorted_any_ubo_loads;
+   /* Move buffer loads: we assume any shader with difficult RA
+    * most likely has UBO / SSBO loads so we never try to skip.
+    * For now, we only try this for 2-thread compiles since it
+    * is expected to impact instruction counts and latency.
+    */
+   case 10:
+          assert(c->threads < 4);
+          return false;
+   /* TMU pipelining: skip if we didn't pipeline any TMU ops */
+   case 5:
+   case 11:
            return !c->pipelined_any_tmu;
    /* Lower thread count: skip if we already tried less that 4 threads */
-   case 5:
+   case 6:
           return c->threads < 4;
    default:
            return false;
    };
 }
+
+static inline void
+set_best_compile(struct v3d_compile **best, struct v3d_compile *c)
+{
+   if (*best)
+      vir_compile_destroy(*best);
+   *best = c;
+}
+
 uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                       struct v3d_key *key,
                       struct v3d_prog_data **out_prog_data,
@@ -1776,9 +2010,11 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                       uint32_t *final_assembly_size)
 {
         struct v3d_compile *c = NULL;
-
         uint32_t best_spill_fill_count = UINT32_MAX;
         struct v3d_compile *best_c = NULL;
+
+        MESA_TRACE_FUNC();
+
         for (int32_t strat = 0; strat < ARRAY_SIZE(strategies); strat++) {
                 /* Fallback strategy */
                 if (strat > 0) {
@@ -1795,7 +2031,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                                            c->program_id, c->variant_id);
 
                         if (ret >= 0) {
-                                if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF))
+                                if (V3D_DBG(PERF))
                                         fprintf(stderr, "%s\n", debug_msg);
 
                                 c->debug_output(debug_msg, c->debug_output_data);
@@ -1809,14 +2045,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                 c = vir_compile_init(compiler, key, s,
                                      debug_output, debug_output_data,
                                      program_id, variant_id,
-                                     strat,
-                                     strategies[strat].max_threads,
-                                     strategies[strat].min_threads,
-                                     strategies[strat].max_tmu_spills,
-                                     strategies[strat].disable_general_tmu_sched,
-                                     strategies[strat].disable_loop_unrolling,
-                                     strategies[strat].disable_ubo_load_sorting,
-                                     strategies[strat].disable_tmu_pipelining,
+                                     strat, &strategies[strat],
                                      strat == ARRAY_SIZE(strategies) - 1);
 
                 v3d_attempt_compile(c);
@@ -1834,16 +2063,17 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                  */
                 if (c->compilation_result == V3D_COMPILATION_SUCCEEDED) {
                         if (c->spills == 0 ||
-                            strategies[strat].min_threads == 4) {
-                                best_c = c;
+                            strategies[strat].min_threads == 4 ||
+                            V3D_DBG(OPT_COMPILE_TIME)) {
+                                set_best_compile(&best_c, c);
                                 break;
                         } else if (c->spills + c->fills <
                                    best_spill_fill_count) {
-                                best_c = c;
+                                set_best_compile(&best_c, c);
                                 best_spill_fill_count = c->spills + c->fills;
                         }
 
-                        if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF)) {
+                        if (V3D_DBG(PERF)) {
                                 char *debug_msg;
                                 int ret = asprintf(&debug_msg,
                                                    "Compiled %s prog %d/%d with %d "
@@ -1869,12 +2099,10 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
         }
 
         /* If the best strategy was not the last, choose that */
-        if (best_c && c != best_c) {
-                vir_compile_destroy(c);
-                c = best_c;
-        }
+        if (best_c && c != best_c)
+                set_best_compile(&c, best_c);
 
-        if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF) &&
+        if (V3D_DBG(PERF) &&
             c->compilation_result !=
             V3D_COMPILATION_FAILED_REGISTER_ALLOCATION &&
             c->spills > 0) {
@@ -1897,6 +2125,9 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                 fprintf(stderr, "Failed to compile %s prog %d/%d "
                         "with any strategy.\n",
                         vir_get_stage_name(c), c->program_id, c->variant_id);
+
+                vir_compile_destroy(c);
+                return NULL;
         }
 
         struct v3d_prog_data *prog_data;
@@ -1910,7 +2141,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
         char *shaderdb;
         int ret = v3d_shaderdb_dump(c, &shaderdb);
         if (ret >= 0) {
-                if (V3D_DEBUG & V3D_DEBUG_SHADERDB)
+                if (V3D_DBG(SHADERDB))
                         fprintf(stderr, "SHADER-DB-%s - %s\n", s->info.name, shaderdb);
 
                 c->debug_output(shaderdb, c->debug_output_data);
@@ -2020,7 +2251,7 @@ try_opt_ldunif(struct v3d_compile *c, uint32_t index, struct qreg *unif)
         struct qinst *prev_inst = NULL;
         assert(c->cur_block);
 
-#ifdef DEBUG
+#if MESA_DEBUG
         /* We can only reuse a uniform if it was emitted in the same block,
          * so callers must make sure the current instruction is being emitted
          * in the current block.
@@ -2051,6 +2282,12 @@ try_opt_ldunif(struct v3d_compile *c, uint32_t index, struct qreg *unif)
         if (!prev_inst)
                 return false;
 
+        /* Only reuse the ldunif result if it was written to a temp register,
+         * otherwise there may be special restrictions (for example, ldunif
+         * may write directly to unifa, which is a write-only register).
+         */
+        if (prev_inst->dst.file != QFILE_TEMP)
+                return false;
 
         list_for_each_entry_from(struct qinst, inst, prev_inst->link.next,
                                  &c->cur_block->instructions, link) {
@@ -2306,4 +2543,24 @@ v3d_compute_vpm_config(struct v3d_device_info *devinfo,
    }
 
    return true;
+}
+
+static inline uint32_t
+compute_prog_score(struct v3d_prog_data *p, uint32_t qpu_size)
+{
+        const uint32_t inst_count = qpu_size / sizeof(uint64_t);
+        const uint32_t tmu_count = p->tmu_count + p->tmu_spills + p->tmu_fills;
+        return inst_count + 4 * tmu_count;
+}
+
+void
+v3d_update_double_buffer_score(uint32_t vertex_count,
+                               uint32_t vs_qpu_size,
+                               uint32_t fs_qpu_size,
+                               struct v3d_prog_data *vs,
+                               struct v3d_prog_data *fs,
+                               struct v3d_double_buffer_score *score)
+{
+        score->geom += vertex_count * compute_prog_score(vs, vs_qpu_size);
+        score->render += compute_prog_score(fs, fs_qpu_size);
 }

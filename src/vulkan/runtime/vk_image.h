@@ -25,7 +25,16 @@
 
 #include "vk_object.h"
 
+#include "util/detect_os.h"
 #include "util/u_math.h"
+
+#if DETECT_OS_ANDROID
+enum android_buffer_type {
+   ANDROID_BUFFER_NONE = 0,
+   ANDROID_BUFFER_NATIVE,
+   ANDROID_BUFFER_HARDWARE,
+};
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,13 +45,20 @@ struct vk_image {
 
    VkImageCreateFlags create_flags;
    VkImageType image_type;
+
+   /* format is from VkImageCreateInfo::format or
+    * VkExternalFormatANDROID::externalFormat.  This works because only one of
+    * them can be defined and the runtime uses VkFormat for external formats.
+    */
    VkFormat format;
+
    VkExtent3D extent;
    uint32_t mip_levels;
    uint32_t array_layers;
    VkSampleCountFlagBits samples;
    VkImageTiling tiling;
    VkImageUsageFlags usage;
+   VkSharingMode sharing_mode;
 
    /* Derived from format */
    VkImageAspectFlags aspects;
@@ -53,10 +69,13 @@ struct vk_image {
    /* VK_KHR_external_memory */
    VkExternalMemoryHandleTypeFlags external_handle_types;
 
+   /* VK_EXT_image_compression_control */
+   VkImageCompressionFlagsEXT compr_flags;
+
    /* wsi_image_create_info::scanout */
    bool wsi_legacy_scanout;
 
-#ifndef _WIN32
+#if DETECT_OS_LINUX || DETECT_OS_BSD
    /* VK_EXT_drm_format_modifier
     *
     * Initialized by vk_image_create/init() to DRM_FORMAT_MOD_INVALID.  It's
@@ -69,9 +88,16 @@ struct vk_image {
    uint64_t drm_format_mod;
 #endif
 
-#ifdef ANDROID
-   /* VK_ANDROID_external_memory_android_hardware_buffer */
-   uint64_t android_external_format;
+#if DETECT_OS_ANDROID
+   enum android_buffer_type android_buffer_type;
+   VkDeviceMemory anb_memory;
+
+   /* AHARDWAREBUFFER_FORMAT for this image or 0
+    *
+    * A default is provided by the Vulkan runtime code based on the VkFormat
+    * but it may be overridden by the driver as needed.
+    */
+   uint32_t ahb_format;
 #endif
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_image, base, VkImage,
@@ -89,6 +115,13 @@ void *vk_image_create(struct vk_device *device,
 void vk_image_destroy(struct vk_device *device,
                       const VkAllocationCallbacks *alloc,
                       struct vk_image *image);
+
+VkResult
+vk_image_create_get_format_list(struct vk_device *device,
+                                const VkImageCreateInfo *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator,
+                                VkFormat **formats,
+                                uint32_t *format_count);
 
 void vk_image_set_format(struct vk_image *image, VkFormat format);
 
@@ -191,9 +224,36 @@ struct vk_image_buffer_layout {
    uint64_t image_stride_B;
 };
 
+static inline VkDeviceSize
+vk_image_buffer_range(const struct vk_image *image,
+                      const struct vk_image_buffer_layout *buf_layout,
+                      const VkExtent3D *elem_extent,
+                      const VkImageSubresourceLayers *subres)
+{
+   uint32_t depth_or_layer_count =
+      MAX2(elem_extent->depth, vk_image_subresource_layer_count(image, subres));
+
+   /* Depth, layer_count and height must be at least one, and we rely on that
+    * for the rest of the buffer range calculation. */
+   assert(depth_or_layer_count > 0);
+   assert(elem_extent->height > 0);
+
+   return (VkDeviceSize)buf_layout->image_stride_B * (depth_or_layer_count - 1) +
+          (VkDeviceSize)buf_layout->row_stride_B * (elem_extent->height - 1) +
+          (VkDeviceSize)buf_layout->element_size_B * elem_extent->width;
+}
+
 struct vk_image_buffer_layout
 vk_image_buffer_copy_layout(const struct vk_image *image,
                             const VkBufferImageCopy2* region);
+
+struct vk_image_buffer_layout
+vk_memory_to_image_copy_layout(const struct vk_image *image,
+                               const VkMemoryToImageCopyEXT* region);
+
+struct vk_image_buffer_layout
+vk_image_to_memory_copy_layout(const struct vk_image *image,
+                               const VkImageToMemoryCopyEXT* region);
 
 struct vk_image_view {
    struct vk_object_base base;
@@ -202,7 +262,7 @@ struct vk_image_view {
    struct vk_image *image;
    VkImageViewType view_type;
 
-   /** VkImageViewCreateInfo::format */
+   /** VkImageViewCreateInfo::format or vk_image::format */
    VkFormat format;
 
    /** Image view format, relative to the selected aspects
@@ -218,7 +278,8 @@ struct vk_image_view {
     * For color images, we have three cases:
     *
     *  1. It's a single-plane image in which case this is the unmodified
-    *     format provided to VkImageViewCreateInfo::format.
+    *     format provided to VkImageViewCreateInfo::format or
+    *     vk_image::format.
     *
     *  2. It's a YCbCr view of a multi-plane image in which case the
     *     client will have asked for VK_IMAGE_ASPECT_COLOR_BIT and the
@@ -272,6 +333,25 @@ struct vk_image_view {
    uint32_t base_array_layer;
    uint32_t layer_count;
 
+   /* VK_EXT_sliced_view_of_3d */
+   struct {
+      /* VkImageViewSlicedCreateInfoEXT::sliceOffset
+       *
+       * This field will be 0 for 1D and 2D images, 2D views of 3D images, or
+       * when no VkImageViewSlicedCreateInfoEXT is provided.
+       */
+      uint32_t z_slice_offset;
+
+      /* VkImageViewSlicedCreateInfoEXT::sliceCount
+       *
+       * This field will be 1 for 1D and 2D images or 2D views of 3D images.
+       * For 3D views, it will be VkImageViewSlicedCreateInfoEXT::sliceCount
+       * or image view depth (see vk_image_view::extent) when no
+       * VkImageViewSlicedCreateInfoEXT is provided.
+       */
+      uint32_t z_slice_count;
+   } storage;
+
    /* VK_EXT_image_view_min_lod */
    float min_lod;
 
@@ -324,6 +404,34 @@ VkImageLayout vk_att_ref_stencil_layout(const VkAttachmentReference2 *att_ref,
                                         const VkAttachmentDescription2 *attachments);
 VkImageLayout vk_att_desc_stencil_layout(const VkAttachmentDescription2 *att_desc,
                                            bool final);
+
+#if DETECT_OS_ANDROID
+static inline bool
+vk_image_is_android_native_buffer(struct vk_image *image)
+{
+   return image->android_buffer_type == ANDROID_BUFFER_NATIVE;
+}
+#else
+static inline bool
+vk_image_is_android_native_buffer(struct vk_image *image)
+{
+   return false;
+}
+#endif /* DETECT_OS_ANDROID */
+
+#if DETECT_OS_ANDROID && ANDROID_API_LEVEL >= 26
+static inline bool
+vk_image_is_android_hardware_buffer(struct vk_image *image)
+{
+   return image->android_buffer_type == ANDROID_BUFFER_HARDWARE;
+}
+#else
+static inline bool
+vk_image_is_android_hardware_buffer(struct vk_image *image)
+{
+   return false;
+}
+#endif
 
 #ifdef __cplusplus
 }
