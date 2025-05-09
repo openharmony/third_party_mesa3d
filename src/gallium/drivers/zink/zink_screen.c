@@ -3391,6 +3391,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
       goto fail;
    }
 
+   screen->info.feats.features.geometryShader = false;
+
    if (zink_set_driver_strings(screen)) {
       mesa_loge("ZINK: failed to set driver strings\n");
       goto fail;
