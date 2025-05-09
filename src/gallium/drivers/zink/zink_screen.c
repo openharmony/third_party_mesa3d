@@ -75,6 +75,8 @@ bool zink_tracing = false;
 #define VK_LIBNAME "libvulkan.1.dylib"
 #elif DETECT_OS_ANDROID
 #define VK_LIBNAME "libvulkan.so"
+#elif DETECT_OS_OHOS
+#define VK_LIBNAME "libvulkan.so"
 #else
 #define VK_LIBNAME "libvulkan.so.1"
 #endif
