@@ -33,7 +33,7 @@ if __name__ == '__main__':
 
     run_build_cmd = 'PKG_CONFIG_PATH=./thirdparty/mesa3d/pkgconfig '
     run_build_cmd += 'meson setup '+ sys.argv[3] + ' thirdparty/mesa3d/build-ohos '
-    run_build_cmd += '-Dplatforms=ohos -Degl-native-platform=ohos -Dgallium-drivers=zink -Dbuildtype=debug \
+    run_build_cmd += '-Dplatforms=ohos -Degl-native-platform=ohos -Dgallium-drivers=zink -Dbuildtype=release -Degl-lib-suffix=_mesa  \
                       -Dvulkan-drivers= -Degl=enabled -Dgles1=enabled -Dgles2=enabled -Dopengl=true -Dcpp_rtti=false -Dglx=disabled -Dtools= \
                       -Dglvnd=disabled -Dshared-glapi=enabled -Dshader-cache=disabled '
     run_build_cmd += '--cross-file=thirdparty/mesa3d/cross_file '

@@ -214,8 +214,6 @@ libegl = shared_library(
   link_depends : [link_deps_for_egl],
   dependencies : [deps_for_egl, dep_dl, dep_libdrm, dep_clock, dep_thread, idep_mesautil],
   install : true,
-  version : egl_lib_version,
-  soversion : egl_lib_soversion,
   name_prefix : host_machine.system() == 'windows' ? 'lib' : [],  # always use lib, but avoid warnings on !windows
   vs_module_defs : egl_def
 )
