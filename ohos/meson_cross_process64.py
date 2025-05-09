@@ -79,7 +79,7 @@ pkgconfig = '/usr/bin/pkg-config'
 
 [host_machine]
 system = 'linux'
-cpu_family = 'arm'
+cpu_family = 'aarch64'
 cpu = 'armv8'
 endian = 'little'
 '''
