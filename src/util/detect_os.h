@@ -28,6 +28,14 @@
 #define DETECT_OS_ANDROID 1
 #endif
 
+/*
+ * OpenHarmony defines __linux__, so DETECT_OS_LINUX and DETECT_OS_POSIX will
+ * also be defined.
+ */
+#if defined(__OHOS_FAMILY__)
+#define DETECT_OS_OHOS 1
+#endif
+
 #if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
 #define DETECT_OS_FREEBSD 1
 #define DETECT_OS_BSD 1
@@ -145,6 +153,9 @@
 #endif
 #ifndef DETECT_OS_MANAGARM
 #define DETECT_OS_MANAGARM 0
+#endif
+#ifndef DETECT_OS_OHOS
+#define DETECT_OS_OHOS 0
 #endif
 
 #endif /* DETECT_OS_H */
