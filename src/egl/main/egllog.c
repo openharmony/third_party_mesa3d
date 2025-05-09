@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "c11/threads.h"
+#include "util/log.h"
 #include "util/macros.h"
 #include "util/os_misc.h"
 #include "util/simple_mtx.h"
@@ -91,7 +92,14 @@ _eglDefaultLogger(EGLint level, const char *msg)
    };
    LOG_PRI(egl2alog[level], LOG_TAG, "%s", msg);
 #else
-   fprintf(stderr, "libEGL %s: %s\n", level_strings[level], msg);
+   static const int egl2log[] = {
+      [_EGL_FATAL] = MESA_LOG_ERROR,
+      [_EGL_WARNING] = MESA_LOG_ERROR,
+      [_EGL_INFO] = MESA_LOG_INFO,
+      [_EGL_DEBUG] = MESA_LOG_DEBUG,
+   };
+
+   mesa_log(egl2log[level], "EGL-MAIN", "%s", msg);
 #endif /* HAVE_ANDROID_PLATFORM */
 }
 
