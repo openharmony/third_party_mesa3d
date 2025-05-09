@@ -85,7 +85,7 @@ endian = 'little'
 '''
 
 def generate_cross_file(project_stub_in, sysroot_stub_in):
-    with open("cross_file", 'w+') as file:
+    with open("thirdparty/mesa3d/cross_file", 'w+') as file:
         result = corss_file_content.replace("project_stub", project_stub_in)
         result = result.replace("sysroot_stub", sysroot_stub_in)
         file.write(result)
@@ -93,9 +93,9 @@ def generate_cross_file(project_stub_in, sysroot_stub_in):
 
 def generate_pc_file(file_raw, project_dir, product_name):
     print(file_raw)
-    if not os.path.exists('pkgconfig'):
-        os.makedirs('pkgconfig')
-    filename = 'pkgconfig/'+ ntpath.basename(file_raw)
+    if not os.path.exists('thirdparty/mesa3d/pkgconfig'):
+        os.makedirs('thirdparty/mesa3d/pkgconfig')
+    filename = 'thirdparty/mesa3d/pkgconfig/'+ ntpath.basename(file_raw)
     with open(file_raw, 'r+') as file_raw:
         with open(filename, "w+") as pc_file:
             raw_content = file_raw.read()
