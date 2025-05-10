@@ -36,7 +36,15 @@
             "sub_component": [
                 "//third_party/mesa3d:zink_opengl"
             ],
-            "inner_kits": [],
+            "inner_kits": [
+                {
+                    "name": "//third_party/mesa3d:zink_opengl",
+                    "header": {
+                        "header_files": [],
+                        "header_base": []
+                    }
+                }
+            ],
             "test": []
         }
     }
