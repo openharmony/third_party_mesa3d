@@ -1,25 +1,8 @@
 /*
 ************************************************************************************************************************
 *
-*  Copyright (C) 2007-2022 Advanced Micro Devices, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE
+*  Copyright (C) 2007-2024 Advanced Micro Devices, Inc. All rights reserved.
+*  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
 
@@ -190,6 +173,10 @@ ADDR_E_RETURNCODE Lib::Create(
         }
     }
 
+#if DEBUG
+    ApplyDebugPrinters(pCreateIn->callbacks.debugPrint, pCreateIn->hClient);
+#endif
+
     if ((returnCode == ADDR_OK)                    &&
         (pCreateIn->callbacks.allocSysMem != NULL) &&
         (pCreateIn->callbacks.freeSysMem != NULL))
@@ -207,10 +194,10 @@ ADDR_E_RETURNCODE Lib::Create(
                     case FAMILY_SI:
                         pLib = SiHwlInit(&client);
                         break;
-                    case FAMILY_VI:
-                    case FAMILY_CZ: // VI based fusion
                     case FAMILY_CI:
                     case FAMILY_KV: // CI based fusion
+                    case FAMILY_VI:
+                    case FAMILY_CZ: // VI based fusion
                         pLib = CiHwlInit(&client);
                         break;
                     default:
@@ -228,13 +215,17 @@ ADDR_E_RETURNCODE Lib::Create(
                     case FAMILY_NV:
                     case FAMILY_VGH:
                     case FAMILY_RMB:
-                    case FAMILY_GC_10_3_6:
-                    case FAMILY_GC_10_3_7:
+                    case FAMILY_RPL:
+                    case FAMILY_MDN:
                         pLib = Gfx10HwlInit(&client);
                         break;
-                    case FAMILY_GFX1100:
-                    case FAMILY_GFX1103:
+                    case FAMILY_NV3:
+                    case FAMILY_GFX1150:
+                    case FAMILY_PHX:
                         pLib = Gfx11HwlInit(&client);
+                        break;
+                    case FAMILY_GFX12:
+                        pLib = Gfx12HwlInit(&client);
                         break;
                     default:
                         ADDR_ASSERT_ALWAYS();
@@ -247,6 +238,10 @@ ADDR_E_RETURNCODE Lib::Create(
         }
     }
 
+    if(pLib == NULL)
+    {
+        returnCode = ADDR_OUTOFMEMORY;
+    }
     if (pLib != NULL)
     {
         BOOL_32 initValid;
@@ -285,6 +280,7 @@ ADDR_E_RETURNCODE Lib::Create(
         {
             delete pLib;
             pLib = NULL;
+            returnCode = ADDR_OUTOFMEMORY;
             ADDR_ASSERT_ALWAYS();
         }
         else
@@ -303,12 +299,6 @@ ADDR_E_RETURNCODE Lib::Create(
 
         pLib->SetMaxAlignments();
 
-    }
-    else if ((pLib == NULL) &&
-             (returnCode == ADDR_OK))
-    {
-        // Unknown failures, we return the general error code
-        returnCode = ADDR_ERROR;
     }
 
     return returnCode;
@@ -384,7 +374,14 @@ VOID Lib::SetMaxAlignments()
 Lib* Lib::GetLib(
     ADDR_HANDLE hLib)   ///< [in] handle of ADDR_HANDLE
 {
-    return static_cast<Addr::Lib*>(hLib);
+    Lib* pLib = static_cast<Addr::Lib*>(hLib);
+#if DEBUG
+    if (pLib != NULL)
+    {
+        pLib->SetDebugPrinters();
+    }
+#endif
+    return pLib;
 }
 
 /**
@@ -669,6 +666,107 @@ BOOL_32 Lib::GetExportNorm(
 UINT_32 Lib::GetBpe(AddrFormat format) const
 {
     return GetElemLib()->GetBitsPerPixel(format);
+}
+
+/**
+************************************************************************************************************************
+*   Lib::ComputeOffsetFromSwizzlePattern
+*
+*   @brief
+*       Compute offset from swizzle pattern
+*
+*   @return
+*       Offset
+************************************************************************************************************************
+*/
+UINT_32 Lib::ComputeOffsetFromSwizzlePattern(
+    const UINT_64* pPattern,    ///< Swizzle pattern
+    UINT_32        numBits,     ///< Number of bits in pattern
+    UINT_32        x,           ///< x coord in pixel
+    UINT_32        y,           ///< y coord in pixel
+    UINT_32        z,           ///< z coord in slice
+    UINT_32        s            ///< sample id
+    )
+{
+    UINT_32                 offset          = 0;
+    const ADDR_BIT_SETTING* pSwizzlePattern = reinterpret_cast<const ADDR_BIT_SETTING*>(pPattern);
+
+    for (UINT_32 i = 0; i < numBits; i++)
+    {
+        UINT_32 v = 0;
+
+        if (pSwizzlePattern[i].x != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].x;
+            UINT_32 xBits = x;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= xBits & 1;
+                }
+
+                xBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].y != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].y;
+            UINT_32 yBits = y;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= yBits & 1;
+                }
+
+                yBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].z != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].z;
+            UINT_32 zBits = z;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= zBits & 1;
+                }
+
+                zBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        if (pSwizzlePattern[i].s != 0)
+        {
+            UINT_16 mask  = pSwizzlePattern[i].s;
+            UINT_32 sBits = s;
+
+            while (mask != 0)
+            {
+                if (mask & 1)
+                {
+                    v ^= sBits & 1;
+                }
+
+                sBits >>= 1;
+                mask  >>= 1;
+            }
+        }
+
+        offset |= (v << i);
+    }
+
+    return offset;
 }
 
 } // Addr

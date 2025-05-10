@@ -49,13 +49,12 @@ static const struct glsl_type *
 strip_shadow(const struct glsl_type *type)
 {
    const struct glsl_type *new_type =
-         glsl_sampler_type(
-            glsl_get_sampler_dim(type),
-            false, glsl_sampler_type_is_array(type),
-            GLSL_TYPE_FLOAT);
+      glsl_sampler_type(
+         glsl_get_sampler_dim(type),
+         false, glsl_sampler_type_is_array(type),
+         GLSL_TYPE_FLOAT);
    return new_type;
 }
-
 
 static const struct glsl_type *
 strip_shadow_with_array(const struct glsl_type *type)
@@ -70,9 +69,10 @@ typedef struct {
    unsigned n_states;
    enum compare_func *compare_func;
    nir_lower_tex_shadow_swizzle *tex_swizzles;
+   bool is_fixed_point_format;
 } sampler_state;
 
-static nir_ssa_def *
+static nir_def *
 nir_lower_tex_shadow_impl(nir_builder *b, nir_instr *instr, void *options)
 
 {
@@ -98,31 +98,36 @@ nir_lower_tex_shadow_impl(nir_builder *b, nir_instr *instr, void *options)
    }
 
    /* NIR expects a vec4 result from the above texture instructions */
-   nir_ssa_dest_init(&tex->instr, &tex->dest, 4, 32, NULL);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
 
-   nir_ssa_def *tex_r = nir_channel(b, &tex->dest.ssa, 0);
-   nir_ssa_def *cmp = tex->src[comp_index].src.ssa;
+   nir_def *tex_r = nir_channel(b, &tex->def, 0);
+   nir_def *cmp = tex->src[comp_index].src.ssa;
 
    int proj_index = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    if (proj_index >= 0)
       cmp = nir_fmul(b, cmp, nir_frcp(b, tex->src[proj_index].src.ssa));
 
-   nir_ssa_def * result =
-         nir_compare_func(b,
-                          sampler_binding < state->n_states ?
-                             state->compare_func[sampler_binding] : COMPARE_FUNC_ALWAYS,
-                          cmp, tex_r);
+   if (state->is_fixed_point_format)
+      cmp = nir_fsat(b, cmp);
+
+   nir_def *result =
+      nir_compare_func(b,
+                       sampler_binding < state->n_states ? state->compare_func[sampler_binding] : COMPARE_FUNC_ALWAYS,
+                       cmp, tex_r);
 
    result = nir_b2f32(b, result);
-   nir_ssa_def *one = nir_imm_float(b, 1.0);
-   nir_ssa_def *zero = nir_imm_float(b, 0.0);
+   nir_def *one = nir_imm_float(b, 1.0);
+   nir_def *zero = nir_imm_float(b, 0.0);
 
-   nir_ssa_def *lookup[6] = {result, NULL, NULL, NULL, zero, one};
-   nir_ssa_def *r[4] = {lookup[state->tex_swizzles[sampler_binding].swizzle_r],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_g],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_b],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_a]
-                       };
+   nir_def *lookup[6] = { result, zero, zero, one, zero, one };
+   nir_def *r[4] = { result, result, result, result };
+
+   if (sampler_binding < state->n_states) {
+      r[0] = lookup[state->tex_swizzles[sampler_binding].swizzle_r];
+      r[1] = lookup[state->tex_swizzles[sampler_binding].swizzle_g];
+      r[2] = lookup[state->tex_swizzles[sampler_binding].swizzle_b];
+      r[3] = lookup[state->tex_swizzles[sampler_binding].swizzle_a];
+   }
 
    result = nir_vec(b, r, num_components);
 
@@ -141,14 +146,15 @@ bool
 nir_lower_tex_shadow(nir_shader *s,
                      unsigned n_states,
                      enum compare_func *compare_func,
-                     nir_lower_tex_shadow_swizzle *tex_swizzles)
+                     nir_lower_tex_shadow_swizzle *tex_swizzles,
+                     bool is_fixed_point_format)
 {
-   sampler_state state = {n_states, compare_func, tex_swizzles};
+   sampler_state state = { n_states, compare_func, tex_swizzles, is_fixed_point_format };
 
    bool result =
-         nir_shader_lower_instructions(s,
-                                       nir_lower_tex_shadow_filter,
-                                       nir_lower_tex_shadow_impl,
-                                       &state);
+      nir_shader_lower_instructions(s,
+                                    nir_lower_tex_shadow_filter,
+                                    nir_lower_tex_shadow_impl,
+                                    &state);
    return result;
 }

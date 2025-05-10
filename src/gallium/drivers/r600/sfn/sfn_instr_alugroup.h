@@ -1,39 +1,18 @@
 /* -*- mesa-c++  -*-
- *
- * Copyright (c) 2022 Collabora LTD
- *
+ * Copyright 2022 Collabora LTD
  * Author: Gert Wollny <gert.wollny@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef ALUGROUP_H
 #define ALUGROUP_H
 
-#include "sfn_instr_alu.h"
 #include "sfn_alu_readport_validation.h"
+#include "sfn_instr_alu.h"
 
 namespace r600 {
 
-class AluGroup : public Instr
-{
+class AluGroup : public Instr {
 public:
    using Slots = std::array<AluInstr *, 5>;
 
@@ -51,16 +30,17 @@ public:
    void accept(ConstInstrVisitor& visitor) const override;
    void accept(InstrVisitor& visitor) override;
 
-   auto begin() {return m_slots.begin(); }
-   auto end() {return m_slots.begin() + s_max_slots; }
-   auto begin() const {return m_slots.begin(); }
-   auto end() const {return m_slots.begin() + s_max_slots; }
+   auto begin() { return m_slots.begin(); }
+   auto end() { return m_slots.begin() + s_max_slots; }
+   auto begin() const { return m_slots.begin(); }
+   auto end() const { return m_slots.begin() + s_max_slots; }
 
    bool end_group() const override { return true; }
 
    void set_scheduled() override;
+   bool replace_source(PRegister old_src, PVirtualValue new_src) override;
 
-   void set_nesting_depth(int depth) {m_nesting_depth = depth;}
+   void set_nesting_depth(int depth) { m_nesting_depth = depth; }
 
    void fix_last_flag();
 
@@ -68,26 +48,37 @@ public:
 
    int free_slots() const;
 
-   auto addr() const {return std::make_pair(m_addr_used, m_addr_is_index);}
+   auto addr() const { return std::make_pair(m_addr_used, m_addr_is_index); }
 
    uint32_t slots() const override;
 
    AluInstr::SrcValues get_kconsts() const;
 
-   bool has_lds_group_start() const { return m_slots[0] ?
-            m_slots[0]->has_alu_flag(alu_lds_group_start) : false;}
+   bool has_lds_group_start() const
+   {
+      return m_slots[0] ? m_slots[0]->has_alu_flag(alu_lds_group_start) : false;
+   }
+
+   bool index_mode_load();
 
    bool has_lds_group_end() const;
 
    const auto& readport_reserer() const { return m_readports_evaluator; }
-   void set_readport_reserer(const AluReadportReservation& rr) {
-       m_readports_evaluator = rr;
+   void set_readport_reserer(const AluReadportReservation& rr)
+   {
+      m_readports_evaluator = rr;
    };
 
-   static bool has_t() { return s_max_slots == 5;}
+   void update_readport_reserver();
 
-   bool addr_for_src() const { return m_addr_for_src;}
-   bool has_kill_op() const {return m_has_kill_op;}
+   static bool has_t() { return s_max_slots == 5; }
+
+   bool addr_for_src() const { return m_addr_for_src; }
+   bool has_kill_op() const { return m_has_kill_op; }
+
+   void set_origin(AluInstr *o) { m_origin = o;}
+
+   AluGroup *as_alu_group() override { return this;}
 
 private:
    void forward_set_blockid(int id, int index) override;
@@ -113,9 +104,9 @@ private:
    bool m_addr_is_index{false};
    bool m_addr_for_src{false};
    bool m_has_kill_op{false};
+   AluInstr *m_origin{nullptr};
 };
 
-
-}
+} // namespace r600
 
 #endif // ALUGROUP_H

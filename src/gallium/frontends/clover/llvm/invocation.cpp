@@ -27,18 +27,22 @@
 #include <llvm/IR/DiagnosticPrinter.h>
 #include <llvm/IR/DiagnosticInfo.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 #include <llvm/Support/raw_ostream.h>
-#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <llvm/Transforms/IPO/Internalize.h>
 #include <llvm-c/Target.h>
-#ifdef HAVE_CLOVER_SPIRV
-#include <LLVMSPIRVLib/LLVMSPIRVLib.h>
-#endif
-
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
+#include <llvm/Support/CBindingWrapping.h>
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Frontend/TextDiagnosticBuffer.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Basic/TargetInfo.h>
+
+#if LLVM_VERSION_MAJOR >= 20
+#include <llvm/Support/VirtualFileSystem.h>
+#endif
 
 // We need to include internal headers last, because the internal headers
 // include CL headers which have #define's like:
@@ -54,9 +58,6 @@
 #include "llvm/invocation.hpp"
 #include "llvm/metadata.hpp"
 #include "llvm/util.hpp"
-#ifdef HAVE_CLOVER_SPIRV
-#include "spirv/invocation.hpp"
-#endif
 #include "util/algorithm.hpp"
 
 
@@ -124,11 +125,20 @@ namespace {
    }
 
    void
+#if LLVM_VERSION_MAJOR >= 19
+   diagnostic_handler(const ::llvm::DiagnosticInfo *di, void *data) {
+      if (di->getSeverity() == ::llvm::DS_Error) {
+#else
    diagnostic_handler(const ::llvm::DiagnosticInfo &di, void *data) {
       if (di.getSeverity() == ::llvm::DS_Error) {
+#endif
          raw_string_ostream os { *reinterpret_cast<std::string *>(data) };
          ::llvm::DiagnosticPrinterRawOStream printer { os };
+#if LLVM_VERSION_MAJOR >= 19
+         di->print(printer);
+#else
          di.print(printer);
+#endif
          throw build_error();
       }
    }
@@ -226,12 +236,32 @@ namespace {
       // class to recognize it as an OpenCL source file.
 #if LLVM_VERSION_MAJOR >= 12
       std::vector<const char *> copts;
-#if LLVM_VERSION_MAJOR >= 15
-      // Since LLVM commit 702d5de4 opaque pointers are enabled by default:
-      // https://gitlab.freedesktop.org/mesa/mesa/-/issues/6342
-      // A better implementation may be doable following suggestions from there:
-      // https://github.com/llvm/llvm-project/issues/54970#issuecomment-1102254254
-      copts.push_back("-no-opaque-pointers");
+#if LLVM_VERSION_MAJOR == 15 || LLVM_VERSION_MAJOR == 16
+      // Before LLVM commit 702d5de4 opaque pointers were supported but not enabled
+      // by default when building LLVM. They were made default in commit 702d5de4.
+      // LLVM commit d69e9f9d introduced -opaque-pointers/-no-opaque-pointers cc1
+      // options to enable or disable them whatever the LLVM default is.
+
+      // Those two commits follow llvmorg-15-init and precede llvmorg-15.0.0-rc1 tags.
+
+      // Since LLVM commit d785a8ea, the CLANG_ENABLE_OPAQUE_POINTERS build option of
+      // LLVM is removed, meaning there is no way to build LLVM with opaque pointers
+      // enabled by default.
+      // It was said at the time it was still possible to explicitly disable opaque
+      // pointers via cc1 -no-opaque-pointers option, but it is known a later commit
+      // broke backward compatibility provided by -no-opaque-pointers as verified with
+      // arbitrary commit d7d586e5, so there is no way to use opaque pointers starting
+      // with LLVM 16.
+
+      // Those two commits follow llvmorg-16-init and precede llvmorg-16.0.0-rc1 tags.
+
+      // Since Mesa commit 977dbfc9 opaque pointers are properly implemented in Clover
+      // and used.
+
+      // If we don't pass -opaque-pointers to Clang on LLVM versions supporting opaque
+      // pointers but disabling them by default, there will be an API mismatch between
+      // Mesa and LLVM and Clover will not work.
+      copts.push_back("-opaque-pointers");
 #endif
       for (auto &opt : opts) {
          if (opt == "-cl-denorms-are-zero")
@@ -279,7 +309,11 @@ namespace {
                                 ::llvm::Triple(target.triple),
                                 get_language_version(opts, device_clc_version));
 
-      c->createDiagnostics(new clang::TextDiagnosticPrinter(
+      c->createDiagnostics(
+#if LLVM_VERSION_MAJOR >= 20
+                           *llvm::vfs::getRealFileSystem(),
+#endif
+                           new clang::TextDiagnosticPrinter(
                               *new raw_string_ostream(r_log),
                               &c->getDiagnosticOpts(), true));
 
@@ -374,26 +408,6 @@ namespace {
 
       return act.takeModule();
    }
-
-#ifdef HAVE_CLOVER_SPIRV
-   SPIRV::TranslatorOpts
-   get_spirv_translator_options(const device &dev) {
-      const auto supported_versions = clover::spirv::supported_versions();
-      const auto max_supported = clover::spirv::to_spirv_version_encoding(supported_versions.back().version);
-      const auto maximum_spirv_version =
-         std::min(static_cast<SPIRV::VersionNumber>(max_supported),
-                  SPIRV::VersionNumber::MaximumVersion);
-
-      SPIRV::TranslatorOpts::ExtensionsStatusMap spirv_extensions;
-      for (auto &ext : clover::spirv::supported_extensions()) {
-         #define EXT(X) if (ext == #X) spirv_extensions.insert({ SPIRV::ExtensionID::X, true });
-         #include <LLVMSPIRVLib/LLVMSPIRVExtensions.inc>
-         #undef EXT
-      }
-
-      return SPIRV::TranslatorOpts(maximum_spirv_version, spirv_extensions);
-   }
-#endif
 }
 
 binary
@@ -419,10 +433,10 @@ clover::llvm::compile_program(const std::string &source,
 
 namespace {
    void
-   optimize(Module &mod, unsigned optimization_level,
+   optimize(Module &mod,
+            const std::string& ir_target,
+            unsigned optimization_level,
             bool internalize_symbols) {
-      ::llvm::legacy::PassManager pm;
-
       // By default, the function internalizer pass will look for a function
       // called "main" and then mark all other functions as internal.  Marking
       // functions as internal enables the optimizer to perform optimizations
@@ -438,19 +452,54 @@ namespace {
       if (internalize_symbols) {
          std::vector<std::string> names =
             map(std::mem_fn(&Function::getName), get_kernels(mod));
-         pm.add(::llvm::createInternalizePass(
+         internalizeModule(mod,
                       [=](const ::llvm::GlobalValue &gv) {
                          return std::find(names.begin(), names.end(),
                                           gv.getName()) != names.end();
-                      }));
+                      });
       }
 
-      ::llvm::PassManagerBuilder pmb;
-      pmb.OptLevel = optimization_level;
-      pmb.LibraryInfo = new ::llvm::TargetLibraryInfoImpl(
-         ::llvm::Triple(mod.getTargetTriple()));
-      pmb.populateModulePassManager(pm);
-      pm.run(mod);
+
+      const char *opt_str = NULL;
+      LLVMCodeGenOptLevel level;
+      switch (optimization_level) {
+      case 0:
+      default:
+         opt_str = "default<O0>";
+         level = LLVMCodeGenLevelNone;
+         break;
+      case 1:
+         opt_str = "default<O1>";
+         level = LLVMCodeGenLevelLess;
+         break;
+      case 2:
+         opt_str = "default<O2>";
+         level = LLVMCodeGenLevelDefault;
+         break;
+      case 3:
+         opt_str = "default<O3>";
+         level = LLVMCodeGenLevelAggressive;
+         break;
+      }
+
+      const target &target = ir_target;
+      LLVMTargetRef targ;
+      char *err_message;
+
+      if (LLVMGetTargetFromTriple(target.triple.c_str(), &targ, &err_message))
+         return;
+      LLVMTargetMachineRef tm =
+         LLVMCreateTargetMachine(targ, target.triple.c_str(),
+                                 target.cpu.c_str(), "", level,
+                                 LLVMRelocDefault, LLVMCodeModelDefault);
+
+      if (!tm)
+         return;
+      LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+      LLVMRunPasses(wrap(&mod), opt_str, tm, opts);
+
+      LLVMDisposeTargetMachine(tm);
+      LLVMDisposePassBuilderOptions(opts);
    }
 
    std::unique_ptr<Module>
@@ -480,7 +529,7 @@ clover::llvm::link_program(const std::vector<binary> &binaries,
    auto c = create_compiler_instance(dev, dev.ir_target(), options, r_log);
    auto mod = link(*ctx, *c, binaries, r_log);
 
-   optimize(*mod, c->getCodeGenOpts().OptimizationLevel, !create_library);
+   optimize(*mod, dev.ir_target(), c->getCodeGenOpts().OptimizationLevel, !create_library);
 
    static std::atomic_uint seq(0);
    const std::string id = "." + mod->getModuleIdentifier() + "-" +
@@ -502,48 +551,3 @@ clover::llvm::link_program(const std::vector<binary> &binaries,
       unreachable("Unsupported IR.");
    }
 }
-
-#ifdef HAVE_CLOVER_SPIRV
-binary
-clover::llvm::compile_to_spirv(const std::string &source,
-                               const header_map &headers,
-                               const device &dev,
-                               const std::string &opts,
-                               std::string &r_log) {
-   if (has_flag(debug::clc))
-      debug::log(".cl", "// Options: " + opts + '\n' + source);
-
-   auto ctx = create_context(r_log);
-   const std::string target = dev.address_bits() == 32u ?
-      "-spir-unknown-unknown" :
-      "-spir64-unknown-unknown";
-   auto c = create_compiler_instance(dev, target,
-                                     tokenize(opts + " -O0 -fgnu89-inline input.cl"), r_log);
-   auto mod = compile(*ctx, *c, "input.cl", source, headers, dev, opts, false,
-                      r_log);
-
-   if (has_flag(debug::llvm))
-      debug::log(".ll", print_module_bitcode(*mod));
-
-   const auto spirv_options = get_spirv_translator_options(dev);
-
-   std::string error_msg;
-   std::ostringstream os;
-   if (!::llvm::writeSpirv(mod.get(), spirv_options, os, error_msg)) {
-      r_log += "Translation from LLVM IR to SPIR-V failed: " + error_msg + ".\n";
-      throw error(CL_INVALID_VALUE);
-   }
-
-   const std::string osContent = os.str();
-   std::string binary(osContent.begin(), osContent.end());
-   if (binary.empty()) {
-      r_log += "Failed to retrieve SPIR-V binary.\n";
-      throw error(CL_INVALID_VALUE);
-   }
-
-   if (has_flag(debug::spirv))
-      debug::log(".spvasm", spirv::print_module(binary, dev.device_version()));
-
-   return spirv::compile_program(binary, dev, r_log);
-}
-#endif

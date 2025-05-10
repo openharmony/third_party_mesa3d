@@ -1,6 +1,6 @@
 [[deqp]]
-deqp = "/deqp/modules/gles2/deqp-gles2"
-caselists = ["/deqp/mustpass/gles2-master.txt"]
+deqp = "/deqp-gles/modules/gles2/deqp-gles2"
+caselists = ["/deqp-gles/mustpass/gles2-main.txt"]
 deqp_args = [
     "--deqp-surface-width=256",
     "--deqp-surface-height=256",
@@ -13,8 +13,8 @@ version_check = "GL ES 3.2.*git"
 renderer_check = "zink.*llvmpipe"
 
 [[deqp]]
-deqp = "/deqp/modules/gles3/deqp-gles3"
-caselists = ["/deqp/mustpass/gles3-master.txt"]
+deqp = "/deqp-gles/modules/gles3/deqp-gles3"
+caselists = ["/deqp-gles/mustpass/gles3-main.txt"]
 deqp_args = [
     "--deqp-surface-width=256",
     "--deqp-surface-height=256",
@@ -25,8 +25,8 @@ deqp_args = [
 timeout = 180.0
 
 [[deqp]]
-deqp = "/deqp/modules/gles31/deqp-gles31"
-caselists = ["/deqp/mustpass/gles31-master.txt"]
+deqp = "/deqp-gles/modules/gles31/deqp-gles31"
+caselists = ["/deqp-gles/mustpass/gles31-main.txt"]
 deqp_args = [
     "--deqp-surface-width=256",
     "--deqp-surface-height=256",
@@ -37,9 +37,10 @@ deqp_args = [
 timeout = 180.0
 
 [[deqp]]
-deqp = "/deqp/external/openglcts/modules/glcts"
+deqp = "/deqp-gl/external/openglcts/modules/glcts"
 caselists = [
-    "/deqp/mustpass/gl46-master.txt",
+    "/deqp-gl/mustpass/gl46-main.txt",
+    "/deqp-gl/mustpass/gl46-khr-single.txt",
 ]
 deqp_args = [
     "--deqp-surface-width=256",
@@ -56,3 +57,9 @@ profile = "gpu"
 process_isolation = true
 timeout = 180.0
   [piglit.env]
+  # Disable validation on piglit.  We end up with use-after-frees from
+  # piglit_report() -> exit() having freed validation layer state, with a
+  # st_glFlush() -> tc_batch_execute() -> zink_set_vertex_buffers ->
+  # vulkan_layer_chassis::CmdPipelineBarrier2() (etc.) happening after that
+  # somehow.
+  ZINK_DEBUG = ""

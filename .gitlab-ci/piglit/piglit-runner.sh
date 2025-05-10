@@ -1,4 +1,8 @@
-#!/bin/sh
+#!/usr/bin/env bash
+# shellcheck disable=SC2086 # we want word splitting
+# shellcheck disable=SC1091 # paths only become valid at runtime
+
+. "${SCRIPTS_DIR}/setup-test-env.sh"
 
 set -ex
 
@@ -7,15 +11,13 @@ if [ -z "$GPU_VERSION" ]; then
    exit 1
 fi
 
-INSTALL=`pwd`/install
+INSTALL="$PWD/install"
 
 # Set up the driver environment.
-export LD_LIBRARY_PATH=`pwd`/install/lib/
+export LD_LIBRARY_PATH="$INSTALL/lib/"
 export EGL_PLATFORM=surfaceless
-export VK_ICD_FILENAMES=`pwd`/install/share/vulkan/icd.d/"$VK_DRIVER"_icd.${VK_CPU:-`uname -m`}.json
-
-RESULTS=`pwd`/${PIGLIT_RESULTS_DIR:-results}
-mkdir -p $RESULTS
+ARCH=$(uname -m)
+export VK_DRIVER_FILES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.$ARCH.json"
 
 # Ensure Mesa Shader Cache resides on tmpfs.
 SHADER_CACHE_HOME=${XDG_CACHE_HOME:-${HOME}/.cache}
@@ -37,13 +39,13 @@ if [ "$GALLIUM_DRIVER" = "virpipe" ]; then
 
     GALLIUM_DRIVER=llvmpipe \
     GALLIVM_PERF="nopt" \
-    virgl_test_server $VTEST_ARGS >$RESULTS/vtest-log.txt 2>&1 &
+    virgl_test_server $VTEST_ARGS >$RESULTS_DIR/vtest-log.txt 2>&1 &
 
     sleep 1
 fi
 
-if [ -n "$PIGLIT_FRACTION" -o -n "$CI_NODE_INDEX" ]; then
-   FRACTION=`expr ${PIGLIT_FRACTION:-1} \* ${CI_NODE_TOTAL:-1}`
+if [ -n "$PIGLIT_FRACTION" ] || [ -n "$CI_NODE_INDEX" ]; then
+    FRACTION=$((${PIGLIT_FRACTION:-1} * ${CI_NODE_TOTAL:-1}))
 PIGLIT_RUNNER_OPTIONS="$PIGLIT_RUNNER_OPTIONS --fraction $FRACTION"
 fi
 
@@ -76,12 +78,24 @@ if [ -e "$INSTALL/$GPU_VERSION-skips.txt" ]; then
     PIGLIT_SKIPS="$PIGLIT_SKIPS $INSTALL/$GPU_VERSION-skips.txt"
 fi
 
+if [ -e "$INSTALL/$GPU_VERSION-slow-skips.txt" ] && [[ $CI_JOB_NAME != *full* ]]; then
+    PIGLIT_SKIPS="$PIGLIT_SKIPS $INSTALL/$GPU_VERSION-slow-skips.txt"
+fi
+
+if [ "$PIGLIT_PLATFORM" != "gbm" ] ; then
+    PIGLIT_SKIPS="$PIGLIT_SKIPS $INSTALL/x11-skips.txt"
+fi
+
+if [ "$PIGLIT_PLATFORM" = "gbm" ]; then
+    PIGLIT_SKIPS="$PIGLIT_SKIPS $INSTALL/gbm-skips.txt"
+fi
+
 set +e
 
 piglit-runner \
     run \
     --piglit-folder /piglit \
-    --output $RESULTS \
+    --output $RESULTS_DIR \
     --jobs ${FDO_CI_CONCURRENT:-4} \
     --skips $INSTALL/all-skips.txt $PIGLIT_SKIPS \
     --flakes $INSTALL/$GPU_VERSION-flakes.txt \
@@ -94,24 +108,29 @@ PIGLIT_EXITCODE=$?
 
 deqp-runner junit \
    --testsuite $PIGLIT_PROFILES \
-   --results $RESULTS/failures.csv \
-   --output $RESULTS/junit.xml \
+   --results $RESULTS_DIR/failures.csv \
+   --output $RESULTS_DIR/junit.xml \
    --limit 50 \
-   --template "See https://$CI_PROJECT_ROOT_NAMESPACE.pages.freedesktop.org/-/$CI_PROJECT_NAME/-/jobs/$CI_JOB_ID/artifacts/results/{{testcase}}.xml"
+   --template "See $ARTIFACTS_BASE_URL/results/{{testcase}}.xml"
 
 # Report the flakes to the IRC channel for monitoring (if configured):
 if [ -n "$FLAKES_CHANNEL" ]; then
   python3 $INSTALL/report-flakes.py \
          --host irc.oftc.net \
          --port 6667 \
-         --results $RESULTS/results.csv \
+         --results $RESULTS_DIR/results.csv \
          --known-flakes $INSTALL/$GPU_VERSION-flakes.txt \
          --channel "$FLAKES_CHANNEL" \
          --runner "$CI_RUNNER_DESCRIPTION" \
          --job "$CI_JOB_ID" \
          --url "$CI_JOB_URL" \
          --branch "${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:-$CI_COMMIT_BRANCH}" \
-         --branch-title "${CI_MERGE_REQUEST_TITLE:-$CI_COMMIT_TITLE}"
+         --branch-title "${CI_MERGE_REQUEST_TITLE:-$CI_COMMIT_TITLE}" || true
 fi
+
+# Compress results.csv to save on bandwidth during the upload of artifacts to
+# GitLab. This reduces a full piglit run to 550 KB, down from 6 MB, and takes
+# 55ms on my Ryzen 5950X (with or without parallelism).
+zstd --quiet --rm --threads ${FDO_CI_CONCURRENT:-0} -8 $RESULTS_DIR/results.csv -o $RESULTS_DIR/results.csv.zst
 
 exit $PIGLIT_EXITCODE

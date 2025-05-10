@@ -23,11 +23,17 @@
 
 #include "brw_kernel.h"
 #include "brw_nir.h"
+#include "elk/elk_nir_options.h"
+#include "intel_nir.h"
 
+#include "intel_nir.h"
+#include "nir_clc_helpers.h"
 #include "compiler/nir/nir_builder.h"
 #include "compiler/spirv/nir_spirv.h"
+#include "compiler/spirv/spirv_info.h"
 #include "dev/intel_debug.h"
 #include "util/u_atomic.h"
+#include "util/u_dynarray.h"
 
 static const nir_shader *
 load_clc_shader(struct brw_compiler *compiler, struct disk_cache *disk_cache,
@@ -38,7 +44,8 @@ load_clc_shader(struct brw_compiler *compiler, struct disk_cache *disk_cache,
       return compiler->clc_shader;
 
    nir_shader *nir =  nir_load_libclc_shader(64, disk_cache,
-                                             spirv_options, nir_options);
+                                             spirv_options, nir_options,
+                                             disk_cache != NULL);
    if (nir == NULL)
       return NULL;
 
@@ -46,6 +53,7 @@ load_clc_shader(struct brw_compiler *compiler, struct disk_cache *disk_cache,
       p_atomic_cmpxchg(&compiler->clc_shader, NULL, nir);
    if (old_nir == NULL) {
       /* We won the race */
+      ralloc_steal(compiler, nir);
       return nir;
    } else {
       /* Someone else built the shader first */
@@ -54,74 +62,64 @@ load_clc_shader(struct brw_compiler *compiler, struct disk_cache *disk_cache,
    }
 }
 
-static void
-builder_init_new_impl(nir_builder *b, nir_function *func)
+static nir_builder
+builder_init_new_impl(nir_function *func)
 {
    nir_function_impl *impl = nir_function_impl_create(func);
-   nir_builder_init(b, impl);
-   b->cursor = nir_before_cf_list(&impl->body);
+   return nir_builder_at(nir_before_impl(impl));
 }
 
 static void
-implement_atomic_builtin(nir_function *func, nir_intrinsic_op op,
+implement_atomic_builtin(nir_function *func, nir_atomic_op atomic_op,
                          enum glsl_base_type data_base_type,
                          nir_variable_mode mode)
 {
-   nir_builder b;
-   builder_init_new_impl(&b, func);
-
+   nir_builder b = builder_init_new_impl(func);
    const struct glsl_type *data_type = glsl_scalar_type(data_base_type);
 
    unsigned p = 0;
 
    nir_deref_instr *ret = NULL;
-   if (nir_intrinsic_infos[op].has_dest) {
-      ret = nir_build_deref_cast(&b, nir_load_param(&b, p++),
-                                 nir_var_function_temp, data_type, 0);
-   }
+   ret = nir_build_deref_cast(&b, nir_load_param(&b, p++),
+                              nir_var_function_temp, data_type, 0);
 
+   nir_intrinsic_op op = nir_intrinsic_deref_atomic;
    nir_intrinsic_instr *atomic = nir_intrinsic_instr_create(b.shader, op);
+   nir_intrinsic_set_atomic_op(atomic, atomic_op);
 
    for (unsigned i = 0; i < nir_intrinsic_infos[op].num_srcs; i++) {
-      nir_ssa_def *src = nir_load_param(&b, p++);
+      nir_def *src = nir_load_param(&b, p++);
       if (i == 0) {
          /* The first source is our deref */
          assert(nir_intrinsic_infos[op].src_components[i] == -1);
-         src = &nir_build_deref_cast(&b, src, mode, data_type, 0)->dest.ssa;
+         src = &nir_build_deref_cast(&b, src, mode, data_type, 0)->def;
       }
       atomic->src[i] = nir_src_for_ssa(src);
    }
 
-   if (nir_intrinsic_infos[op].has_dest) {
-      nir_ssa_dest_init_for_type(&atomic->instr, &atomic->dest,
-                                 data_type, NULL);
-   }
+   nir_def_init_for_type(&atomic->instr, &atomic->def, data_type);
 
    nir_builder_instr_insert(&b, &atomic->instr);
-
-   if (nir_intrinsic_infos[op].has_dest)
-      nir_store_deref(&b, ret, &atomic->dest.ssa, ~0);
+   nir_store_deref(&b, ret, &atomic->def, ~0);
 }
 
 static void
 implement_sub_group_ballot_builtin(nir_function *func)
 {
-   nir_builder b;
-   builder_init_new_impl(&b, func);
-
+   nir_builder b = builder_init_new_impl(func);
    nir_deref_instr *ret =
       nir_build_deref_cast(&b, nir_load_param(&b, 0),
                            nir_var_function_temp, glsl_uint_type(), 0);
-   nir_ssa_def *cond = nir_load_param(&b, 1);
+   nir_def *cond = nir_load_param(&b, 1);
 
    nir_intrinsic_instr *ballot =
       nir_intrinsic_instr_create(b.shader, nir_intrinsic_ballot);
    ballot->src[0] = nir_src_for_ssa(cond);
    ballot->num_components = 1;
-   nir_ssa_dest_init(&ballot->instr, &ballot->dest, 1, 32, NULL);
+   nir_def_init(&ballot->instr, &ballot->def, 1, 32);
    nir_builder_instr_insert(&b, &ballot->instr);
 
-   nir_store_deref(&b, ret, &ballot->dest.ssa, ~0);
+   nir_store_deref(&b, ret, &ballot->def, ~0);
 }
 
 static bool
@@ -132,22 +130,22 @@ implement_intel_builtins(nir_shader *nir)
    nir_foreach_function(func, nir) {
       if (strcmp(func->name, "_Z10atomic_minPU3AS1Vff") == 0) {
          /* float atom_min(__global float volatile *p, float val) */
-         implement_atomic_builtin(func, nir_intrinsic_deref_atomic_fmin,
+         implement_atomic_builtin(func, nir_atomic_op_fmin,
                                   GLSL_TYPE_FLOAT, nir_var_mem_global);
          progress = true;
       } else if (strcmp(func->name, "_Z10atomic_maxPU3AS1Vff") == 0) {
          /* float atom_max(__global float volatile *p, float val) */
-         implement_atomic_builtin(func, nir_intrinsic_deref_atomic_fmax,
+         implement_atomic_builtin(func, nir_atomic_op_fmax,
                                   GLSL_TYPE_FLOAT, nir_var_mem_global);
          progress = true;
       } else if (strcmp(func->name, "_Z10atomic_minPU3AS3Vff") == 0) {
          /* float atomic_min(__shared float volatile *, float) */
-         implement_atomic_builtin(func, nir_intrinsic_deref_atomic_fmin,
+         implement_atomic_builtin(func, nir_atomic_op_fmin,
                                   GLSL_TYPE_FLOAT, nir_var_mem_shared);
          progress = true;
       } else if (strcmp(func->name, "_Z10atomic_maxPU3AS3Vff") == 0) {
          /* float atomic_max(__shared float volatile *, float) */
-         implement_atomic_builtin(func, nir_intrinsic_deref_atomic_fmax,
+         implement_atomic_builtin(func, nir_atomic_op_fmax,
                                   GLSL_TYPE_FLOAT, nir_var_mem_shared);
          progress = true;
       } else if (strcmp(func->name, "intel_sub_group_ballot") == 0) {
@@ -172,8 +170,7 @@ lower_kernel_intrinsics(nir_shader *nir)
    unsigned kernel_arg_start = sizeof(struct brw_kernel_sysvals);
    nir->num_uniforms += kernel_arg_start;
 
-   nir_builder b;
-   nir_builder_init(&b, impl);
+   nir_builder b = nir_builder_create(impl);
 
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {
@@ -191,22 +188,22 @@ lower_kernel_intrinsics(nir_shader *nir)
             load->src[0] = nir_src_for_ssa(nir_u2u32(&b, intrin->src[0].ssa));
             nir_intrinsic_set_base(load, kernel_arg_start);
             nir_intrinsic_set_range(load, nir->num_uniforms);
-            nir_ssa_dest_init(&load->instr, &load->dest,
-                              intrin->dest.ssa.num_components,
-                              intrin->dest.ssa.bit_size, NULL);
+            nir_def_init(&load->instr, &load->def,
+                         intrin->def.num_components,
+                         intrin->def.bit_size);
             nir_builder_instr_insert(&b, &load->instr);
 
-            nir_ssa_def_rewrite_uses(&intrin->dest.ssa, &load->dest.ssa);
+            nir_def_rewrite_uses(&intrin->def, &load->def);
             progress = true;
             break;
          }
 
          case nir_intrinsic_load_constant_base_ptr: {
             b.cursor = nir_instr_remove(&intrin->instr);
-            nir_ssa_def *const_data_base_addr = nir_pack_64_2x32_split(&b,
+            nir_def *const_data_base_addr = nir_pack_64_2x32_split(&b,
                nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_LOW),
                nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_HIGH));
-            nir_ssa_def_rewrite_uses(&intrin->dest.ssa, const_data_base_addr);
+            nir_def_rewrite_uses(&intrin->def, const_data_base_addr);
             progress = true;
             break;
          }
@@ -221,14 +218,9 @@ lower_kernel_intrinsics(nir_shader *nir)
             nir_intrinsic_set_base(load, kernel_sysvals_start +
                offsetof(struct brw_kernel_sysvals, num_work_groups));
             nir_intrinsic_set_range(load, 3 * 4);
-            nir_ssa_dest_init(&load->instr, &load->dest, 3, 32, NULL);
+            nir_def_init(&load->instr, &load->def, 3, 32);
             nir_builder_instr_insert(&b, &load->instr);
-
-            /* We may need to do a bit-size cast here */
-            nir_ssa_def *num_work_groups =
-               nir_u2u(&b, &load->dest.ssa, intrin->dest.ssa.bit_size);
-
-            nir_ssa_def_rewrite_uses(&intrin->dest.ssa, num_work_groups);
+            nir_def_rewrite_uses(&intrin->def, &load->def);
             progress = true;
             break;
          }
@@ -240,14 +232,44 @@ lower_kernel_intrinsics(nir_shader *nir)
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                  nir_metadata_dominance);
+      nir_metadata_preserve(impl, nir_metadata_control_flow);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;
 }
+
+static const struct spirv_capabilities spirv_caps = {
+   .Addresses = true,
+   .Float16 = true,
+   .Float64 = true,
+   .Groups = true,
+   .StorageImageWriteWithoutFormat = true,
+   .Int8 = true,
+   .Int16 = true,
+   .Int64 = true,
+   .Int64Atomics = true,
+   .Kernel = true,
+   .Linkage = true, /* We receive linked kernel from clc */
+   .DenormFlushToZero = true,
+   .DenormPreserve = true,
+   .SignedZeroInfNanPreserve = true,
+   .RoundingModeRTE = true,
+   .RoundingModeRTZ = true,
+   .GenericPointer = true,
+   .GroupNonUniform = true,
+   .GroupNonUniformArithmetic = true,
+   .GroupNonUniformClustered = true,
+   .GroupNonUniformBallot = true,
+   .GroupNonUniformQuad = true,
+   .GroupNonUniformShuffle = true,
+   .GroupNonUniformVote = true,
+   .SubgroupDispatch = true,
+
+   .SubgroupShuffleINTEL = true,
+   .SubgroupBufferBlockIOINTEL = true,
+};
 
 bool
 brw_kernel_from_spirv(struct brw_compiler *compiler,
@@ -264,33 +286,8 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
 
    struct spirv_to_nir_options spirv_options = {
       .environment = NIR_SPIRV_OPENCL,
-      .caps = {
-         .address = true,
-         .float16 = devinfo->ver >= 8,
-         .float64 = devinfo->ver >= 8,
-         .groups = true,
-         .image_write_without_format = true,
-         .int8 = devinfo->ver >= 8,
-         .int16 = devinfo->ver >= 8,
-         .int64 = devinfo->ver >= 8,
-         .int64_atomics = devinfo->ver >= 9,
-         .kernel = true,
-         .linkage = true, /* We receive linked kernel from clc */
-         .float_controls = devinfo->ver >= 8,
-         .generic_pointers = true,
-         .storage_8bit = devinfo->ver >= 8,
-         .storage_16bit = devinfo->ver >= 8,
-         .subgroup_arithmetic = true,
-         .subgroup_basic = true,
-         .subgroup_ballot = true,
-         .subgroup_dispatch = true,
-         .subgroup_quad = true,
-         .subgroup_shuffle = true,
-         .subgroup_vote = true,
-
-         .intel_subgroup_shuffle = true,
-         .intel_subgroup_buffer_block_io = true,
-      },
+      .capabilities = &spirv_caps,
+      .printf = true,
       .shared_addr_format = nir_address_format_62bit_generic,
       .global_addr_format = nir_address_format_62bit_generic,
       .temp_addr_format = nir_address_format_62bit_generic,
@@ -299,29 +296,39 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
 
    spirv_options.clc_shader = load_clc_shader(compiler, disk_cache,
                                               nir_options, &spirv_options);
+   if (spirv_options.clc_shader == NULL) {
+      fprintf(stderr, "ERROR: libclc shader missing."
+              " Consider installing the libclc package\n");
+      abort();
+   }
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =
       spirv_to_nir(spirv, spirv_size / 4, NULL, 0, MESA_SHADER_KERNEL,
                    entrypoint_name, &spirv_options, nir_options);
    nir_validate_shader(nir, "after spirv_to_nir");
-   nir_validate_ssa_dominance(nir, "after spirv_to_nir");
    ralloc_steal(mem_ctx, nir);
    nir->info.name = ralloc_strdup(nir, entrypoint_name);
 
    if (INTEL_DEBUG(DEBUG_CS)) {
       /* Re-index SSA defs so we print more sensible numbers. */
-      nir_foreach_function(function, nir) {
-         if (function->impl)
-            nir_index_ssa_defs(function->impl);
+      nir_foreach_function_impl(impl, nir) {
+         nir_index_ssa_defs(impl);
       }
 
       fprintf(stderr, "NIR (from SPIR-V) for kernel\n");
       nir_print_shader(nir, stderr);
    }
 
+   nir_lower_printf_options printf_opts = {
+      .ptr_bit_size               = 64,
+      .max_buffer_size            = 1024 * 1024,
+      .use_printf_base_identifier = true,
+   };
+   NIR_PASS_V(nir, nir_lower_printf, &printf_opts);
+
    NIR_PASS_V(nir, implement_intel_builtins);
-   NIR_PASS_V(nir, nir_lower_libclc, spirv_options.clc_shader);
+   NIR_PASS_V(nir, nir_link_shader_functions, spirv_options.clc_shader);
 
    /* We have to lower away local constant initializers right before we
     * inline functions.  That way they get properly initialized at the top
@@ -362,7 +369,8 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
               nir_var_mem_shared | nir_var_mem_global,
               glsl_get_cl_type_size_align);
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+   brw_preprocess_nir(compiler, nir, &opts);
 
    int max_arg_idx = -1;
    nir_foreach_uniform_variable(var, nir) {
@@ -411,9 +419,8 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
 
    if (INTEL_DEBUG(DEBUG_CS)) {
       /* Re-index SSA defs so we print more sensible numbers. */
-      nir_foreach_function(function, nir) {
-         if (function->impl)
-            nir_index_ssa_defs(function->impl);
+      nir_foreach_function_impl(impl, nir) {
+         nir_index_ssa_defs(impl);
       }
 
       fprintf(stderr, "NIR (before I/O lowering) for kernel\n");
@@ -433,10 +440,9 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
               nir_var_mem_shared | nir_var_mem_global,
               nir_address_format_62bit_generic);
 
-   NIR_PASS_V(nir, nir_lower_frexp);
    NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
 
-   NIR_PASS_V(nir, brw_nir_lower_cs_intrinsics);
+   NIR_PASS_V(nir, brw_nir_lower_cs_intrinsics, devinfo, NULL);
    NIR_PASS_V(nir, lower_kernel_intrinsics);
 
    struct brw_cs_prog_key key = { };
@@ -445,17 +451,20 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
    kernel->prog_data.base.nr_params = DIV_ROUND_UP(nir->num_uniforms, 4);
 
    struct brw_compile_cs_params params = {
-      .nir = nir,
+      .base = {
+         .nir = nir,
+         .stats = kernel->stats,
+         .log_data = log_data,
+         .mem_ctx = mem_ctx,
+      },
       .key = &key,
       .prog_data = &kernel->prog_data,
-      .stats = kernel->stats,
-      .log_data = log_data,
    };
 
-   kernel->code = brw_compile_cs(compiler, mem_ctx, &params);
+   kernel->code = brw_compile_cs(compiler, &params);
 
    if (error_str)
-      *error_str = params.error_str;
+      *error_str = params.base.error_str;
 
    return kernel->code != NULL;
 }

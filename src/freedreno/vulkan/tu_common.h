@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <tuple>
 #ifdef HAVE_VALGRIND
 #include <memcheck.h>
 #include <valgrind.h>
@@ -30,9 +31,11 @@
 #include "c11/threads.h"
 #include "util/rounding.h"
 #include "util/bitscan.h"
+#include "util/detect_os.h"
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
+#include "util/perf/cpu_trace.h"
 #include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
@@ -46,7 +49,6 @@
 #include "vk_instance.h"
 #include "vk_log.h"
 #include "vk_physical_device.h"
-#include "vk_shader_module.h"
 #include "vk_pipeline_cache.h"
 #include "wsi_common.h"
 
@@ -66,12 +68,12 @@
 #include <vulkan/vulkan.h>
 
 #include "tu_entrypoints.h"
-#include "vulkan/runtime/vk_common_entrypoints.h"
 
 #include "vk_format.h"
 #include "vk_image.h"
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
+#include "vk_common_entrypoints.h"
 #include "vk_queue.h"
 #include "vk_object.h"
 #include "vk_sync.h"
@@ -94,11 +96,21 @@
    (MAX_DYNAMIC_UNIFORM_BUFFERS + 2 * MAX_DYNAMIC_STORAGE_BUFFERS) *         \
    A6XX_TEX_CONST_DWORDS
 
+/* With dynamic rendering, input attachment indices are shifted by 1 and
+ * attachment 0 is used for input attachments without an InputAttachmentIndex
+ * (which can only be depth/stencil).
+ */
+#define TU_DYN_INPUT_ATT_OFFSET 1
+
+#define SAMPLE_LOCATION_MIN 0.f
+#define SAMPLE_LOCATION_MAX 0.9375f
+
 #define TU_MAX_DRM_DEVICES 8
 #define MAX_VIEWS 16
 #define MAX_BIND_POINTS 2 /* compute + graphics */
-/* The Qualcomm driver exposes 0x20000058 */
-#define MAX_STORAGE_BUFFER_RANGE 0x20000000
+/* match the latest Qualcomm driver which is also a hw limit on later gens */
+#define MAX_STORAGE_BUFFER_RANGE (1u << 27)
+#define MAX_TEXEL_ELEMENTS (1u << 27)
 /* We use ldc for uniform buffer loads, just like the Qualcomm driver, so
  * expose the same maximum range.
  * TODO: The SIZE bitfield is 15 bits, and in 4-dword units, so the actual
@@ -106,11 +118,29 @@
  */
 #define MAX_UNIFORM_BUFFER_RANGE 0x10000
 
+/* Use the minimum maximum to guarantee that it can always fit in the safe
+ * const file size, even with maximum push constant usage and driver params.
+ */
+#define MAX_INLINE_UBO_RANGE 256
+#define MAX_INLINE_UBOS 4
+
 #define A6XX_TEX_CONST_DWORDS 16
 #define A6XX_TEX_SAMP_DWORDS 4
 
-#define TU_FROM_HANDLE(__tu_type, __name, __handle)                          \
-   VK_FROM_HANDLE(__tu_type, __name, __handle)
+/* We sample the fragment density map on the CPU, so technically the
+ * minimum/maximum texel size is arbitrary. However sizes smaller than the
+ * minimum tile width alignment of 32 are likely pointless, so we use that as
+ * the minimum value. For the maximum just pick a value larger than anyone
+ * would reasonably need.
+ */
+#define MIN_FDM_TEXEL_SIZE_LOG2 5
+#define MIN_FDM_TEXEL_SIZE (1u << MIN_FDM_TEXEL_SIZE_LOG2)
+#define MAX_FDM_TEXEL_SIZE_LOG2 10
+#define MAX_FDM_TEXEL_SIZE (1u << MAX_FDM_TEXEL_SIZE_LOG2)
+
+#define TU_GENX(FUNC_NAME) FD_GENX(FUNC_NAME)
+
+#define TU_CALLX(device, thing) FD_CALLX((device)->physical_device->info, thing)
 
 /* vk object types */
 struct tu_buffer;
@@ -134,7 +164,6 @@ struct tu_query_pool;
 struct tu_queue;
 struct tu_render_pass;
 struct tu_sampler;
-struct tu_sampler_ycbcr_conversion;
 
 struct breadcrumbs_context;
 struct tu_bo;

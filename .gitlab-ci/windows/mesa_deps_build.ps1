@@ -1,6 +1,6 @@
 
 $MyPath = $MyInvocation.MyCommand.Path | Split-Path -Parent
-. "$MyPath\mesa_vs_init.ps1"
+. "$MyPath\mesa_init_msvc.ps1"
 
 # we want more secure TLS 1.2 for most things, but it breaks SourceForge
 # downloads so must be done after Chocolatey use
@@ -8,29 +8,68 @@ $MyPath = $MyInvocation.MyCommand.Path | Split-Path -Parent
 
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "deps" | Out-Null
 
+$depsInstallPath="C:\mesa-deps"
+
 Get-Date
-Write-Host "Cloning LLVM release/12.x"
-git clone -b release/12.x --depth=1 https://github.com/llvm/llvm-project deps/llvm-project
+Write-Host "Cloning DirectX-Headers"
+git clone -b v1.614.1 --depth=1 https://github.com/microsoft/DirectX-Headers deps/DirectX-Headers
+if (!$?) {
+  Write-Host "Failed to clone DirectX-Headers repository"
+  Exit 1
+}
+Write-Host "Building DirectX-Headers"
+$dxheaders_build = New-Item -ItemType Directory -Path ".\deps\DirectX-Headers" -Name "build"
+Push-Location -Path $dxheaders_build.FullName
+meson setup .. --backend=ninja -Dprefix="$depsInstallPath" --buildtype=release -Db_vscrt=mt && `
+ninja -j32 install
+$buildstatus = $?
+Pop-Location
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path $dxheaders_build
+if (!$buildstatus) {
+  Write-Host "Failed to compile DirectX-Headers"
+  Exit 1
+}
+
+Get-Date
+Write-Host "Cloning zlib"
+git clone -b v1.3.1 --depth=1 https://github.com/madler/zlib deps/zlib
+if (!$?) {
+  Write-Host "Failed to clone zlib repository"
+  Exit 1
+}
+Write-Host "Downloading zlib meson build files"
+Invoke-WebRequest -Uri "https://wrapdb.mesonbuild.com/v2/zlib_1.3.1-1/get_patch" -OutFile deps/zlib.zip
+Expand-Archive -Path deps/zlib.zip -Destination deps/zlib
+# Wrap archive puts build files in a version subdir
+robocopy deps/zlib/zlib-1.3.1 deps/zlib /E
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path deps/zlib/zlib-1.3.1
+$zlib_build = New-Item -ItemType Directory -Path ".\deps\zlib" -Name "build"
+Push-Location -Path $zlib_build.FullName
+meson setup .. --backend=ninja -Dprefix="$depsInstallPath" --default-library=static --buildtype=release -Db_vscrt=mt && `
+ninja -j32 install
+$buildstatus = $?
+Pop-Location
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path $zlib_build
+if (!$buildstatus) {
+  Write-Host "Failed to compile zlib"
+  Exit 1
+}
+
+Get-Date
+Write-Host "Cloning LLVM release/15.x"
+git clone -b release/15.x --depth=1 https://github.com/llvm/llvm-project deps/llvm-project
 if (!$?) {
   Write-Host "Failed to clone LLVM repository"
   Exit 1
 }
 
-# ideally we want to use a tag here insted of a sha,
-# but as of today, SPIRV-LLVM-Translator doesn't have
-# a tag matching LLVM 12.0.0
 Get-Date
 Write-Host "Cloning SPIRV-LLVM-Translator"
-git clone https://github.com/KhronosGroup/SPIRV-LLVM-Translator deps/llvm-project/llvm/projects/SPIRV-LLVM-Translator
+git clone -b llvm_release_150 https://github.com/KhronosGroup/SPIRV-LLVM-Translator deps/llvm-project/llvm/projects/SPIRV-LLVM-Translator
 if (!$?) {
   Write-Host "Failed to clone SPIRV-LLVM-Translator repository"
   Exit 1
 }
-Push-Location deps/llvm-project/llvm/projects/SPIRV-LLVM-Translator
-git checkout 5b641633b3bcc3251a52260eee11db13a79d7258
-Pop-Location
-
-$depsInstallPath="C:\mesa-deps"
 
 Get-Date
 # slightly convoluted syntax but avoids the CWD being under the PS filesystem meta-path
@@ -57,6 +96,7 @@ cmake ../llvm `
 -DLLVM_ENABLE_DIA_SDK=OFF `
 -DCLANG_BUILD_TOOLS=ON `
 -DLLVM_SPIRV_INCLUDE_TESTS=OFF `
+-DLLVM_ENABLE_ZLIB=OFF `
 -Wno-dev && `
 ninja -j32 install
 $buildstatus = $?
@@ -91,12 +131,12 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path $llvm_build
 
 Get-Date
 Write-Host "Cloning SPIRV-Tools"
-git clone -b "sdk-$env:VULKAN_SDK_VERSION" --depth=1 https://github.com/KhronosGroup/SPIRV-Tools deps/SPIRV-Tools
+git clone -b "vulkan-sdk-$env:VULKAN_SDK_VERSION" --depth=1 https://github.com/KhronosGroup/SPIRV-Tools deps/SPIRV-Tools
 if (!$?) {
   Write-Host "Failed to clone SPIRV-Tools repository"
   Exit 1
 }
-git clone -b "sdk-$env:VULKAN_SDK_VERSION" --depth=1 https://github.com/KhronosGroup/SPIRV-Headers deps/SPIRV-Tools/external/SPIRV-Headers
+git clone -b "vulkan-sdk-$env:VULKAN_SDK_VERSION" --depth=1 https://github.com/KhronosGroup/SPIRV-Headers deps/SPIRV-Tools/external/SPIRV-Headers
 if (!$?) {
   Write-Host "Failed to clone SPIRV-Headers repository"
   Exit 1

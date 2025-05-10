@@ -30,7 +30,7 @@
 #include "util/slab.h"
 #include "util/list.h"
 #include "util/disk_cache.h"
-#include "os/os_thread.h"
+#include "util/u_thread.h"
 
 #include "pipe/p_screen.h"
 
@@ -60,12 +60,14 @@ struct ra_regs;
 
 #define NR_BO_CACHE_BUCKETS (MAX_BO_CACHE_BUCKET - MIN_BO_CACHE_BUCKET + 1)
 
+/* const0 1 0 0 -1.67773, mov.v0 $0 ^const0.xxxx, stop */
+#define PP_CLEAR_PROGRAM \
+   0x00020425, 0x0000000c, 0x01e007cf, 0xb0000000, \
+   0x000005f5, 0x00000000, 0x00000000, 0x00000000, \
+
 struct lima_screen {
    struct pipe_screen base;
    struct renderonly *ro;
-
-   int refcnt;
-   void *winsys_priv;
 
    int fd;
    int gpu_type;
@@ -104,6 +106,7 @@ lima_screen(struct pipe_screen *pscreen)
 }
 
 struct pipe_screen *
-lima_screen_create(int fd, struct renderonly *ro);
+lima_screen_create(int fd, const struct pipe_screen_config *config,
+                   struct renderonly *ro);
 
 #endif

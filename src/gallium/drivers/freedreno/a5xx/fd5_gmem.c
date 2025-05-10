@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -173,7 +155,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
       if (rsc->lrz) {
          OUT_PKT4(ring, REG_A5XX_GRAS_LRZ_BUFFER_BASE_LO, 3);
          OUT_RELOC(ring, rsc->lrz, 0x1000, 0, 0);
-         OUT_RING(ring, A5XX_GRAS_LRZ_BUFFER_PITCH(rsc->lrz_pitch));
+         OUT_RING(ring, A5XX_GRAS_LRZ_BUFFER_PITCH(rsc->lrz_layout.lrz_pitch));
 
          OUT_PKT4(ring, REG_A5XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_LO, 2);
          OUT_RELOC(ring, rsc->lrz, 0, 0, 0);
@@ -394,6 +376,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
 static void
 fd5_emit_tile_init(struct fd_batch *batch) assert_dt
 {
+   struct fd_context *ctx = batch->ctx;
    struct fd_ringbuffer *ring = batch->gmem;
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
@@ -411,10 +394,10 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
    OUT_RING(ring, 0x0);
 
    OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* PC_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* PC_POWER_CNTL */
 
    OUT_PKT4(ring, REG_A5XX_VFD_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* VFD_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* VFD_POWER_CNTL */
 
    /* 0x10000000 for BYPASS.. 0x7c13c080 for GMEM: */
    fd_wfi(batch, ring);
@@ -715,6 +698,7 @@ fd5_emit_tile_fini(struct fd_batch *batch) assert_dt
 static void
 fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
 {
+   struct fd_context *ctx = batch->ctx;
    struct fd_ringbuffer *ring = batch->gmem;
 
    fd5_emit_restore(batch, ring);
@@ -730,10 +714,10 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
    fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
 
    OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* PC_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* PC_POWER_CNTL */
 
    OUT_PKT4(ring, REG_A5XX_VFD_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* VFD_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* VFD_POWER_CNTL */
 
    /* 0x10000000 for BYPASS.. 0x7c13c080 for GMEM: */
    fd_wfi(batch, ring);

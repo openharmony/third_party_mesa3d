@@ -1,7 +1,7 @@
+.cache
+.vscode*
 *.pyc
 *.pyo
 *.out
-build-ohos
-cross_file
-pkgconfig/
 /build
+.venv/

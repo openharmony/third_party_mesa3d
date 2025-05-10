@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 files_r600 = files(
   'r600d_common.h',
@@ -45,8 +28,11 @@ files_r600 = files(
   'r600_pipe.c',
   'r600_pipe.h',
   'r600_public.h',
+  'r600_sfn.cpp',
+  'r600_sfn.h',
   'r600_shader.c',
   'r600_shader.h',
+  'r600_shader_common.h',
   'r600_sq.h',
   'r600_state.c',
   'r600_state_common.c',
@@ -72,39 +58,6 @@ files_r600 = files(
   'radeon_vce.h',
   'radeon_video.c',
   'radeon_video.h',
-  'sb/sb_bc_builder.cpp',
-  'sb/sb_bc_decoder.cpp',
-  'sb/sb_bc_dump.cpp',
-  'sb/sb_bc_finalize.cpp',
-  'sb/sb_bc.h',
-  'sb/sb_bc_parser.cpp',
-  'sb/sb_context.cpp',
-  'sb/sb_core.cpp',
-  'sb/sb_dce_cleanup.cpp',
-  'sb/sb_def_use.cpp',
-  'sb/sb_dump.cpp',
-  'sb/sb_expr.cpp',
-  'sb/sb_expr.h',
-  'sb/sb_gcm.cpp',
-  'sb/sb_gvn.cpp',
-  'sb/sb_if_conversion.cpp',
-  'sb/sb_ir.cpp',
-  'sb/sb_ir.h',
-  'sb/sb_liveness.cpp',
-  'sb/sb_pass.cpp',
-  'sb/sb_pass.h',
-  'sb/sb_peephole.cpp',
-  'sb/sb_psi_ops.cpp',
-  'sb/sb_public.h',
-  'sb/sb_ra_checker.cpp',
-  'sb/sb_ra_coalesce.cpp',
-  'sb/sb_ra_init.cpp',
-  'sb/sb_sched.cpp',
-  'sb/sb_sched.h',
-  'sb/sb_shader.cpp',
-  'sb/sb_shader.h',
-  'sb/sb_ssa_builder.cpp',
-  'sb/sb_valtable.cpp',
   'sfn/sfn_alu_defines.cpp',
   'sfn/sfn_alu_defines.h',
   'sfn/sfn_alu_readport_validation.cpp',
@@ -174,6 +127,8 @@ files_r600 = files(
   'sfn/sfn_shader_tess.h',
   'sfn/sfn_shader_vs.cpp',
   'sfn/sfn_shader_vs.h',
+  'sfn/sfn_split_address_loads.cpp',
+  'sfn/sfn_split_address_loads.h',
   'sfn/sfn_valuefactory.cpp',
   'sfn/sfn_valuefactory.h',
   'sfn/sfn_virtualvalues.cpp',
@@ -189,30 +144,31 @@ egd_tables_h = custom_target(
 )
 
 r600_c_args = []
-if with_gallium_opencl
-  r600_c_args += '-DHAVE_OPENCL'
+if with_gallium_clover
+  if dep_elf.found()
+    r600_c_args += '-DHAVE_OPENCL'
+  else
+    warning('r600 requires libelf to support opencl.')
+  endif
 endif
 
 r600_cpp_args = []
 if cpp.has_type('std::pmr::monotonic_buffer_resource',
-                 args:['-std=c++17'],
                  prefix : '#include <memory_resource>')
    r600_cpp_args += '-DHAVE_MEMORY_RESOURCE'
 endif
 
 libr600 = static_library(
   'r600',
-  [files_r600, egd_tables_h],
+  [files_r600, egd_tables_h, sha1_h],
   c_args : [r600_c_args, '-Wstrict-overflow=0'],
   cpp_args: r600_cpp_args,
-  override_options: ['cpp_std=c++17'],
   gnu_symbol_visibility : 'hidden',
   include_directories : [
-    inc_src, inc_mapi, inc_mesa, inc_include, inc_compiler, inc_gallium, inc_gallium_aux, inc_amd_common,
+    inc_src, inc_mapi, inc_mesa, inc_include, inc_gallium, inc_gallium_aux, inc_amd_common,
     inc_gallium_drivers,
   ],
-
-  dependencies: [dep_libdrm_radeon, dep_elf, dep_llvm, idep_nir, idep_nir_headers],
+  dependencies: [dep_elf, dep_llvm, idep_nir, idep_nir_headers, idep_mesautil],
 )
 
 driver_r600 = declare_dependency(

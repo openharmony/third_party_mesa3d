@@ -24,17 +24,16 @@
 #include <time.h>
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/ralloc.h"
 #include "util/u_inlines.h"
 #include "util/format/u_format.h"
 #include "util/u_upload_mgr.h"
-#include "drm-uapi/i915_drm.h"
 #include "iris_context.h"
+#include "iris_perf.h"
 #include "iris_resource.h"
 #include "iris_screen.h"
 #include "iris_utrace.h"
-#include "common/intel_defines.h"
 #include "common/intel_sample_positions.h"
 
 /**
@@ -100,9 +99,6 @@ iris_get_device_reset_status(struct pipe_context *ctx)
     * worst status (if one was guilty, proclaim guilt).
     */
    iris_foreach_batch(ice, batch) {
-      /* This will also recreate the hardware contexts as necessary, so any
-       * future queries will show no resets.  We only want to report once.
-       */
       enum pipe_reset_status batch_reset =
          iris_batch_check_for_reset(batch);
 
@@ -221,6 +217,9 @@ iris_destroy_context(struct pipe_context *ctx)
    struct iris_context *ice = (struct iris_context *)ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
 
+   blorp_finish(&ice->blorp);
+
+   intel_perf_free_context(ice->perf_ctx);
    if (ctx->stream_uploader)
       u_upload_destroy(ctx->stream_uploader);
    if (ctx->const_uploader)
@@ -243,12 +242,13 @@ iris_destroy_context(struct pipe_context *ctx)
       iris_destroy_ctx_measure(ice);
 
    u_upload_destroy(ice->state.surface_uploader);
-   u_upload_destroy(ice->state.bindless_uploader);
+   u_upload_destroy(ice->state.scratch_surface_uploader);
    u_upload_destroy(ice->state.dynamic_uploader);
    u_upload_destroy(ice->query_buffer_uploader);
 
    iris_destroy_batches(ice);
    iris_destroy_binder(&ice->state.binder);
+   iris_bo_unreference(ice->draw.generation.ring_bo);
 
    iris_utrace_fini(ice);
 
@@ -260,6 +260,12 @@ iris_destroy_context(struct pipe_context *ctx)
 
 #define genX_call(devinfo, func, ...)             \
    switch ((devinfo)->verx10) {                   \
+   case 300:                                      \
+      gfx30_##func(__VA_ARGS__);                  \
+      break;                                      \
+   case 200:                                      \
+      gfx20_##func(__VA_ARGS__);                  \
+      break;                                      \
    case 125:                                      \
       gfx125_##func(__VA_ARGS__);                 \
       break;                                      \
@@ -279,6 +285,12 @@ iris_destroy_context(struct pipe_context *ctx)
       unreachable("Unknown hardware generation"); \
    }
 
+#ifndef INTEL_USE_ELK
+static inline void gfx8_init_state(struct iris_context *ice) { unreachable("no elk support"); }
+static inline void gfx8_init_blorp(struct iris_context *ice) { unreachable("no elk support"); }
+static inline void gfx8_init_query(struct iris_context *ice) { unreachable("no elk support"); }
+#endif
+
 /**
  * Create a context.
  *
@@ -288,7 +300,7 @@ struct pipe_context *
 iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 {
    struct iris_screen *screen = (struct iris_screen*)pscreen;
-   const struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
    struct iris_context *ice = rzalloc(NULL, struct iris_context);
 
    if (!ice)
@@ -299,9 +311,13 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->screen = pscreen;
    ctx->priv = priv;
 
-   ctx->stream_uploader = u_upload_create_default(ctx);
+   ctx->stream_uploader = u_upload_create(ctx, 1024 * 1024 * 2,
+                                          PIPE_BIND_VERTEX_BUFFER |
+                                          PIPE_BIND_INDEX_BUFFER |
+                                          PIPE_BIND_CONSTANT_BUFFER,
+                                          PIPE_USAGE_STREAM, 0);
    if (!ctx->stream_uploader) {
-      free(ctx);
+      ralloc_free(ice);
       return NULL;
    }
    ctx->const_uploader = u_upload_create(ctx, 1024 * 1024,
@@ -310,7 +326,7 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
                                          IRIS_RESOURCE_FLAG_DEVICE_MEM);
    if (!ctx->const_uploader) {
       u_upload_destroy(ctx->stream_uploader);
-      free(ctx);
+      ralloc_free(ice);
       return NULL;
    }
 
@@ -343,9 +359,9 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
       u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
                       IRIS_RESOURCE_FLAG_SURFACE_MEMZONE |
                       IRIS_RESOURCE_FLAG_DEVICE_MEM);
-   ice->state.bindless_uploader =
+   ice->state.scratch_surface_uploader =
       u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
-                      IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE |
+                      IRIS_RESOURCE_FLAG_SCRATCH_MEMZONE |
                       IRIS_RESOURCE_FLAG_DEVICE_MEM);
    ice->state.dynamic_uploader =
       u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
@@ -360,11 +376,12 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    genX_call(devinfo, init_blorp, ice);
    genX_call(devinfo, init_query, ice);
 
-   int priority = 0;
    if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
-      priority = INTEL_CONTEXT_HIGH_PRIORITY;
+      ice->priority = IRIS_CONTEXT_HIGH_PRIORITY;
    if (flags & PIPE_CONTEXT_LOW_PRIORITY)
-      priority = INTEL_CONTEXT_LOW_PRIORITY;
+      ice->priority = IRIS_CONTEXT_LOW_PRIORITY;
+   if (flags & PIPE_CONTEXT_PROTECTED)
+      ice->protected = true;
 
    if (INTEL_DEBUG(DEBUG_BATCH))
       ice->state.sizes = _mesa_hash_table_u64_create(ice);
@@ -372,10 +389,11 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    /* Do this before initializing the batches */
    iris_utrace_init(ice);
 
-   iris_init_batches(ice, priority);
+   iris_init_batches(ice);
 
    screen->vtbl.init_render_context(&ice->batches[IRIS_BATCH_RENDER]);
    screen->vtbl.init_compute_context(&ice->batches[IRIS_BATCH_COMPUTE]);
+   screen->vtbl.init_copy_context(&ice->batches[IRIS_BATCH_BLITTER]);
 
    if (!(flags & PIPE_CONTEXT_PREFER_THREADED))
       return ctx;
@@ -386,6 +404,8 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    return threaded_context_create(ctx, &screen->transfer_pool,
                                   iris_replace_buffer_storage,
-                                  NULL, /* TODO: asynchronous flushes? */
+                                  &(struct threaded_context_options){
+                                    .unsynchronized_get_device_reset_status = true,
+                                  },
                                   &ice->thrctx);
 }

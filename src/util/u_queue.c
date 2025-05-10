@@ -31,6 +31,7 @@
 #include "util/os_time.h"
 #include "util/u_string.h"
 #include "util/u_thread.h"
+#include "util/timespec.h"
 #include "u_process.h"
 
 #if defined(__linux__)
@@ -45,7 +46,7 @@
 
 static void
 util_queue_kill_threads(struct util_queue *queue, unsigned keep_num_threads,
-                        bool finish_locked);
+                        bool locked);
 
 /****************************************************************************
  * Wait for all queues to assert idle when exit() is called.
@@ -55,8 +56,11 @@ util_queue_kill_threads(struct util_queue *queue, unsigned keep_num_threads,
  */
 
 static once_flag atexit_once_flag = ONCE_FLAG_INIT;
-static struct list_head queue_list;
-static mtx_t exit_mutex = _MTX_INITIALIZER_NP;
+static struct list_head queue_list = {
+   .next = &queue_list,
+   .prev = &queue_list,
+};
+static mtx_t exit_mutex;
 
 static void
 atexit_handler(void)
@@ -74,7 +78,7 @@ atexit_handler(void)
 static void
 global_init(void)
 {
-   list_inithead(&queue_list);
+   mtx_init(&exit_mutex, mtx_plain);
    atexit(atexit_handler);
 }
 
@@ -157,7 +161,7 @@ util_queue_fence_signal(struct util_queue_fence *fence)
 {
    mtx_lock(&fence->mutex);
    fence->signalled = true;
-   cnd_broadcast(&fence->cond);
+   u_cnd_monotonic_broadcast(&fence->cond);
    mtx_unlock(&fence->mutex);
 }
 
@@ -166,7 +170,7 @@ _util_queue_fence_wait(struct util_queue_fence *fence)
 {
    mtx_lock(&fence->mutex);
    while (!fence->signalled)
-      cnd_wait(&fence->cond, &fence->mutex);
+      u_cnd_monotonic_wait(&fence->cond, &fence->mutex);
    mtx_unlock(&fence->mutex);
 }
 
@@ -174,31 +178,15 @@ bool
 _util_queue_fence_wait_timeout(struct util_queue_fence *fence,
                                int64_t abs_timeout)
 {
-   /* This terrible hack is made necessary by the fact that we really want an
-    * internal interface consistent with os_time_*, but cnd_timedwait is spec'd
-    * to be relative to the TIME_UTC clock.
-    */
-   int64_t rel = abs_timeout - os_time_get_nano();
+   struct timespec ts;
+   timespec_from_nsec(&ts, abs_timeout);
 
-   if (rel > 0) {
-      struct timespec ts;
-
-      timespec_get(&ts, TIME_UTC);
-
-      ts.tv_sec += abs_timeout / (1000*1000*1000);
-      ts.tv_nsec += abs_timeout % (1000*1000*1000);
-      if (ts.tv_nsec >= (1000*1000*1000)) {
-         ts.tv_sec++;
-         ts.tv_nsec -= (1000*1000*1000);
-      }
-
-      mtx_lock(&fence->mutex);
-      while (!fence->signalled) {
-         if (cnd_timedwait(&fence->cond, &fence->mutex, &ts) != thrd_success)
-            break;
-      }
-      mtx_unlock(&fence->mutex);
+   mtx_lock(&fence->mutex);
+   while (!fence->signalled) {
+      if (u_cnd_monotonic_timedwait(&fence->cond, &fence->mutex, &ts) != thrd_success)
+         break;
    }
+   mtx_unlock(&fence->mutex);
 
    return fence->signalled;
 }
@@ -208,7 +196,7 @@ util_queue_fence_init(struct util_queue_fence *fence)
 {
    memset(fence, 0, sizeof(*fence));
    (void) mtx_init(&fence->mutex, mtx_plain);
-   cnd_init(&fence->cond);
+   u_cnd_monotonic_init(&fence->cond);
    fence->signalled = true;
 }
 
@@ -229,7 +217,7 @@ util_queue_fence_destroy(struct util_queue_fence *fence)
    mtx_lock(&fence->mutex);
    mtx_unlock(&fence->mutex);
 
-   cnd_destroy(&fence->cond);
+   u_cnd_monotonic_destroy(&fence->cond);
    mtx_destroy(&fence->mutex);
 }
 #endif
@@ -360,22 +348,27 @@ util_queue_create_thread(struct util_queue *queue, unsigned index)
 }
 
 void
-util_queue_adjust_num_threads(struct util_queue *queue, unsigned num_threads)
+util_queue_adjust_num_threads(struct util_queue *queue, unsigned num_threads,
+                              bool locked)
 {
    num_threads = MIN2(num_threads, queue->max_threads);
    num_threads = MAX2(num_threads, 1);
 
-   simple_mtx_lock(&queue->finish_lock);
+   if (!locked)
+      mtx_lock(&queue->lock);
+
    unsigned old_num_threads = queue->num_threads;
 
    if (num_threads == old_num_threads) {
-      simple_mtx_unlock(&queue->finish_lock);
+      if (!locked)
+         mtx_unlock(&queue->lock);
       return;
    }
 
    if (num_threads < old_num_threads) {
       util_queue_kill_threads(queue, num_threads, true);
-      simple_mtx_unlock(&queue->finish_lock);
+      if (!locked)
+         mtx_unlock(&queue->lock);
       return;
    }
 
@@ -391,7 +384,9 @@ util_queue_adjust_num_threads(struct util_queue *queue, unsigned num_threads)
          break;
       }
    }
-   simple_mtx_unlock(&queue->finish_lock);
+
+   if (!locked)
+      mtx_unlock(&queue->lock);
 }
 
 bool
@@ -432,14 +427,14 @@ util_queue_init(struct util_queue *queue,
       snprintf(queue->name, sizeof(queue->name), "%s", name);
    }
 
+   queue->create_threads_on_demand = true;
    queue->flags = flags;
    queue->max_threads = num_threads;
-   queue->num_threads = (flags & UTIL_QUEUE_INIT_SCALE_THREADS) ? 1 : num_threads;
+   queue->num_threads = 1;
    queue->max_jobs = max_jobs;
    queue->global_data = global_data;
 
    (void) mtx_init(&queue->lock, mtx_plain);
-   (void) simple_mtx_init(&queue->finish_lock, mtx_plain);
 
    queue->num_queued = 0;
    cnd_init(&queue->has_queued_cond);
@@ -487,33 +482,37 @@ fail:
 
 static void
 util_queue_kill_threads(struct util_queue *queue, unsigned keep_num_threads,
-                        bool finish_locked)
+                        bool locked)
 {
-   unsigned i;
-
    /* Signal all threads to terminate. */
-   if (!finish_locked)
-      simple_mtx_lock(&queue->finish_lock);
+   if (!locked)
+      mtx_lock(&queue->lock);
 
    if (keep_num_threads >= queue->num_threads) {
-      simple_mtx_unlock(&queue->finish_lock);
+      if (!locked)
+         mtx_unlock(&queue->lock);
       return;
    }
 
-   mtx_lock(&queue->lock);
    unsigned old_num_threads = queue->num_threads;
    /* Setting num_threads is what causes the threads to terminate.
     * Then cnd_broadcast wakes them up and they will exit their function.
     */
    queue->num_threads = keep_num_threads;
    cnd_broadcast(&queue->has_queued_cond);
-   mtx_unlock(&queue->lock);
 
-   for (i = keep_num_threads; i < old_num_threads; i++)
-      thrd_join(queue->threads[i], NULL);
-
-   if (!finish_locked)
-      simple_mtx_unlock(&queue->finish_lock);
+   /* Wait for threads to terminate. */
+   if (keep_num_threads < old_num_threads) {
+      /* We need to unlock the mutex to allow threads to terminate. */
+      mtx_unlock(&queue->lock);
+      for (unsigned i = keep_num_threads; i < old_num_threads; i++)
+         thrd_join(queue->threads[i], NULL);
+      if (locked)
+         mtx_lock(&queue->lock);
+   } else {
+      if (!locked)
+         mtx_unlock(&queue->lock);
+   }
 }
 
 static void
@@ -535,25 +534,27 @@ util_queue_destroy(struct util_queue *queue)
 
    cnd_destroy(&queue->has_space_cond);
    cnd_destroy(&queue->has_queued_cond);
-   simple_mtx_destroy(&queue->finish_lock);
    mtx_destroy(&queue->lock);
    free(queue->jobs);
    free(queue->threads);
 }
 
-void
-util_queue_add_job(struct util_queue *queue,
-                   void *job,
-                   struct util_queue_fence *fence,
-                   util_queue_execute_func execute,
-                   util_queue_execute_func cleanup,
-                   const size_t job_size)
+static void
+util_queue_add_job_locked(struct util_queue *queue,
+                          void *job,
+                          struct util_queue_fence *fence,
+                          util_queue_execute_func execute,
+                          util_queue_execute_func cleanup,
+                          const size_t job_size,
+                          bool locked)
 {
    struct util_queue_job *ptr;
 
-   mtx_lock(&queue->lock);
+   if (!locked)
+      mtx_lock(&queue->lock);
    if (queue->num_threads == 0) {
-      mtx_unlock(&queue->lock);
+      if (!locked)
+         mtx_unlock(&queue->lock);
       /* well no good option here, but any leaks will be
        * short-lived as things are shutting down..
        */
@@ -567,10 +568,10 @@ util_queue_add_job(struct util_queue *queue,
 
    /* Scale the number of threads up if there's already one job waiting. */
    if (queue->num_queued > 0 &&
-       queue->flags & UTIL_QUEUE_INIT_SCALE_THREADS &&
+       queue->create_threads_on_demand &&
        execute != util_queue_finish_execute &&
        queue->num_threads < queue->max_threads) {
-      util_queue_adjust_num_threads(queue, queue->num_threads + 1);
+      util_queue_adjust_num_threads(queue, queue->num_threads + 1, true);
    }
 
    if (queue->num_queued == queue->max_jobs) {
@@ -622,7 +623,20 @@ util_queue_add_job(struct util_queue *queue,
 
    queue->num_queued++;
    cnd_signal(&queue->has_queued_cond);
-   mtx_unlock(&queue->lock);
+   if (!locked)
+      mtx_unlock(&queue->lock);
+}
+
+void
+util_queue_add_job(struct util_queue *queue,
+                   void *job,
+                   struct util_queue_fence *fence,
+                   util_queue_execute_func execute,
+                   util_queue_execute_func cleanup,
+                   const size_t job_size)
+{
+   util_queue_add_job_locked(queue, job, fence, execute, cleanup, job_size,
+                             false);
 }
 
 /**
@@ -677,28 +691,37 @@ util_queue_finish(struct util_queue *queue)
     * a deadlock would happen, because 1 barrier requires that all threads
     * wait for it exclusively.
     */
-   simple_mtx_lock(&queue->finish_lock);
+   mtx_lock(&queue->lock);
 
    /* The number of threads can be changed to 0, e.g. by the atexit handler. */
    if (!queue->num_threads) {
-      simple_mtx_unlock(&queue->finish_lock);
+      mtx_unlock(&queue->lock);
       return;
    }
+
+   /* We need to disable adding new threads in util_queue_add_job because
+    * the finish operation requires a fixed number of threads.
+    *
+    * Also note that util_queue_add_job can unlock the mutex if there is not
+    * enough space in the queue and wait for space.
+    */
+   queue->create_threads_on_demand = false;
 
    fences = malloc(queue->num_threads * sizeof(*fences));
    util_barrier_init(&barrier, queue->num_threads);
 
    for (unsigned i = 0; i < queue->num_threads; ++i) {
       util_queue_fence_init(&fences[i]);
-      util_queue_add_job(queue, &barrier, &fences[i],
-                         util_queue_finish_execute, NULL, 0);
+      util_queue_add_job_locked(queue, &barrier, &fences[i],
+                                util_queue_finish_execute, NULL, 0, true);
    }
+   queue->create_threads_on_demand = true;
+   mtx_unlock(&queue->lock);
 
    for (unsigned i = 0; i < queue->num_threads; ++i) {
       util_queue_fence_wait(&fences[i]);
       util_queue_fence_destroy(&fences[i]);
    }
-   simple_mtx_unlock(&queue->finish_lock);
 
    free(fences);
 }

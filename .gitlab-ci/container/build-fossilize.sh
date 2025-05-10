@@ -1,10 +1,17 @@
 #!/bin/bash
 
+# When changing this file, you need to bump the following
+# .gitlab-ci/image-tags.yml tags:
+# DEBIAN_TEST_VK_TAG
+# KERNEL_ROOTFS_TAG
+
 set -ex
+
+uncollapsed_section_start fossilize "Building fossilize"
 
 git clone https://github.com/ValveSoftware/Fossilize.git
 cd Fossilize
-git checkout 16fba1b8b5d9310126bb02323d7bae3227338461
+git checkout b43ee42bbd5631ea21fe9a2dee4190d5d875c327
 git submodule update --init
 mkdir build
 cd build
@@ -12,3 +19,5 @@ cmake -S .. -B . -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C . install
 cd ../..
 rm -rf Fossilize
+
+section_end fossilize

@@ -28,7 +28,7 @@ sudo apt-get install pkg-config
 |  参数   | 说明  |
 |  ----  | ----  |
 | arg1  | openharmony代码路径 |
-| arg2  | 产品名字，实际上为out目录下存放系统编译结果的那个目录 如hi3516dv300 或者 rk3568， 注： LTS3.0 的版本必须是 ohos-arm-release|
+| arg2  | 产品名字，实际上为out目录下存放系统编译结果的那个目录 如hi3516dv300 或则 rk3568， 注： LTS3.0 的版本必须是 ohos-arm-release|
 | arg3 |  mesa 源码路径|
 
 示例如下：
@@ -37,5 +37,8 @@ sudo apt-get install pkg-config
 ```
 cd ~/mesa3d
 python ohos/build_ohos.py ~/openharmony rk3568 ~/mesa3d
+python ohos/build_ohos64.py ~/ohos_50 rpi4 ~/ohos_50/third_party/mesa3d-opc
+python ohos/build_ohos64.py ~/ohos_40 beryllium ~/ohos_40/third_party/mesa3d
+python ohos/build_ohos64.py ~/ohos_40 sagit ~/ohos_40/third_party/mesa3d
 
 ```

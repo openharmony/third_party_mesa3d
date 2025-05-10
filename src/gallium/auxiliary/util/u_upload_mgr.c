@@ -46,7 +46,7 @@ struct u_upload_mgr {
    enum pipe_resource_usage usage;
    unsigned flags;
    unsigned map_flags;     /* Bitmask of PIPE_MAP_* flags. */
-   boolean map_persistent; /* If persistent mappings are supported. */
+   bool map_persistent; /* If persistent mappings are supported. */
 
    struct pipe_resource *buffer;   /* Upload buffer. */
    struct pipe_transfer *transfer; /* Transfer object for the upload buffer. */
@@ -73,8 +73,7 @@ u_upload_create(struct pipe_context *pipe, unsigned default_size,
    upload->flags = flags;
 
    upload->map_persistent =
-      pipe->screen->get_param(pipe->screen,
-                              PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT);
+      pipe->screen->caps.buffer_map_persistent_coherent;
 
    if (upload->map_persistent) {
       upload->map_flags = PIPE_MAP_WRITE |
@@ -116,13 +115,13 @@ u_upload_clone(struct pipe_context *pipe, struct u_upload_mgr *upload)
 void
 u_upload_disable_persistent(struct u_upload_mgr *upload)
 {
-   upload->map_persistent = FALSE;
+   upload->map_persistent = false;
    upload->map_flags &= ~(PIPE_MAP_COHERENT | PIPE_MAP_PERSISTENT);
    upload->map_flags |= PIPE_MAP_FLUSH_EXPLICIT;
 }
 
 static void
-upload_unmap_internal(struct u_upload_mgr *upload, boolean destroying)
+upload_unmap_internal(struct u_upload_mgr *upload, bool destroying)
 {
    if ((!destroying && upload->map_persistent) || !upload->transfer)
       return;
@@ -143,7 +142,7 @@ upload_unmap_internal(struct u_upload_mgr *upload, boolean destroying)
 void
 u_upload_unmap(struct u_upload_mgr *upload)
 {
-   upload_unmap_internal(upload, FALSE);
+   upload_unmap_internal(upload, false);
 }
 
 
@@ -151,7 +150,7 @@ static void
 u_upload_release_buffer(struct u_upload_mgr *upload)
 {
    /* Unmap and unreference the upload buffer. */
-   upload_unmap_internal(upload, TRUE);
+   upload_unmap_internal(upload, true);
    if (upload->buffer_private_refcount) {
       /* Subtract the remaining private references before unreferencing
        * the buffer. The mega comment below explains it.

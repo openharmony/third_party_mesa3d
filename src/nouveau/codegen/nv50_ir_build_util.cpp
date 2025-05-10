@@ -300,6 +300,14 @@ BuildUtil::mkSplit(Value *h[2], uint8_t halfSize, Value *val)
       h[1]->reg.size = halfSize;
       h[1]->reg.data.offset += halfSize;
    } else {
+      // The value might already be the result of a split, and further
+      // splitting it can lead to issues regarding spill-offsets computations
+      // among others. By forcing a move between the two splits, this can be
+      // avoided.
+      Instruction* valInsn = val->getInsn();
+      if (valInsn && valInsn->op == OP_SPLIT)
+         val = mkMov(getSSA(halfSize * 2), val, fTy)->getDef(0);
+
       h[0] = getSSA(halfSize, val->reg.file);
       h[1] = getSSA(halfSize, val->reg.file);
       insn = mkOp1(OP_SPLIT, fTy, h[0], val);
@@ -493,95 +501,6 @@ BuildUtil::mkTSVal(TSSemantic tsName)
    sym->reg.type = TYPE_U32;
    sym->reg.size = typeSizeof(sym->reg.type);
    sym->reg.data.ts = tsName;
-   return sym;
-}
-
-void
-BuildUtil::DataArray::setup(unsigned array, unsigned arrayIdx,
-                            uint32_t base, int len, int vecDim, int eltSize,
-                            DataFile file, int8_t fileIdx)
-{
-   this->array = array;
-   this->arrayIdx = arrayIdx;
-   this->baseAddr = base;
-   this->arrayLen = len;
-   this->vecDim = vecDim;
-   this->eltSize = eltSize;
-   this->file = file;
-   this->regOnly = !isMemoryFile(file);
-
-   if (!regOnly) {
-      baseSym = new_Symbol(up->getProgram(), file, fileIdx);
-      baseSym->setOffset(baseAddr);
-      baseSym->reg.size = eltSize;
-   } else {
-      baseSym = NULL;
-   }
-}
-
-Value *
-BuildUtil::DataArray::acquire(ValueMap &m, int i, int c)
-{
-   if (regOnly) {
-      Value *v = lookup(m, i, c);
-      if (!v)
-         v = insert(m, i, c, new_LValue(up->getFunction(), file));
-
-      return v;
-   } else {
-      return up->getScratch(eltSize);
-   }
-}
-
-Value *
-BuildUtil::DataArray::load(ValueMap &m, int i, int c, Value *ptr)
-{
-   if (regOnly) {
-      Value *v = lookup(m, i, c);
-      if (!v)
-         v = insert(m, i, c, new_LValue(up->getFunction(), file));
-
-      return v;
-   } else {
-      Value *sym = lookup(m, i, c);
-      if (!sym)
-         sym = insert(m, i, c, mkSymbol(i, c));
-
-      return up->mkLoadv(typeOfSize(eltSize), static_cast<Symbol *>(sym), ptr);
-   }
-}
-
-void
-BuildUtil::DataArray::store(ValueMap &m, int i, int c, Value *ptr, Value *value)
-{
-   if (regOnly) {
-      assert(!ptr);
-      if (!lookup(m, i, c))
-         insert(m, i, c, value);
-
-      assert(lookup(m, i, c) == value);
-   } else {
-      Value *sym = lookup(m, i, c);
-      if (!sym)
-         sym = insert(m, i, c, mkSymbol(i, c));
-
-      const DataType stTy = typeOfSize(value->reg.size);
-
-      up->mkStore(OP_STORE, stTy, static_cast<Symbol *>(sym), ptr, value);
-   }
-}
-
-Symbol *
-BuildUtil::DataArray::mkSymbol(int i, int c)
-{
-   const unsigned int idx = i * vecDim + c;
-   Symbol *sym = new_Symbol(up->getProgram(), file, 0);
-
-   assert(baseSym || (idx < arrayLen && c < vecDim));
-
-   sym->reg.size = eltSize;
-   sym->reg.type = typeOfSize(eltSize);
-   sym->setAddress(baseSym, baseAddr + idx * eltSize);
    return sym;
 }
 

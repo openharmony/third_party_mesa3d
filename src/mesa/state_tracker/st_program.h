@@ -48,13 +48,17 @@ extern "C" {
 struct st_external_sampler_key
 {
    GLuint lower_nv12;             /**< bitmask of 2 plane YUV samplers */
+   GLuint lower_nv21;
    GLuint lower_iyuv;             /**< bitmask of 3 plane YUV samplers */
    GLuint lower_xy_uxvx;          /**< bitmask of 2 plane YUV samplers */
+   GLuint lower_xy_vxux;          /**< bitmask of 2 plane YUV samplers */
    GLuint lower_yx_xuxv;          /**< bitmask of 2 plane YUV samplers */
+   GLuint lower_yx_xvxu;          /**< bitmask of 2 plane YUV samplers */
    GLuint lower_ayuv;
    GLuint lower_xyuv;
    GLuint lower_yuv;
    GLuint lower_yu_yv;
+   GLuint lower_yv_yu;
    GLuint lower_y41x;
    GLuint bt709;
    GLuint bt2020;
@@ -80,8 +84,20 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
          continue;
 
       switch (format) {
+      case PIPE_FORMAT_NV16:
+         if (stObj->pt->format == PIPE_FORMAT_R8_G8B8_422_UNORM) {
+            key.lower_yuv |= (1 << unit);
+            break;
+         }
+         FALLTHROUGH;
       case PIPE_FORMAT_NV12:
          if (stObj->pt->format == PIPE_FORMAT_R8_G8B8_420_UNORM) {
+            key.lower_yuv |= (1 << unit);
+            break;
+         }
+         FALLTHROUGH;
+      case PIPE_FORMAT_NV15:
+         if (stObj->pt->format == PIPE_FORMAT_R10_G10B10_420_UNORM) {
             key.lower_yuv |= (1 << unit);
             break;
          }
@@ -89,9 +105,28 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
       case PIPE_FORMAT_P010:
       case PIPE_FORMAT_P012:
       case PIPE_FORMAT_P016:
+      case PIPE_FORMAT_P030:
          key.lower_nv12 |= (1 << unit);
          break;
+      case PIPE_FORMAT_NV21:
+         if (stObj->pt->format == PIPE_FORMAT_R8_B8G8_420_UNORM) {
+            key.lower_yuv |= (1 << unit);
+            break;
+         }
+         key.lower_nv21 |= (1 << unit);
+         break;
+      case PIPE_FORMAT_NV20:
+         if (stObj->pt->format == PIPE_FORMAT_R10_G10B10_422_UNORM) {
+            key.lower_yuv |= (1 << unit);
+            break;
+         }
+         FALLTHROUGH;
       case PIPE_FORMAT_IYUV:
+         if (stObj->pt->format == PIPE_FORMAT_R8_G8_B8_420_UNORM ||
+             stObj->pt->format == PIPE_FORMAT_R8_B8_G8_420_UNORM) {
+            key.lower_yuv |= (1 << unit);
+            break;
+         }
          key.lower_iyuv |= (1 << unit);
          break;
       case PIPE_FORMAT_YUYV:
@@ -111,6 +146,20 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
             break;
          }
          key.lower_xy_uxvx |= (1 << unit);
+         break;
+      case PIPE_FORMAT_VYUY:
+         if (stObj->pt->format == PIPE_FORMAT_B8R8_G8R8_UNORM) {
+            key.lower_yv_yu |= (1 << unit);
+            break;
+         }
+         key.lower_xy_vxux |= (1 << unit);
+         break;
+      case PIPE_FORMAT_YVYU:
+         if (stObj->pt->format == PIPE_FORMAT_R8B8_R8G8_UNORM) {
+            key.lower_yv_yu |= (1 << unit);
+            break;
+         }
+         key.lower_yx_xvxu |= (1 << unit);
          break;
       case PIPE_FORMAT_AYUV:
          key.lower_ayuv |= (1 << unit);
@@ -176,7 +225,6 @@ struct st_fp_variant_key
    GLuint lower_two_sided_color:1;
 
    GLuint lower_flatshade:1;
-   GLuint lower_texcoord_replace:MAX_TEXTURE_COORD_UNITS;
    unsigned lower_alpha_func:3;
 
    /** needed for ATI_fragment_shader */
@@ -184,8 +232,11 @@ struct st_fp_variant_key
 
    struct st_external_sampler_key external;
 
-   /* bitmask of sampler units; PIPE_CAP_GL_CLAMP */
+   /* bitmask of sampler units; pipe_caps.gl_clamp */
    uint32_t gl_clamp[3];
+
+   /* bitmask of shadow samplers with depth textures in them for ARB programs; */
+   GLbitfield depth_textures;
 };
 
 /**
@@ -234,7 +285,7 @@ struct st_common_variant_key
    bool clamp_color;
 
    /** lower glPointSize to gl_PointSize */
-   boolean export_point_size;
+   bool export_point_size;
 
    /* for user-defined clip-planes */
    uint8_t lower_ucp;
@@ -244,7 +295,7 @@ struct st_common_variant_key
     */
    bool is_draw_shader;
 
-   /* bitmask of sampler units; PIPE_CAP_GL_CLAMP */
+   /* bitmask of sampler units; pipe_caps.gl_clamp */
    uint32_t gl_clamp[3];
 };
 
@@ -292,12 +343,14 @@ st_set_prog_affected_state_flags(struct gl_program *prog);
 extern struct st_fp_variant *
 st_get_fp_variant(struct st_context *st,
                   struct gl_program *stfp,
-                  const struct st_fp_variant_key *key);
+                  const struct st_fp_variant_key *key,
+                  bool report_compile_error, char **error);
 
 extern struct st_common_variant *
 st_get_common_variant(struct st_context *st,
                       struct gl_program *p,
-                      const struct st_common_variant_key *key);
+                      const struct st_common_variant_key *key,
+                      bool report_compile_error, char **error);
 
 extern void
 st_release_variants(struct st_context *st, struct gl_program *p);
@@ -309,9 +362,6 @@ extern void
 st_destroy_program_variants(struct st_context *st);
 
 extern void
-st_finalize_nir_before_variants(struct nir_shader *nir);
-
-extern void
 st_prepare_vertex_program(struct gl_program *stvp);
 
 extern void
@@ -319,19 +369,19 @@ st_translate_stream_output_info(struct gl_program *prog);
 
 extern void
 st_serialize_nir(struct gl_program *stp);
+void
+st_serialize_base_nir(struct gl_program *prog, struct nir_shader *nir);
 
-extern void
-st_finalize_program(struct st_context *st, struct gl_program *prog);
+extern char *
+st_finalize_program(struct st_context *st, struct gl_program *prog,
+                    bool report_compile_error);
 
-struct pipe_shader_state *
+void *
 st_create_nir_shader(struct st_context *st, struct pipe_shader_state *state);
 
 GLboolean st_program_string_notify(struct gl_context *ctx,
                                    GLenum target,
                                    struct gl_program *prog);
-
-bool
-st_can_add_pointsize_to_program(struct st_context *st, struct gl_program *prog);
 
 #ifdef __cplusplus
 }

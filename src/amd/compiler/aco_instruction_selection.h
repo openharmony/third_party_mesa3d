@@ -1,25 +1,7 @@
 /*
  * Copyright © 2018 Valve Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef ACO_INSTRUCTION_SELECTION_H
@@ -27,7 +9,7 @@
 
 #include "aco_ir.h"
 
-#include "vulkan/radv_shader_args.h"
+#include "nir.h"
 
 #include <array>
 #include <unordered_map>
@@ -53,15 +35,57 @@ struct shader_io_state {
    }
 };
 
+struct exec_info {
+   /* Set to false when loop_nest_depth==0 && parent_if.is_divergent==false */
+   bool potentially_empty_discard = false;
+   uint16_t potentially_empty_break_depth = UINT16_MAX;
+   /* Set to false when loop_nest_depth==exec_potentially_empty_break_depth,
+    * parent_if.is_divergent==false and parent_loop.has_divergent_continue==false. Also set to
+    * false if loop_nest_depth<exec_potentially_empty_break_depth. */
+   bool potentially_empty_break = false;
+   uint16_t potentially_empty_continue_depth = UINT16_MAX;
+   /* Set to false when loop_nest_depth==exec_potentially_empty_break_depth
+    * and parent_if.is_divergent==false. */
+   bool potentially_empty_continue = false;
+
+   void combine(struct exec_info& other)
+   {
+      potentially_empty_discard |= other.potentially_empty_discard;
+      potentially_empty_break_depth =
+         std::min(potentially_empty_break_depth, other.potentially_empty_break_depth);
+      potentially_empty_break |= other.potentially_empty_break;
+      potentially_empty_continue_depth =
+         std::min(potentially_empty_continue_depth, other.potentially_empty_continue_depth);
+      potentially_empty_continue |= other.potentially_empty_continue;
+   }
+};
+
+struct if_context {
+   Temp cond;
+
+   bool divergent_old;
+   bool had_divergent_discard_old;
+   bool had_divergent_discard_then;
+   bool has_divergent_continue_old;
+   bool has_divergent_continue_then;
+   struct exec_info exec_old;
+
+   unsigned BB_if_idx;
+   unsigned invert_idx;
+   Block BB_invert;
+   Block BB_endif;
+};
+
 struct isel_context {
    const struct aco_compiler_options* options;
-   const struct radv_shader_args* args;
+   const struct ac_shader_args* args;
    Program* program;
    nir_shader* shader;
    uint32_t constant_data_offset;
    Block* block;
    uint32_t first_temp_id;
    std::unordered_map<unsigned, std::array<Temp, NIR_MAX_VEC_COMPONENTS>> allocated_vec;
+   std::vector<Temp> unended_linear_vgprs;
    Stage stage;
    struct {
       bool has_branch;
@@ -74,14 +98,12 @@ struct isel_context {
       struct {
          bool is_divergent = false;
       } parent_if;
-      bool exec_potentially_empty_discard =
-         false; /* set to false when loop_nest_depth==0 && parent_if.is_divergent==false */
-      uint16_t exec_potentially_empty_break_depth = UINT16_MAX;
-      /* Set to false when loop_nest_depth==exec_potentially_empty_break_depth
-       * and parent_if.is_divergent==false. Called _break but it's also used for
-       * loop continues. */
-      bool exec_potentially_empty_break = false;
-      std::unique_ptr<unsigned[]> nir_to_aco; /* NIR block index to ACO block index */
+      bool had_divergent_discard = false;
+
+      struct exec_info exec;
+
+      bool skipping_empty_exec = false;
+      if_context empty_exec_skip;
    } cf_info;
 
    /* NIR range analysis. */
@@ -89,21 +111,11 @@ struct isel_context {
    nir_unsigned_upper_bound_config ub_config;
 
    Temp arg_temps[AC_MAX_ARGS];
-
-   /* FS inputs */
-   Temp persp_centroid, linear_centroid;
-
-   /* GS inputs */
-   Temp gs_wave_id;
-
-   /* VS output information */
-   bool export_clip_dists;
-   unsigned num_clip_distances;
-   unsigned num_cull_distances;
+   Operand workgroup_id[3];
+   Temp ttmp8;
 
    /* tessellation information */
-   uint64_t tcs_temp_only_inputs;
-   uint32_t tcs_num_patches;
+   bool any_tcs_inputs_via_lds = false;
    bool tcs_in_out_eq = false;
 
    /* Fragment color output information */
@@ -112,6 +124,12 @@ struct isel_context {
    /* I/O information */
    shader_io_state inputs;
    shader_io_state outputs;
+
+   /* WQM information */
+   uint32_t wqm_block_idx;
+   uint32_t wqm_instruction_idx;
+
+   BITSET_DECLARE(output_args, AC_MAX_ARGS);
 };
 
 inline Temp
@@ -128,8 +146,8 @@ isel_context setup_isel_context(Program* program, unsigned shader_count,
                                 struct nir_shader* const* shaders, ac_shader_config* config,
                                 const struct aco_compiler_options* options,
                                 const struct aco_shader_info* info,
-                                const struct radv_shader_args* args,
-                                bool is_gs_copy_shader, bool is_ps_epilog);
+                                const struct ac_shader_args* args,
+                                SWStage sw_stage = SWStage::None);
 
 } // namespace aco
 

@@ -25,6 +25,7 @@
 
 #include "vk_object.h"
 
+#include "util/mesa-blake3.h"
 #include "util/u_atomic.h"
 
 #ifdef __cplusplus
@@ -33,6 +34,16 @@ extern "C" {
 
 struct vk_descriptor_set_layout {
    struct vk_object_base base;
+
+   /* BLAKE3 hash of the descriptor set layout.  This is used by the common
+    * pipeline code to properly cache shaders, including handling pipeline
+    * layouts.  It must be populated by the driver or you risk pipeline cache
+    * collisions.
+    */
+   blake3_hash blake3;
+
+   void (*destroy)(struct vk_device *device,
+                   struct vk_descriptor_set_layout *layout);
 
    /** Reference count
     *
@@ -60,6 +71,9 @@ void *vk_descriptor_set_layout_zalloc(struct vk_device *device, size_t size);
 void *vk_descriptor_set_layout_multizalloc(struct vk_device *device,
                                            struct vk_multialloc *ma);
 
+void vk_descriptor_set_layout_destroy(struct vk_device *device,
+                                      struct vk_descriptor_set_layout *layout);
+
 static inline struct vk_descriptor_set_layout *
 vk_descriptor_set_layout_ref(struct vk_descriptor_set_layout *layout)
 {
@@ -74,7 +88,7 @@ vk_descriptor_set_layout_unref(struct vk_device *device,
 {
    assert(layout && layout->ref_cnt >= 1);
    if (p_atomic_dec_zero(&layout->ref_cnt))
-      vk_object_free(device, NULL, layout);
+      layout->destroy(device, layout);
 }
 
 #ifdef __cplusplus

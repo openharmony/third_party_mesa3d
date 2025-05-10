@@ -216,8 +216,8 @@ st_vdpau_map_surface(struct gl_context *ctx, GLenum target, GLenum access,
       struct winsys_handle whandle = { .type = WINSYS_HANDLE_TYPE_FD };
       unsigned usage = PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE;
 
-      if (screen->get_param(screen, PIPE_CAP_DMABUF) &&
-          res->screen->get_param(res->screen, PIPE_CAP_DMABUF) &&
+      if (screen->caps.dmabuf &&
+          res->screen->caps.dmabuf &&
           res->screen->resource_get_handle(res->screen, NULL, res, &whandle,
                                            usage)) {
          whandle.modifier = DRM_FORMAT_MOD_INVALID;
@@ -245,6 +245,7 @@ st_vdpau_map_surface(struct gl_context *ctx, GLenum target, GLenum access,
    _mesa_init_teximage_fields(ctx, texImage,
                               res->width0, res->height0, 1, 0, GL_RGBA,
                               texFormat);
+   _mesa_update_texture_object_swizzle(ctx, texObj);
 
    pipe_resource_reference(&texObj->pt, res);
    st_texture_release_all_sampler_views(st, texObj);

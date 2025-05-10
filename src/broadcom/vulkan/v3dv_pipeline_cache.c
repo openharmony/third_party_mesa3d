@@ -22,7 +22,7 @@
  */
 
 #include "v3dv_private.h"
-#include "vulkan/util/vk_util.h"
+#include "vk_util.h"
 #include "util/blob.h"
 #include "nir/nir_serialize.h"
 
@@ -54,15 +54,15 @@ struct serialized_nir {
 static void
 cache_dump_stats(struct v3dv_pipeline_cache *cache)
 {
-   fprintf(stderr, "  NIR cache entries:      %d\n", cache->nir_stats.count);
-   fprintf(stderr, "  NIR cache miss count:   %d\n", cache->nir_stats.miss);
-   fprintf(stderr, "  NIR cache hit  count:   %d\n", cache->nir_stats.hit);
+   mesa_logi("  NIR cache entries:      %d\n", cache->nir_stats.count);
+   mesa_logi("  NIR cache miss count:   %d\n", cache->nir_stats.miss);
+   mesa_logi("  NIR cache hit  count:   %d\n", cache->nir_stats.hit);
 
-   fprintf(stderr, "  cache entries:      %d\n", cache->stats.count);
-   fprintf(stderr, "  cache miss count:   %d\n", cache->stats.miss);
-   fprintf(stderr, "  cache hit  count:   %d\n", cache->stats.hit);
+   mesa_logi("  cache entries:      %d\n", cache->stats.count);
+   mesa_logi("  cache miss count:   %d\n", cache->stats.miss);
+   mesa_logi("  cache hit  count:   %d\n", cache->stats.hit);
 
-   fprintf(stderr, "  on-disk cache hit  count:   %d\n", cache->stats.on_disk_hit);
+   mesa_logi("  on-disk cache hit  count:   %d\n", cache->stats.on_disk_hit);
 }
 
 static void
@@ -131,7 +131,7 @@ v3dv_pipeline_cache_upload_nir(struct v3dv_pipeline *pipeline,
    if (debug_cache) {
       char sha1buf[41];
       _mesa_sha1_format(sha1buf, snir->sha1_key);
-      fprintf(stderr, "pipeline cache %p, new nir entry %s\n", cache, sha1buf);
+      mesa_logi("pipeline cache %p, new nir entry %s\n", cache, sha1buf);
       if (dump_stats)
          cache_dump_stats(cache);
    }
@@ -154,7 +154,7 @@ v3dv_pipeline_cache_search_for_nir(struct v3dv_pipeline *pipeline,
       char sha1buf[41];
       _mesa_sha1_format(sha1buf, sha1_key);
 
-      fprintf(stderr, "pipeline cache %p, search for nir %s\n", cache, sha1buf);
+      mesa_logi("pipeline cache %p, search for nir %s\n", cache, sha1buf);
    }
 
    const struct serialized_nir *snir = NULL;
@@ -180,7 +180,7 @@ v3dv_pipeline_cache_search_for_nir(struct v3dv_pipeline *pipeline,
       } else {
          cache->nir_stats.hit++;
          if (debug_cache) {
-            fprintf(stderr, "[v3dv nir cache] hit: %p\n", nir);
+            mesa_logi("[v3dv nir cache] hit: %p\n", nir);
             if (dump_stats)
                cache_dump_stats(cache);
          }
@@ -190,7 +190,7 @@ v3dv_pipeline_cache_search_for_nir(struct v3dv_pipeline *pipeline,
 
    cache->nir_stats.miss++;
    if (debug_cache) {
-      fprintf(stderr, "[v3dv nir cache] miss\n");
+      mesa_logi("[v3dv nir cache] miss\n");
       if (dump_stats)
          cache_dump_stats(cache);
    }
@@ -243,7 +243,7 @@ v3dv_pipeline_shared_data_write_to_blob(const struct v3dv_pipeline_shared_data *
                                         struct blob *blob);
 
 /**
- * It searchs for pipeline cached data, and returns a v3dv_pipeline_shared_data with
+ * It searches for pipeline cached data, and returns a v3dv_pipeline_shared_data with
  * it, or NULL if doesn't have it cached. On the former, it will increases the
  * ref_count, so caller is responsible to unref it.
  */
@@ -259,7 +259,7 @@ v3dv_pipeline_cache_search_for_pipeline(struct v3dv_pipeline_cache *cache,
       char sha1buf[41];
       _mesa_sha1_format(sha1buf, sha1_key);
 
-      fprintf(stderr, "pipeline cache %p, search pipeline with key %s\n", cache, sha1buf);
+      mesa_logi("pipeline cache %p, search pipeline with key %s\n", cache, sha1buf);
    }
 
    pipeline_cache_lock(cache);
@@ -275,7 +275,7 @@ v3dv_pipeline_cache_search_for_pipeline(struct v3dv_pipeline_cache *cache,
       cache->stats.hit++;
       *cache_hit = true;
       if (debug_cache) {
-         fprintf(stderr, "[v3dv cache] hit: %p\n", cache_entry);
+         mesa_logi("[v3dv cache] hit: %p\n", cache_entry);
          if (dump_stats)
             cache_dump_stats(cache);
       }
@@ -290,7 +290,7 @@ v3dv_pipeline_cache_search_for_pipeline(struct v3dv_pipeline_cache *cache,
 
    cache->stats.miss++;
    if (debug_cache) {
-      fprintf(stderr, "[v3dv cache] miss\n");
+      mesa_logi("[v3dv cache] miss\n");
       if (dump_stats)
          cache_dump_stats(cache);
    }
@@ -311,12 +311,11 @@ v3dv_pipeline_cache_search_for_pipeline(struct v3dv_pipeline_cache *cache,
 
       size_t buffer_size;
       uint8_t *buffer = disk_cache_get(disk_cache, cache_key, &buffer_size);
-      if (unlikely(V3D_DEBUG & V3D_DEBUG_CACHE)) {
+      if (V3D_DBG(CACHE)) {
          char sha1buf[41];
          _mesa_sha1_format(sha1buf, cache_key);
-         fprintf(stderr, "[v3dv on-disk cache] %s %s\n",
-                 buffer ? "hit" : "miss",
-                 sha1buf);
+         mesa_logi("[v3dv on-disk cache] %s %s\n",
+                   buffer ? "hit" : "miss", sha1buf);
       }
 
       if (buffer) {
@@ -401,13 +400,13 @@ v3dv_pipeline_shared_data_new(struct v3dv_pipeline_cache *cache,
    struct v3dv_bo *bo = v3dv_bo_alloc(cache->device, total_assembly_size,
                                       "pipeline shader assembly", true);
    if (!bo) {
-      fprintf(stderr, "failed to allocate memory for shaders assembly\n");
+      mesa_loge("failed to allocate memory for shaders assembly\n");
       goto fail;
    }
 
    bool ok = v3dv_bo_map(cache->device, bo, total_assembly_size);
    if (!ok) {
-      fprintf(stderr, "failed to map source shader buffer\n");
+      mesa_loge("failed to map source shader buffer\n");
       goto fail;
    }
 
@@ -456,8 +455,8 @@ pipeline_cache_upload_shared_data(struct v3dv_pipeline_cache *cache,
       char sha1buf[41];
       _mesa_sha1_format(sha1buf, shared_data->sha1_key);
 
-      fprintf(stderr, "pipeline cache %p, new cache entry with sha1 key %s:%p\n\n",
-              cache, sha1buf, shared_data);
+      mesa_logi("pipeline cache %p, new cache entry with sha1 key %s:%p\n\n",
+                cache, sha1buf, shared_data);
       if (dump_stats)
          cache_dump_stats(cache);
    }
@@ -480,10 +479,10 @@ pipeline_cache_upload_shared_data(struct v3dv_pipeline_cache *cache,
          cache_key cache_key;
          disk_cache_compute_key(disk_cache, shared_data->sha1_key, 20, cache_key);
 
-         if (unlikely(V3D_DEBUG & V3D_DEBUG_CACHE)) {
+         if (V3D_DBG(CACHE)) {
             char sha1buf[41];
             _mesa_sha1_format(sha1buf, shared_data->sha1_key);
-            fprintf(stderr, "[v3dv on-disk cache] storing %s\n", sha1buf);
+            mesa_logi("[v3dv on-disk cache] storing %s\n", sha1buf);
          }
          disk_cache_put(disk_cache, cache_key, binary.data, binary.size, NULL);
       }
@@ -542,7 +541,7 @@ shader_variant_create_from_blob(struct v3dv_device *device,
    if (blob->overrun)
       return NULL;
 
-   uint ulist_data_size = sizeof(uint32_t) * ulist_count;
+   size_t ulist_data_size = sizeof(uint32_t) * ulist_count;
    const void *ulist_data_data = blob_read_bytes(blob, ulist_data_size);
    if (blob->overrun)
       return NULL;
@@ -646,7 +645,7 @@ pipeline_cache_load(struct v3dv_pipeline_cache *cache,
                     const void *data)
 {
    struct v3dv_device *device = cache->device;
-   struct v3dv_physical_device *pdevice = &device->instance->physicalDevice;
+   struct v3dv_physical_device *pdevice = device->pdevice;
    struct vk_pipeline_cache_header header;
 
    if (cache->cache == NULL || cache->nir_cache == NULL)
@@ -700,8 +699,8 @@ pipeline_cache_load(struct v3dv_pipeline_cache *cache,
    }
 
    if (debug_cache) {
-      fprintf(stderr, "pipeline cache %p, loaded %i nir shaders and "
-              "%i entries\n", cache, nir_count, count);
+      mesa_logi("pipeline cache %p, loaded %i nir shaders and "
+                "%i entries\n", cache, nir_count, count);
       if (dump_stats)
          cache_dump_stats(cache);
    }
@@ -822,8 +821,8 @@ v3dv_MergePipelineCaches(VkDevice device,
             char sha1buf[41];
             _mesa_sha1_format(sha1buf, snir_dst->sha1_key);
 
-            fprintf(stderr, "pipeline cache %p, added nir entry %s "
-                    "from pipeline cache %p\n",
+            mesa_logi("pipeline cache %p, added nir entry %s "
+                      "from pipeline cache %p\n",
                     dst, sha1buf, src);
             if (dump_stats)
                cache_dump_stats(dst);
@@ -845,8 +844,8 @@ v3dv_MergePipelineCaches(VkDevice device,
             char sha1buf[41];
             _mesa_sha1_format(sha1buf, cache_entry->sha1_key);
 
-            fprintf(stderr, "pipeline cache %p, added entry %s "
-                    "from pipeline cache %p\n",
+            mesa_logi("pipeline cache %p, added entry %s "
+                      "from pipeline cache %p\n",
                     dst, sha1buf, src);
             if (dump_stats)
                cache_dump_stats(dst);
@@ -962,7 +961,7 @@ v3dv_GetPipelineCacheData(VkDevice _device,
       blob_init_fixed(&blob, NULL, SIZE_MAX);
    }
 
-   struct v3dv_physical_device *pdevice = &device->instance->physicalDevice;
+   struct v3dv_physical_device *pdevice = device->pdevice;
    VkResult result = VK_INCOMPLETE;
 
    pipeline_cache_lock(cache);
@@ -1033,10 +1032,10 @@ v3dv_GetPipelineCacheData(VkDevice _device,
 
    if (debug_cache) {
       assert(count <= cache->stats.count);
-      fprintf(stderr, "GetPipelineCacheData: serializing cache %p, "
-              "%i nir shader entries "
-              "%i entries, %u DataSize\n",
-              cache, nir_count, count, (uint32_t) *pDataSize);
+      mesa_logi("GetPipelineCacheData: serializing cache %p, "
+                "%i nir shader entries "
+                "%i entries, %u DataSize\n",
+                cache, nir_count, count, (uint32_t) *pDataSize);
    }
 
  done:

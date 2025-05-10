@@ -1,11 +1,9 @@
-#include "../sfn_shader.h"
 #include "../sfn_liverangeevaluator.h"
+#include "../sfn_shader.h"
 #include "sfn_test_shaders.h"
 
 #include "gtest/gtest.h"
 #include <sstream>
-
-#include "../sfn_liverangeevaluator.h"
 
 namespace r600 {
 
@@ -14,9 +12,7 @@ using std::ostringstream;
 class LiveRangeTests : public TestShader {
 
 protected:
-
    void check(const char *shader, LiveRangeMap& expect);
-
 };
 
 using SimpleTest = testing::Test;
@@ -71,7 +67,6 @@ TEST_F(LiveRangeTests, SimpleAssignments)
 
    LiveRangeMap expect = vf.prepare_live_range_map();
 
-
    expect.set_life_range(*r1x, 2, 3);
    for (int i = 0; i < 4; ++i)
       expect.set_life_range(*r0[i], 1, 3);
@@ -112,9 +107,9 @@ TEST_F(LiveRangeTests, SimpleAInterpolation)
 
    ValueFactory vf;
    Register *r0x = vf.dest_from_string("R0.x@fully");
-   r0x->pin_live_range(true, false);
+   r0x->set_flag(Register::pin_start);
    Register *r0y = vf.dest_from_string("R0.y@fully");
-   r0y->pin_live_range(true, false);
+   r0y->set_flag(Register::pin_start);
 
    Register *r1x = vf.dest_from_string("S1.x@free");
    RegisterVec4 r2 = vf.dest_vec4_from_string("S2.xyzw", dummy, pin_chan);
@@ -152,7 +147,6 @@ TEST_F(LiveRangeTests, SimpleAInterpolation)
    expect.set_life_range(*r5[1], 6, 7);
    expect.set_life_range(*r5[3], 6, 7);
 
-
    expect.set_life_range(*r6[0], 7, 8);
    expect.set_life_range(*r6[1], 7, 8);
    expect.set_life_range(*r6[2], 7, 8);
@@ -173,29 +167,29 @@ TEST_F(LiveRangeTests, SimpleArrayAccess)
    auto s2x = vf.dest_from_string("S2.x");
    auto s2y = vf.dest_from_string("S2.y");
 
-   auto s3 = vf.dest_vec4_from_string("S3.xy01", dummy, pin_group);
-
+   auto s3 = vf.dest_vec4_from_string("S3.xy01", dummy, pin_chgr);
 
    LiveRangeMap expect = vf.prepare_live_range_map();
 
-   expect.set_life_range(*array->element(0, nullptr, 0), 0, 4);
-   expect.set_life_range(*array->element(0, nullptr, 1), 0, 4);
-   expect.set_life_range(*array->element(1, nullptr, 0), 0, 4);
+   expect.set_life_range(*array->element(0, nullptr, 0), 1, 5);
+   expect.set_life_range(*array->element(0, nullptr, 1), 1, 5);
+   expect.set_life_range(*array->element(1, nullptr, 0), 1, 4);
 
-   expect.set_life_range(*array->element(1, nullptr, 1), 0, 4);
+   expect.set_life_range(*array->element(1, nullptr, 1), 2, 4);
 
    expect.set_life_range(*s1, 2, 3);
 
-   expect.set_life_range(*s2x, 4, 5);
-   expect.set_life_range(*s2y, 4, 5);
+   expect.set_life_range(*s2x, 5, 6);
+   expect.set_life_range(*s2y, 5, 6);
 
-   expect.set_life_range(*s3[0], 5, 6);
-   expect.set_life_range(*s3[1], 5, 6);
+   expect.set_life_range(*s3[0], 6, 7);
+   expect.set_life_range(*s3[1], 6, 7);
 
    check(shader_with_dest_array2_scheduled, expect);
 }
 
-void LiveRangeTests::check(const char *shader, LiveRangeMap& expect)
+void
+LiveRangeTests::check(const char *shader, LiveRangeMap& expect)
 {
    auto sh = from_string(shader);
    ASSERT_TRUE(sh);
@@ -211,7 +205,6 @@ void LiveRangeTests::check(const char *shader, LiveRangeMap& expect)
    expect_str << expect;
 
    EXPECT_EQ(eval_str.str(), expect_str.str());
-
 }
 
-}
+} // namespace r600

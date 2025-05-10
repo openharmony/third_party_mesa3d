@@ -24,13 +24,13 @@
  *    Christian Gmeiner <christian.gmeiner@gmail.com>
  */
 
-#include "os/os_mman.h"
+#include "util/os_mman.h"
 #include "util/hash_table.h"
 
 #include "etnaviv_priv.h"
 #include "etnaviv_drmif.h"
 
-simple_mtx_t etna_device_lock = _SIMPLE_MTX_INITIALIZER_NP;
+simple_mtx_t etna_device_lock = SIMPLE_MTX_INITIALIZER;
 
 /* set buffer name, and add to table, call w/ etna_drm_table_lock held: */
 static void set_name(struct etna_bo *bo, uint32_t name)
@@ -118,6 +118,7 @@ void etna_bo_free(struct etna_bo *bo) {
 	if (dev->use_softpin) {
 		etna_bo_cleanup_zombies(dev);
 		VG_BO_RELEASE(bo);
+		assert(!list_is_linked(&bo->list));
 		list_addtail(&bo->list, &dev->zombie_list);
 	} else {
 		_etna_bo_free(bo);
@@ -138,11 +139,11 @@ static struct etna_bo *lookup_bo(void *tbl, uint32_t handle)
 		/* found, incr refcnt and return: */
 		bo = etna_bo_ref(entry->data);
 
-		/* don't break the bucket if this bo was found in one */
+		/* don't break the bucket/zombie list if this bo was found in one */
 		if (list_is_linked(&bo->list)) {
 			VG_BO_OBTAIN(bo);
 			etna_device_ref(bo->dev);
-			list_delinit(&bo->list);
+			list_del(&bo->list);
 		}
 	}
 
@@ -172,7 +173,6 @@ static struct etna_bo *bo_from_handle(struct etna_device *dev,
 	bo->handle = handle;
 	bo->flags = flags;
 	p_atomic_set(&bo->refcnt, 1);
-	list_inithead(&bo->list);
 	/* add ourselves to the handle table: */
 	_mesa_hash_table_insert(dev->handle_table, &bo->handle, bo);
 

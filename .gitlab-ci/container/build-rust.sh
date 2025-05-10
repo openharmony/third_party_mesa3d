@@ -5,20 +5,27 @@
 
 set -ex
 
+uncollapsed_section_start rust "Building Rust toolchain"
+
 # cargo (and rustup) wants to store stuff in $HOME/.cargo, and binaries in
 # $HOME/.cargo/bin.  Make bin a link to a public bin directory so the commands
 # are just available to all build jobs.
-mkdir -p $HOME/.cargo
-ln -s /usr/local/bin $HOME/.cargo/bin
+mkdir -p "$HOME"/.cargo
+ln -s /usr/local/bin "$HOME"/.cargo/bin
+
+# Pick a specific snapshot from rustup so the compiler doesn't drift on us.
+RUST_VERSION=1.78.0-2024-05-02
 
 # For rust in Mesa, we use rustup to install.  This lets us pick an arbitrary
 # version of the compiler, rather than whatever the container's Debian comes
 # with.
-#
-# Pick the rust compiler (1.48) available in Debian stable, and pick a specific
-# snapshot from rustup so the compiler doesn't drift on us.
-wget https://sh.rustup.rs -O - | \
-    sh -s -- -y --default-toolchain 1.49.0-2020-12-31
+curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
+    --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+      --default-toolchain $RUST_VERSION \
+      --profile minimal \
+      -y
+
+rustup component add clippy rustfmt
 
 # Set up a config script for cross compiling -- cargo needs your system cc for
 # linking in cross builds, but doesn't know what you want to use for system cc.
@@ -29,3 +36,5 @@ linker = "arm-linux-gnueabihf-gcc"
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 EOF
+
+section_end rust

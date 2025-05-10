@@ -6,97 +6,68 @@
 #ifndef TU_PERFETTO_H_
 #define TU_PERFETTO_H_
 
+#ifdef HAVE_PERFETTO
+
+/* we can't include tu_common.h because ir3 headers are not C++-compatible */
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifdef HAVE_PERFETTO
+#define TU_PERFETTO_MAX_STACK_DEPTH 8
 
-/**
- * Render-stage id's
- */
-enum tu_stage_id {
-   SURFACE_STAGE_ID, /* Surface is a sort of meta-stage for render-target info */
-   BINNING_STAGE_ID,
-   GMEM_STAGE_ID,
-   BYPASS_STAGE_ID,
-   BLIT_STAGE_ID,
-   COMPUTE_STAGE_ID,
-   CLEAR_SYSMEM_STAGE_ID,
-   CLEAR_GMEM_STAGE_ID,
-   GMEM_LOAD_STAGE_ID,
-   GMEM_STORE_STAGE_ID,
-   SYSMEM_RESOLVE_STAGE_ID,
-   // TODO add the rest
+struct tu_device;
+struct tu_queue;
+struct tu_u_trace_submission_data;
 
-   NUM_STAGES
-};
-
-static const struct {
-   const char *name;
-   const char *desc;
-} stages[] = {
-   [SURFACE_STAGE_ID] = {"Surface"},
-   [BINNING_STAGE_ID] = {"Binning", "Perform Visibility pass and determine target bins"},
-   [GMEM_STAGE_ID]    = {"Render", "Rendering to GMEM"},
-   [BYPASS_STAGE_ID]  = {"Render", "Rendering to system memory"},
-   [BLIT_STAGE_ID]    = {"Blit", "Performing a Blit operation"},
-   [COMPUTE_STAGE_ID] = {"Compute", "Compute job"},
-   [CLEAR_SYSMEM_STAGE_ID] = {"Clear Sysmem", ""},
-   [CLEAR_GMEM_STAGE_ID] = {"Clear GMEM", "Per-tile (GMEM) clear"},
-   [GMEM_LOAD_STAGE_ID] = {"GMEM Load", "Per tile system memory to GMEM load"},
-   [GMEM_STORE_STAGE_ID] = {"GMEM Store", "Per tile GMEM to system memory store"},
-   [SYSMEM_RESOLVE_STAGE_ID] = {"SysMem Resolve", "System memory MSAA resolve"},
-   // TODO add the rest
-};
-
-/**
- * Queue-id's
- */
-enum {
-   DEFAULT_HW_QUEUE_ID,
-};
-
-static const struct {
-   const char *name;
-   const char *desc;
-} queues[] = {
-   [DEFAULT_HW_QUEUE_ID] = {"GPU Queue 0", "Default Adreno Hardware Queue"},
+struct tu_perfetto_stage {
+   int stage_id;
+   /* dynamically allocated stage iid, for app_events.  0 if stage_id should be
+    * used instead.
+    */
+   uint64_t stage_iid;
+   uint64_t start_ts;
+   const void* payload;
+   void* start_payload_function;
 };
 
 struct tu_perfetto_state {
-   uint64_t start_ts[NUM_STAGES];
+   struct tu_perfetto_stage stages[TU_PERFETTO_MAX_STACK_DEPTH];
+   unsigned stage_depth;
+   unsigned skipped_depth;
 };
 
 void tu_perfetto_init(void);
 
-struct tu_device;
-void tu_perfetto_submit(struct tu_device *dev, uint32_t submission_id);
-
-/* Helpers */
-
-struct tu_perfetto_state *
-tu_device_get_perfetto_state(struct tu_device *dev);
-
-int
-tu_device_get_gpu_timestamp(struct tu_device *dev,
-                            uint64_t *ts);
-
-int
-tu_device_get_suspend_count(struct tu_device *dev,
-                            uint64_t *suspend_count);
+struct tu_perfetto_clocks
+{
+   uint64_t cpu;
+   uint64_t gpu_ts;
+   uint64_t gpu_ts_offset;
+};
 
 uint64_t
-tu_device_ticks_to_ns(struct tu_device *dev, uint64_t ts);
+tu_perfetto_begin_submit();
 
-struct tu_u_trace_submission_data;
-uint32_t
-tu_u_trace_submission_data_get_submit_id(const struct tu_u_trace_submission_data *data);
+struct tu_perfetto_clocks
+tu_perfetto_end_submit(struct tu_queue *queue,
+                       uint32_t submission_id,
+                       uint64_t start_ts,
+                       struct tu_perfetto_clocks *clocks);
 
-#endif
+void tu_perfetto_log_create_buffer(struct tu_device *dev, struct tu_buffer *buffer);
+void tu_perfetto_log_bind_buffer(struct tu_device *dev, struct tu_buffer *buffer);
+void tu_perfetto_log_destroy_buffer(struct tu_device *dev, struct tu_buffer *buffer);
+
+void tu_perfetto_log_create_image(struct tu_device *dev, struct tu_image *image);
+void tu_perfetto_log_bind_image(struct tu_device *dev, struct tu_image *image);
+void tu_perfetto_log_destroy_image(struct tu_device *dev, struct tu_image *image);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* HAVE_PERFETTO */
 
 #endif /* TU_PERFETTO_H_ */

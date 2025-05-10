@@ -63,7 +63,7 @@ lp_build_broadcast(struct gallivm_state *gallivm,
       LLVMTypeRef i32_type = LLVMInt32TypeInContext(gallivm->context);
       LLVMTypeRef i32_vec_type = LLVMVectorType(i32_type, length);
 
-      assert(LLVMGetElementType(vec_type) == LLVMTypeOf(scalar));
+      assert(LLVM_VERSION_MAJOR >= 15 || LLVMGetElementType(vec_type) == LLVMTypeOf(scalar));
 
       res = LLVMBuildInsertElement(builder, undef, scalar, LLVMConstNull(i32_type), "");
       res = LLVMBuildShuffleVector(builder, res, undef, LLVMConstNull(i32_vec_type), "");
@@ -194,7 +194,7 @@ lp_build_swizzle_scalar_aos(struct lp_build_context *bld,
                                                type, 1 << channel, num_channels), "");
 
       type2 = type;
-      type2.floating = FALSE;
+      type2.floating = false;
       type2.width *= 2;
       type2.length /= 2;
 
@@ -271,7 +271,7 @@ lp_build_swizzle_scalar_aos(struct lp_build_context *bld,
        */
 
       struct lp_type type4 = type;
-      type4.floating = FALSE;
+      type4.floating = false;
       type4.width *= 4;
       type4.length /= 4;
 
@@ -395,7 +395,7 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
             unsigned shuffle;
             switch (swizzles[i]) {
             default:
-               assert(0);
+               unreachable("Unsupported swizzle");
             case PIPE_SWIZZLE_X:
             case PIPE_SWIZZLE_Y:
             case PIPE_SWIZZLE_Z:
@@ -470,7 +470,7 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
        * channels.
        */
       struct lp_type type4 = type;
-      type4.floating = FALSE;
+      type4.floating = false;
       type4.width *= 4;
       type4.length /= 4;
 

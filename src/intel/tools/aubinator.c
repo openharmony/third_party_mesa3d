@@ -38,7 +38,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 
-#include "intel/compiler/brw_isa_info.h"
+#include "intel_tools.h"
 #include "util/macros.h"
 
 #include "aub_read.h"
@@ -60,13 +60,10 @@ static enum { COLOR_AUTO, COLOR_ALWAYS, COLOR_NEVER } option_color;
 uint16_t pci_id = 0;
 char *input_file = NULL, *xml_path = NULL;
 struct intel_device_info devinfo;
-struct brw_isa_info isa;
 struct intel_batch_decode_ctx batch_ctx;
 struct aub_mem mem;
 
 FILE *outfile;
-
-struct brw_instruction;
 
 static void
 aubinator_error(void *user_data, const void *aub_data, const char *msg)
@@ -90,8 +87,6 @@ aubinator_init(void *user_data, int aub_pci_id, const char *app_name)
       exit(EXIT_FAILURE);
    }
 
-   brw_init_isa_info(&isa, &devinfo);
-
    enum intel_batch_decode_flags batch_flags = 0;
    if (option_color == COLOR_ALWAYS)
       batch_flags |= INTEL_BATCH_DECODE_IN_COLOR;
@@ -101,8 +96,8 @@ aubinator_init(void *user_data, int aub_pci_id, const char *app_name)
       batch_flags |= INTEL_BATCH_DECODE_OFFSETS;
    batch_flags |= INTEL_BATCH_DECODE_FLOATS;
 
-   intel_batch_decode_ctx_init(&batch_ctx, &isa, &devinfo, outfile,
-                               batch_flags, xml_path, NULL, NULL, NULL);
+   intel_decoder_init(&batch_ctx, &devinfo, outfile,
+                      batch_flags, xml_path, NULL, NULL, NULL);
 
    /* Check for valid spec instance, if wrong xml_path is passed then spec
     * instance is not initialized properly
@@ -148,7 +143,7 @@ get_bo(void *user_data, bool ppgtt, uint64_t addr)
 }
 
 static void
-handle_execlist_write(void *user_data, enum drm_i915_gem_engine_class engine, uint64_t context_descriptor)
+handle_execlist_write(void *user_data, enum intel_engine_class engine, uint64_t context_descriptor)
 {
    const uint32_t pphwsp_size = 4096;
    uint32_t pphwsp_addr = context_descriptor & 0xfffff000;
@@ -186,7 +181,7 @@ get_legacy_bo(void *user_data, bool ppgtt, uint64_t addr)
 }
 
 static void
-handle_ring_write(void *user_data, enum drm_i915_gem_engine_class engine,
+handle_ring_write(void *user_data, enum intel_engine_class engine,
                   const void *data, uint32_t data_len)
 {
    batch_ctx.user_data = &mem;

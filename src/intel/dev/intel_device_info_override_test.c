@@ -30,7 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include <xf86drm.h>
+#include "util/libdrm.h"
 
 #include "intel_device_info.h"
 #include "intel_device_info_test.h"
@@ -62,7 +62,7 @@ main(int argc, char *argv[])
       if (fd < 0)
          continue;
 
-      bool success = intel_get_device_info_from_fd(fd, &devinfo);
+      bool success = intel_get_device_info_from_fd(fd, &devinfo, -1, -1);
       close(fd);
 
       if (!success)
@@ -71,6 +71,7 @@ main(int argc, char *argv[])
       fprintf(stderr, "%u\n", devinfo.verx10);
       assert(devinfo.verx10 == verx10);
       verify_device_info(&devinfo);
+      assert(devinfo.engine_class_prefetch[INTEL_ENGINE_CLASS_RENDER] > 0);
    }
 
    return 0;

@@ -1,28 +1,10 @@
 /*
  * Copyright 2010 Jerome Glisse <glisse@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
  * Authors:
  *      Jerome Glisse
+ * SPDX-License-Identifier: MIT
  */
+
 #include "r600_pipe.h"
 #include "r600d.h"
 #include "util/u_memory.h"
@@ -31,7 +13,7 @@
 
 
 void r600_need_cs_space(struct r600_context *ctx, unsigned num_dw,
-			boolean count_draw_in, unsigned num_atomics)
+			bool count_draw_in, unsigned num_atomics)
 {
 	/* Flush the DMA IB if it's not empty. */
 	if (radeon_emitted(&ctx->b.dma.cs, 0))
@@ -167,7 +149,7 @@ void r600_flush_emit(struct r600_context *rctx)
 
 	if (rctx->b.flags & R600_CONTEXT_INV_CONST_CACHE) {
 		/* Direct constant addressing uses the shader cache.
-		 * Indirect contant addressing uses the vertex cache. */
+		 * Indirect constant addressing uses the vertex cache. */
 		cp_coher_cntl |= S_0085F0_SH_ACTION_ENA(1) |
 				 (rctx->has_vertex_cache ? S_0085F0_VC_ACTION_ENA(1)
 							 : S_0085F0_TC_ACTION_ENA(1));
@@ -299,7 +281,7 @@ void r600_context_gfx_flush(void *context, unsigned flags,
 	/* Flush the CS. */
 	ws->cs_flush(cs, flags, &ctx->b.last_gfx_fence);
 	if (fence)
-		ws->fence_reference(fence, ctx->b.last_gfx_fence);
+		ws->fence_reference(ws, fence, ctx->b.last_gfx_fence);
 	ctx->b.num_gfx_cs_flushes++;
 
 	if (ctx->is_debug) {
@@ -528,7 +510,7 @@ void r600_cp_dma_copy_buffer(struct r600_context *rctx,
 
 		r600_need_cs_space(rctx,
 				   10 + (rctx->b.flags ? R600_MAX_FLUSH_CS_DWORDS : 0) +
-				   3 + R600_MAX_PFP_SYNC_ME_DWORDS, FALSE, 0);
+				   3 + R600_MAX_PFP_SYNC_ME_DWORDS, false, 0);
 
 		/* Flush the caches for the first copy only. */
 		if (rctx->b.flags) {

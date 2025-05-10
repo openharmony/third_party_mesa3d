@@ -25,21 +25,21 @@
  *
  **************************************************************************/
 
-
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-#include "c11/threads.h"
-#include "util/u_thread.h"
-#include "util/u_string.h"
 
-#include "egllog.h"
+#include "c11/threads.h"
+#include "util/u_string.h"
+#include "util/u_thread.h"
+
 #include "eglcurrent.h"
 #include "eglglobals.h"
+#include "egllog.h"
 
 static __THREAD_INITIAL_EXEC _EGLThreadInfo _egl_TLS = {
-   .inited = false
+   .inited = false,
 };
 
 static void
@@ -50,10 +50,9 @@ _eglInitThreadInfo(_EGLThreadInfo *t)
    t->CurrentAPI = EGL_OPENGL_ES_API;
 }
 
-
 /**
  * Return the calling thread's thread info.
- * If the calling thread nevers calls this function before, or if its thread
+ * If the calling thread never calls this function before, or if its thread
  * info was destroyed, reinitialize it.  This function never returns NULL.
  */
 _EGLThreadInfo *
@@ -68,7 +67,6 @@ _eglGetCurrentThread(void)
    return current;
 }
 
-
 /**
  * Destroy the calling thread's thread info.
  */
@@ -79,7 +77,6 @@ _eglDestroyCurrentThread(void)
    t->inited = false;
 }
 
-
 /**
  * Return the currently bound context of the current API, or NULL.
  */
@@ -89,7 +86,6 @@ _eglGetCurrentContext(void)
    _EGLThreadInfo *t = _eglGetCurrentThread();
    return t->CurrentContext;
 }
-
 
 /**
  * Record EGL error code and return EGL_FALSE.
@@ -171,8 +167,8 @@ _eglError(EGLint errCode, const char *msg)
 }
 
 void
-_eglDebugReport(EGLenum error, const char *funcName,
-      EGLint type, const char *message, ...)
+_eglDebugReport(EGLenum error, const char *funcName, EGLint type,
+                const char *message, ...)
 {
    _EGLThreadInfo *thr = _eglGetCurrentThread();
    EGLDEBUGPROCKHR callback = NULL;
@@ -181,11 +177,11 @@ _eglDebugReport(EGLenum error, const char *funcName,
    if (funcName == NULL)
       funcName = thr->CurrentFuncName;
 
-   mtx_lock(_eglGlobal.Mutex);
+   simple_mtx_lock(_eglGlobal.Mutex);
    if (_eglGlobal.debugTypesEnabled & DebugBitFromType(type))
       callback = _eglGlobal.debugCallback;
 
-   mtx_unlock(_eglGlobal.Mutex);
+   simple_mtx_unlock(_eglGlobal.Mutex);
 
    char *message_buf = NULL;
    if (message != NULL) {

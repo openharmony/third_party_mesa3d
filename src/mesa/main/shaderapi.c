@@ -36,7 +36,7 @@
 #include <stdbool.h>
 #include <c99_alloca.h>
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/context.h"
 #include "draw_validate.h"
 #include "main/enums.h"
@@ -53,8 +53,6 @@
 #include "compiler/glsl/builtin_functions.h"
 #include "compiler/glsl/glsl_parser_extras.h"
 #include "compiler/glsl/ir.h"
-#include "compiler/glsl/ir_uniform.h"
-#include "compiler/glsl/program.h"
 #include "program/program.h"
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
@@ -63,11 +61,14 @@
 #include "util/crc32.h"
 #include "util/os_file.h"
 #include "util/list.h"
+#include "util/log.h"
+#include "util/perf/cpu_trace.h"
 #include "util/u_process.h"
 #include "util/u_string.h"
 #include "api_exec_decl.h"
 
 #include "state_tracker/st_context.h"
+#include "state_tracker/st_glsl_to_nir.h"
 #include "state_tracker/st_program.h"
 
 #ifdef ENABLE_SHADER_CACHE
@@ -76,10 +77,10 @@
 /* shader_replacement.h must declare a variable like this:
 
    struct _shader_replacement {
-      // process name. If null, only sha1 is used to match
+      // process name. If null, only blake3 is used to match
       const char *app;
-      // original glsl shader sha1
-      const char *sha1;
+      // original glsl shader blake3
+      const char *blake3;
       // shader stage
       gl_shader_stage stage;
       ... any other information ...
@@ -91,7 +92,7 @@
 
    char* load_shader_replacement(struct _shader_replacement *repl);
 
-   And a method to replace the shader without sha1 matching:
+   And a method to replace the shader without blake3 matching:
 
    char *try_direct_replace(const char *app, const char *source)
 
@@ -101,7 +102,7 @@
 #else
 struct _shader_replacement {
    const char *app;
-   const char *sha1;
+   const char *blake3;
    gl_shader_stage stage;
 };
 struct _shader_replacement shader_replacements[0];
@@ -135,6 +136,8 @@ _mesa_get_shader_flags(void)
          flags |= GLSL_DUMP;
       if (strstr(env, "log"))
          flags |= GLSL_LOG;
+      if (strstr(env, "source"))
+         flags |= GLSL_SOURCE;
 #endif
       if (strstr(env, "cache_fb"))
          flags |= GLSL_CACHE_FALLBACK;
@@ -173,7 +176,7 @@ _mesa_get_shader_capture_path(void)
    static const char *path = NULL;
 
    if (!read_env_var) {
-      path = getenv("MESA_SHADER_CAPTURE_PATH");
+      path = secure_getenv("MESA_SHADER_CAPTURE_PATH");
       read_env_var = true;
 
 #if ANDROID_SHADER_CAPTURE
@@ -408,12 +411,12 @@ create_shader(struct gl_context *ctx, GLenum type)
    struct gl_shader *sh;
    GLuint name;
 
-   _mesa_HashLockMutex(ctx->Shared->ShaderObjects);
-   name = _mesa_HashFindFreeKeyBlock(ctx->Shared->ShaderObjects, 1);
+   _mesa_HashLockMutex(&ctx->Shared->ShaderObjects);
+   name = _mesa_HashFindFreeKeyBlock(&ctx->Shared->ShaderObjects, 1);
    sh = _mesa_new_shader(name, _mesa_shader_enum_to_shader_stage(type));
    sh->Type = type;
-   _mesa_HashInsertLocked(ctx->Shared->ShaderObjects, name, sh, true);
-   _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
+   _mesa_HashInsertLocked(&ctx->Shared->ShaderObjects, name, sh);
+   _mesa_HashUnlockMutex(&ctx->Shared->ShaderObjects);
 
    return name;
 }
@@ -438,17 +441,17 @@ create_shader_program(struct gl_context *ctx)
    GLuint name;
    struct gl_shader_program *shProg;
 
-   _mesa_HashLockMutex(ctx->Shared->ShaderObjects);
+   _mesa_HashLockMutex(&ctx->Shared->ShaderObjects);
 
-   name = _mesa_HashFindFreeKeyBlock(ctx->Shared->ShaderObjects, 1);
+   name = _mesa_HashFindFreeKeyBlock(&ctx->Shared->ShaderObjects, 1);
 
    shProg = _mesa_new_shader_program(name);
 
-   _mesa_HashInsertLocked(ctx->Shared->ShaderObjects, name, shProg, true);
+   _mesa_HashInsertLocked(&ctx->Shared->ShaderObjects, name, shProg);
 
    assert(shProg->RefCount == 1);
 
-   _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
+   _mesa_HashUnlockMutex(&ctx->Shared->ShaderObjects);
 
    return name;
 }
@@ -764,8 +767,8 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
    /* Is transform feedback available in this context?
     */
    const bool has_xfb =
-      (ctx->API == API_OPENGL_COMPAT && ctx->Extensions.EXT_transform_feedback)
-      || ctx->API == API_OPENGL_CORE
+      (_mesa_is_desktop_gl_compat(ctx) && ctx->Extensions.EXT_transform_feedback)
+      || _mesa_is_desktop_gl_core(ctx)
       || _mesa_is_gles3(ctx);
 
    /* True if geometry shaders (of the form that was adopted into GLSL 1.50
@@ -777,9 +780,9 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
    /* Are uniform buffer objects available in this context?
     */
    const bool has_ubo =
-      (ctx->API == API_OPENGL_COMPAT &&
+      (_mesa_is_desktop_gl_compat(ctx) &&
        ctx->Extensions.ARB_uniform_buffer_object)
-      || ctx->API == API_OPENGL_CORE
+      || _mesa_is_desktop_gl_core(ctx)
       || _mesa_is_gles3(ctx);
 
    if (!shProg) {
@@ -1150,7 +1153,7 @@ get_shader_source(struct gl_context *ctx, GLuint shader, GLsizei maxLength,
  */
 static void
 set_shader_source(struct gl_shader *sh, const GLchar *source,
-                  const uint8_t original_sha1[SHA1_DIGEST_LENGTH])
+                  const blake3_hash original_blake3)
 {
    assert(sh);
 
@@ -1169,7 +1172,7 @@ set_shader_source(struct gl_shader *sh, const GLchar *source,
        * fallback.
        */
       sh->FallbackSource = sh->Source;
-      memcpy(sh->fallback_source_sha1, sh->source_sha1, SHA1_DIGEST_LENGTH);
+      memcpy(sh->fallback_source_blake3, sh->source_blake3, BLAKE3_OUT_LEN);
       sh->Source = source;
    } else {
       /* free old shader source string and install new one */
@@ -1177,7 +1180,7 @@ set_shader_source(struct gl_shader *sh, const GLchar *source,
       sh->Source = source;
    }
 
-   memcpy(sh->source_sha1, original_sha1, SHA1_DIGEST_LENGTH);
+   memcpy(sh->source_blake3, original_blake3, BLAKE3_OUT_LEN);
 }
 
 static void
@@ -1216,7 +1219,7 @@ _mesa_compile_shader(struct gl_context *ctx, struct gl_shader *sh)
        */
       sh->CompileStatus = COMPILE_FAILURE;
    } else {
-      if (ctx->_Shader->Flags & GLSL_DUMP) {
+      if (ctx->_Shader->Flags & (GLSL_DUMP | GLSL_SOURCE)) {
          _mesa_log("GLSL source for %s shader %d:\n",
                  _mesa_shader_stage_to_string(sh->Stage), sh->Name);
          _mesa_log_direct(sh->Source);
@@ -1227,29 +1230,10 @@ _mesa_compile_shader(struct gl_context *ctx, struct gl_shader *sh)
       /* this call will set the shader->CompileStatus field to indicate if
        * compilation was successful.
        */
-      _mesa_glsl_compile_shader(ctx, sh, false, false, false);
+      _mesa_glsl_compile_shader(ctx, sh, NULL, false, false, false);
 
       if (ctx->_Shader->Flags & GLSL_LOG) {
          _mesa_write_shader_to_file(sh);
-      }
-
-      if (ctx->_Shader->Flags & GLSL_DUMP) {
-         if (sh->CompileStatus) {
-            if (sh->ir) {
-               _mesa_log("GLSL IR for shader %d:\n", sh->Name);
-               _mesa_print_ir(_mesa_get_log_file(), sh->ir, NULL);
-            } else {
-               _mesa_log("No GLSL IR for shader %d (shader may be from "
-                         "cache)\n", sh->Name);
-            }
-            _mesa_log("\n\n");
-         } else {
-            _mesa_log("GLSL shader %d failed to compile.\n", sh->Name);
-         }
-         if (sh->InfoLog && sh->InfoLog[0] != 0) {
-            _mesa_log("GLSL shader %d info log:\n", sh->Name);
-            _mesa_log("%s\n", sh->InfoLog);
-         }
       }
    }
 
@@ -1291,6 +1275,60 @@ update_programs_in_pipeline(void *data, void *userData)
    }
 }
 
+static void
+capture_shader_program(struct gl_context *ctx,
+                       struct gl_shader_program *shProg)
+{
+#ifndef CUSTOM_SHADER_REPLACEMENT
+   /* Capture .shader_test files. */
+   const char *capture_path = _mesa_get_shader_capture_path();
+
+   if (shProg->Name != 0 && shProg->Name != ~0 && capture_path != NULL) {
+      /* Find an unused filename. */
+      FILE *file = NULL;
+      char *filename = NULL;
+
+      for (unsigned i = 0;; i++) {
+         if (i) {
+            filename = ralloc_asprintf(NULL, "%s/%u-%u.shader_test",
+                                       capture_path, shProg->Name, i);
+         } else {
+            filename = ralloc_asprintf(NULL, "%s/%u.shader_test",
+                                       capture_path, shProg->Name);
+         }
+         file = os_file_create_unique(filename, 0644);
+         if (file)
+            break;
+         /* If we are failing for another reason than "this filename already
+          * exists", we are likely to fail again with another filename, so
+          * let's just give up */
+         if (errno != EEXIST)
+            break;
+         ralloc_free(filename);
+      }
+
+      if (file) {
+         fprintf(file, "[require]\nGLSL%s >= %u.%02u\n",
+                 shProg->IsES ? " ES" : "", shProg->GLSL_Version / 100,
+                 shProg->GLSL_Version % 100);
+         if (shProg->SeparateShader)
+            fprintf(file, "GL_ARB_separate_shader_objects\nSSO ENABLED\n");
+         fprintf(file, "\n");
+
+         for (unsigned i = 0; i < shProg->NumShaders; i++) {
+            fprintf(file, "[%s shader]\n%s\n",
+                    _mesa_shader_stage_to_string(shProg->Shaders[i]->Stage),
+                    shProg->Shaders[i]->Source);
+         }
+         fclose(file);
+      } else {
+         _mesa_warning(ctx, "Failed to open %s", filename);
+      }
+
+      ralloc_free(filename);
+   }
+#endif
+}
 
 /**
  * Link a program's shaders.
@@ -1301,6 +1339,8 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
 {
    if (!shProg)
       return;
+
+   MESA_TRACE_FUNC();
 
    if (!no_error) {
       /* From the ARB_transform_feedback2 specification:
@@ -1315,6 +1355,8 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
       }
    }
 
+   capture_shader_program(ctx, shProg);
+
    unsigned programs_in_use = 0;
    if (ctx->_Shader)
       for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
@@ -1327,7 +1369,7 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
    ensure_builtin_types(ctx);
 
    FLUSH_VERTICES(ctx, 0, 0);
-   _mesa_glsl_link_shader(ctx, shProg);
+   st_link_shader(ctx, shProg);
 
    /* From section 7.3 (Program Objects) of the OpenGL 4.5 spec:
     *
@@ -1350,62 +1392,13 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
          _mesa_use_program(ctx, stage, shProg, prog, ctx->_Shader);
       }
 
-      if (ctx->Pipeline.Objects) {
-         struct update_programs_in_pipeline_params params = {
-            .ctx = ctx,
-            .shProg = shProg
-         };
-         _mesa_HashWalk(ctx->Pipeline.Objects, update_programs_in_pipeline,
-                        &params);
-      }
+      struct update_programs_in_pipeline_params params = {
+         .ctx = ctx,
+         .shProg = shProg
+      };
+      _mesa_HashWalk(&ctx->Pipeline.Objects, update_programs_in_pipeline,
+                     &params);
    }
-
-#ifndef CUSTOM_SHADER_REPLACEMENT
-   /* Capture .shader_test files. */
-   const char *capture_path = _mesa_get_shader_capture_path();
-   if (shProg->Name != 0 && shProg->Name != ~0 && capture_path != NULL) {
-      /* Find an unused filename. */
-      FILE *file = NULL;
-      char *filename = NULL;
-      for (unsigned i = 0;; i++) {
-         if (i) {
-            filename = ralloc_asprintf(NULL, "%s/%u-%u.shader_test",
-                                       capture_path, shProg->Name, i);
-         } else {
-            filename = ralloc_asprintf(NULL, "%s/%u.shader_test",
-                                       capture_path, shProg->Name);
-         }
-         file = os_file_create_unique(filename, 0644);
-         if (file)
-            break;
-         /* If we are failing for another reason than "this filename already
-          * exists", we are likely to fail again with another filename, so
-          * let's just give up */
-         if (errno != EEXIST)
-            break;
-         ralloc_free(filename);
-      }
-      if (file) {
-         fprintf(file, "[require]\nGLSL%s >= %u.%02u\n",
-                 shProg->IsES ? " ES" : "",
-                 shProg->data->Version / 100, shProg->data->Version % 100);
-         if (shProg->SeparateShader)
-            fprintf(file, "GL_ARB_separate_shader_objects\nSSO ENABLED\n");
-         fprintf(file, "\n");
-
-         for (unsigned i = 0; i < shProg->NumShaders; i++) {
-            fprintf(file, "[%s shader]\n%s\n",
-                    _mesa_shader_stage_to_string(shProg->Shaders[i]->Stage),
-                    shProg->Shaders[i]->Source);
-         }
-         fclose(file);
-      } else {
-         _mesa_warning(ctx, "Failed to open %s", filename);
-      }
-
-      ralloc_free(filename);
-   }
-#endif
 
    if (shProg->data->LinkStatus == LINKING_FAILURE &&
        (ctx->_Shader->Flags & GLSL_REPORT_ERRORS)) {
@@ -1937,7 +1930,7 @@ _mesa_LinkProgram(GLuint programObj)
  * <path>/<stage prefix>_<CHECKSUM>.arb
  */
 static char *
-construct_name(const gl_shader_stage stage, const char *sha,
+construct_name(const gl_shader_stage stage, const char *blake3_str,
                const char *source, const char *path)
 {
    static const char *types[] = {
@@ -1946,7 +1939,7 @@ construct_name(const gl_shader_stage stage, const char *sha,
 
    const char *format = strncmp(source, "!!ARB", 5) ? "glsl" : "arb";
 
-   return ralloc_asprintf(NULL, "%s/%s_%s.%s", path, types[stage], sha, format);
+   return ralloc_asprintf(NULL, "%s/%s_%s.%s", path, types[stage], blake3_str, format);
 }
 
 /**
@@ -1954,25 +1947,25 @@ construct_name(const gl_shader_stage stage, const char *sha,
  */
 void
 _mesa_dump_shader_source(const gl_shader_stage stage, const char *source,
-                         const uint8_t sha1[SHA1_DIGEST_LENGTH])
+                         const blake3_hash blake3)
 {
 #ifndef CUSTOM_SHADER_REPLACEMENT
    static bool path_exists = true;
    char *dump_path;
    FILE *f;
-   char sha[64];
+   char blake3_str[BLAKE3_OUT_LEN * 2 + 1];
 
    if (!path_exists)
       return;
 
-   dump_path = getenv("MESA_SHADER_DUMP_PATH");
+   dump_path = secure_getenv("MESA_SHADER_DUMP_PATH");
    if (!dump_path) {
       path_exists = false;
       return;
    }
 
-   _mesa_sha1_format(sha, sha1);
-   char *name = construct_name(stage, sha, source, dump_path);
+   _mesa_blake3_format(blake3_str, blake3);
+   char *name = construct_name(stage, blake3_str, source, dump_path);
 
    f = fopen(name, "w");
    if (f) {
@@ -1993,16 +1986,16 @@ _mesa_dump_shader_source(const gl_shader_stage stage, const char *source,
  */
 GLcharARB *
 _mesa_read_shader_source(const gl_shader_stage stage, const char *source,
-                         const uint8_t sha1[SHA1_DIGEST_LENGTH])
+                         const blake3_hash blake3)
 {
    char *read_path;
    static bool path_exists = true;
    int len, shader_size = 0;
    GLcharARB *buffer;
    FILE *f;
-   char sha[64];
+   char blake3_str[BLAKE3_OUT_LEN * 2 + 1];
 
-   _mesa_sha1_format(sha, sha1);
+   _mesa_blake3_format(blake3_str, blake3);
 
    if (!debug_get_bool_option("MESA_NO_SHADER_REPLACEMENT", false)) {
       const char *process_name = util_get_process_name();
@@ -2019,7 +2012,8 @@ _mesa_read_shader_source(const gl_shader_stage stage, const char *source,
              strcmp(process_name, shader_replacements[i].app) != 0)
             continue;
 
-         if (memcmp(sha, shader_replacements[i].sha1, 40) != 0)
+         if (memcmp(blake3_str, shader_replacements[i].blake3,
+                    BLAKE3_OUT_LEN * 2) != 0)
             continue;
 
          return load_shader_replacement(&shader_replacements[i]);
@@ -2035,7 +2029,7 @@ _mesa_read_shader_source(const gl_shader_stage stage, const char *source,
       return NULL;
    }
 
-   char *name = construct_name(stage, sha, source, read_path);
+   char *name = construct_name(stage, blake3_str, source, read_path);
    f = fopen(name, "r");
    ralloc_free(name);
    if (!f)
@@ -2140,9 +2134,9 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
    source[totalLength - 1] = '\0';
    source[totalLength - 2] = '\0';
 
-   /* Compute the original source sha1 before shader replacement. */
-   uint8_t original_sha1[SHA1_DIGEST_LENGTH];
-   _mesa_sha1_compute(source, strlen(source), original_sha1);
+   /* Compute the original source blake3 before shader replacement. */
+   blake3_hash original_blake3;
+   _mesa_blake3_compute(source, strlen(source), original_blake3);
 
 #ifdef ENABLE_SHADER_CACHE
    GLcharARB *replacement;
@@ -2150,16 +2144,16 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
    /* Dump original shader source to MESA_SHADER_DUMP_PATH and replace
     * if corresponding entry found from MESA_SHADER_READ_PATH.
     */
-   _mesa_dump_shader_source(sh->Stage, source, original_sha1);
+   _mesa_dump_shader_source(sh->Stage, source, original_blake3);
 
-   replacement = _mesa_read_shader_source(sh->Stage, source, original_sha1);
+   replacement = _mesa_read_shader_source(sh->Stage, source, original_blake3);
    if (replacement) {
       free(source);
       source = replacement;
    }
 #endif /* ENABLE_SHADER_CACHE */
 
-   set_shader_source(sh, source, original_sha1);
+   set_shader_source(sh, source, original_blake3);
 
    free(offsets);
 }
@@ -2356,6 +2350,10 @@ _mesa_ShaderBinary(GLint n, const GLuint* shaders, GLenum binaryformat,
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_shader **sh;
+
+   /* no binary data can be loaded if length==0 */
+   if (!length)
+      binary = NULL;
 
    /* Page 68, section 7.2 'Shader Binaries" of the of the OpenGL ES 3.1, and
     * page 88 of the OpenGL 4.5 specs state:
@@ -2634,47 +2632,13 @@ _mesa_use_program(struct gl_context *ctx, gl_shader_stage stage,
 
 
 /**
- * Copy program-specific data generated by linking from the gl_shader_program
- * object to the gl_program object referred to by the gl_linked_shader.
- *
- * This function expects _mesa_reference_program() to have been previously
- * called setting the gl_linked_shaders program reference.
- */
-void
-_mesa_copy_linked_program_data(const struct gl_shader_program *src,
-                               struct gl_linked_shader *dst_sh)
-{
-   assert(dst_sh->Program);
-
-   struct gl_program *dst = dst_sh->Program;
-
-   dst->info.separate_shader = src->SeparateShader;
-
-   switch (dst_sh->Stage) {
-   case MESA_SHADER_GEOMETRY: {
-      dst->info.gs.vertices_in = src->Geom.VerticesIn;
-      dst->info.gs.uses_end_primitive = src->Geom.UsesEndPrimitive;
-      dst->info.gs.active_stream_mask = src->Geom.ActiveStreamMask;
-      break;
-   }
-   case MESA_SHADER_FRAGMENT: {
-      dst->info.fs.depth_layout = src->FragDepthLayout;
-      break;
-   }
-   default:
-      break;
-   }
-}
-
-/**
  * ARB_separate_shader_objects: Compile & Link Program
  */
-GLuint GLAPIENTRY
-_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
-                           const GLchar* const *strings)
+GLuint
+_mesa_CreateShaderProgramv_impl(struct gl_context *ctx,
+                                GLenum type, GLsizei count,
+                                const GLchar* const *strings)
 {
-   GET_CURRENT_CONTEXT(ctx);
-
    const GLuint shader = create_shader_err(ctx, type, "glCreateShaderProgramv");
    GLuint program = 0;
 
@@ -2726,6 +2690,17 @@ _mesa_CreateShaderProgramv(GLenum type, GLsizei count,
    return program;
 }
 
+/**
+ * ARB_separate_shader_objects: Compile & Link Program
+ */
+GLuint GLAPIENTRY
+_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
+                           const GLchar* const *strings)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   return _mesa_CreateShaderProgramv_impl(ctx, type, count, strings);
+}
 
 static void
 set_patch_vertices(struct gl_context *ctx, GLint value)
@@ -3282,6 +3257,7 @@ destroy_shader_include(struct hash_entry *entry)
    _mesa_hash_table_destroy(sh_incl_ht_entry->path, destroy_shader_include);
    free(sh_incl_ht_entry->shader_source);
    free(sh_incl_ht_entry);
+   free((void *)entry->key);
 }
 
 void
@@ -3368,7 +3344,7 @@ validate_and_tokenise_sh_incl(struct gl_context *ctx,
          struct sh_incl_path_entry *path =
             rzalloc(mem_ctx, struct sh_incl_path_entry);
 
-         path->path = strdup(path_str);
+         path->path = ralloc_strdup(mem_ctx, path_str);
          list_addtail(&path->list, &list->list);
       }
 
@@ -3556,7 +3532,8 @@ _mesa_NamedStringARB(GLenum type, GLint namelen, const GLchar *name,
          sh_incl_ht_entry->path =
             _mesa_hash_table_create(NULL, _mesa_hash_string,
                                     _mesa_key_string_equal);
-         _mesa_hash_table_insert(path_ht, entry->path, sh_incl_ht_entry);
+         _mesa_hash_table_insert(path_ht, strdup(entry->path),
+                                 sh_incl_ht_entry);
       } else {
          sh_incl_ht_entry = (struct sh_incl_path_ht_entry *) ht_entry->data;
       }

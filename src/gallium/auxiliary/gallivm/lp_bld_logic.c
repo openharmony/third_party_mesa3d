@@ -80,7 +80,7 @@ lp_build_compare_ext(struct gallivm_state *gallivm,
                      enum pipe_compare_func func,
                      LLVMValueRef a,
                      LLVMValueRef b,
-                     boolean ordered)
+                     bool ordered)
 {
    LLVMBuilderRef builder = gallivm->builder;
    LLVMTypeRef int_vec_type = lp_build_int_vec_type(gallivm, type);
@@ -189,7 +189,7 @@ lp_build_compare(struct gallivm_state *gallivm,
    assert(func > PIPE_FUNC_NEVER);
    assert(func < PIPE_FUNC_ALWAYS);
 
-#if defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)
+#if DETECT_ARCH_X86 || DETECT_ARCH_X86_64
    /*
     * There are no unsigned integer comparison instructions in SSE.
     */
@@ -203,11 +203,11 @@ lp_build_compare(struct gallivm_state *gallivm,
         func == PIPE_FUNC_GEQUAL) &&
        (gallivm_debug & GALLIVM_DEBUG_PERF)) {
          debug_printf("%s: inefficient <%u x i%u> unsigned comparison\n",
-                      __FUNCTION__, type.length, type.width);
+                      __func__, type.length, type.width);
    }
 #endif
 
-   return lp_build_compare_ext(gallivm, type, func, a, b, FALSE);
+   return lp_build_compare_ext(gallivm, type, func, a, b, false);
 }
 
 /**
@@ -224,7 +224,7 @@ lp_build_cmp_ordered(struct lp_build_context *bld,
                      LLVMValueRef a,
                      LLVMValueRef b)
 {
-   return lp_build_compare_ext(bld->gallivm, bld->type, func, a, b, TRUE);
+   return lp_build_compare_ext(bld->gallivm, bld->type, func, a, b, true);
 }
 
 /**

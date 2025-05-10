@@ -28,58 +28,76 @@
 #ifndef PAN_UTIL_H
 #define PAN_UTIL_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "util/format/u_format.h"
 
-#define PAN_DBG_PERF            0x0001
-#define PAN_DBG_TRACE           0x0002
-#define PAN_DBG_DEQP            0x0004
-#define PAN_DBG_DIRTY           0x0008
-#define PAN_DBG_SYNC            0x0010
-#define PAN_DBG_PRECOMPILE      0x0020
-#define PAN_DBG_NOFP16          0x0040
-#define PAN_DBG_NO_CRC          0x0080
-#define PAN_DBG_GL3             0x0100
-#define PAN_DBG_NO_AFBC         0x0200
-#define PAN_DBG_MSAA16          0x0400
-#define PAN_DBG_INDIRECT        0x0800
-#define PAN_DBG_LINEAR          0x1000
-#define PAN_DBG_NO_CACHE        0x2000
-#define PAN_DBG_DUMP            0x4000
+#define PAN_DBG_PERF  0x0001
+#define PAN_DBG_TRACE 0x0002
+/* 0x4 unused */
+#define PAN_DBG_DIRTY 0x0008
+#define PAN_DBG_SYNC  0x0010
+/* 0x20 unused */
+#define PAN_DBG_NOFP16  0x0040
+#define PAN_DBG_NO_CRC  0x0080
+#define PAN_DBG_GL3     0x0100
+#define PAN_DBG_NO_AFBC 0x0200
+#define PAN_DBG_MSAA16  0x0400
+/* 0x800 unused */
+#define PAN_DBG_LINEAR   0x1000
+#define PAN_DBG_NO_CACHE 0x2000
+#define PAN_DBG_DUMP     0x4000
 
 #ifndef NDEBUG
-#define PAN_DBG_OVERFLOW        0x8000
+#define PAN_DBG_OVERFLOW 0x8000
 #endif
 
-struct panfrost_device;
+#define PAN_DBG_YUV        0x20000
+#define PAN_DBG_FORCE_PACK 0x40000
+#define PAN_DBG_CS         0x80000
 
-unsigned
-panfrost_translate_swizzle_4(const unsigned char swizzle[4]);
+struct pan_blendable_format;
 
-void
-panfrost_invert_swizzle(const unsigned char *in, unsigned char *out);
+unsigned panfrost_translate_swizzle_4(const unsigned char swizzle[4]);
 
-unsigned
-panfrost_format_to_bifrost_blend(const struct panfrost_device *dev,
-                                 enum pipe_format format,
-                                 bool dithered);
+void panfrost_invert_swizzle(const unsigned char *in, unsigned char *out);
 
-void
-pan_pack_color(uint32_t *packed, const union pipe_color_union *color,
-               enum pipe_format format, bool dithered);
+void pan_pack_color(const struct pan_blendable_format *blendable_formats,
+                    uint32_t *packed, const union pipe_color_union *color,
+                    enum pipe_format format, bool dithered);
 
 /* Get the last blend shader, for an erratum workaround on v5 */
 
 static inline uint64_t
 panfrost_last_nonnull(uint64_t *ptrs, unsigned count)
 {
-        for (signed i = ((signed) count - 1); i >= 0; --i) {
-                if (ptrs[i])
-                        return ptrs[i];
-        }
+   for (signed i = ((signed)count - 1); i >= 0; --i) {
+      if (ptrs[i])
+         return ptrs[i];
+   }
 
-        return 0;
+   return 0;
+}
+
+static inline uint32_t
+pan_select_tiler_hierarchy_mask(unsigned width, unsigned height,
+                                unsigned max_levels)
+{
+   uint32_t max_fb_wh = MAX2(width, height);
+   uint32_t last_hierarchy_bit = util_last_bit(DIV_ROUND_UP(max_fb_wh, 16));
+   uint32_t hierarchy_mask = BITFIELD_MASK(max_levels);
+
+   /* Always enable the level covering the whole FB, and disable the finest
+    * levels if we don't have enough to cover everything.
+    * This is suboptimal for small primitives, since it might force
+    * primitives to be walked multiple times even if they don't cover the
+    * the tile being processed. On the other hand, it's hard to guess
+    * the draw pattern, so it's probably good enough for now.
+    */
+   if (last_hierarchy_bit > max_levels)
+      hierarchy_mask <<= last_hierarchy_bit - max_levels;
+
+   return hierarchy_mask;
 }
 
 #endif /* PAN_UTIL_H */

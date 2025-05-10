@@ -37,10 +37,13 @@
 
 #include <stdbool.h>
 
-#include "pipe/p_config.h"
+#include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/u_thread.h"
 
+
+/* Maximal cpu count for update affinity */
+#define UTIL_MAX_CPUS               1024  /* this should be enough */
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,12 +64,6 @@ enum cpu_family {
 typedef uint32_t util_affinity_mask[UTIL_MAX_CPUS / 32];
 
 struct util_cpu_caps_t {
-   /**
-    * Initialized to 0 and set to non-zero with an atomic after the entire
-    * struct has been initialized.
-    */
-   uint32_t detect_done;
-
    /**
     * Number of CPUs available to the process.
     *
@@ -90,10 +87,6 @@ struct util_cpu_caps_t {
    int x86_cpu_type;
    unsigned cacheline;
 
-   unsigned has_intel:1;
-   unsigned has_tsc:1;
-   unsigned has_mmx:1;
-   unsigned has_mmx2:1;
    unsigned has_sse:1;
    unsigned has_sse2:1;
    unsigned has_sse3:1;
@@ -105,14 +98,13 @@ struct util_cpu_caps_t {
    unsigned has_avx2:1;
    unsigned has_f16c:1;
    unsigned has_fma:1;
-   unsigned has_3dnow:1;
-   unsigned has_3dnow_ext:1;
-   unsigned has_xop:1;
    unsigned has_altivec:1;
    unsigned has_vsx:1;
    unsigned has_daz:1;
    unsigned has_neon:1;
    unsigned has_msa:1;
+   unsigned has_lsx:1;
+   unsigned has_lasx:1;
 
    unsigned has_avx512f:1;
    unsigned has_avx512dq:1;
@@ -124,22 +116,45 @@ struct util_cpu_caps_t {
    unsigned has_avx512vl:1;
    unsigned has_avx512vbmi:1;
 
+   unsigned has_clflushopt:1;
+
    unsigned num_L3_caches;
    unsigned num_cpu_mask_bits;
+   unsigned max_vector_bits;
 
    uint16_t cpu_to_L3[UTIL_MAX_CPUS];
+
    /* Affinity masks for each L3 cache. */
    util_affinity_mask *L3_affinity_mask;
+   /**
+    * number of "big" CPUs in big.LITTLE configuration
+    * 
+    * a "big" CPU is defined as anything with >= 50% the capacity of the largest CPU,
+    * useful for drivers determining how many and what kinds of threads to use
+    * example: 1x prime + 3x big + 4x little = 4x "big" cores
+    * 
+    * A value of zero indicates that CPUs are homogeneous.
+    */
+   int16_t nr_big_cpus;
+};
+
+struct _util_cpu_caps_state_t {
+   once_flag once_flag;
+   /**
+    * Initialized to 0 and set to non-zero with an atomic after the entire
+    * struct has been initialized.
+    */
+   uint32_t detect_done;
+   struct util_cpu_caps_t caps;
 };
 
 #define U_CPU_INVALID_L3 0xffff
 
-void util_cpu_detect(void);
-
 static inline ATTRIBUTE_CONST const struct util_cpu_caps_t *
 util_get_cpu_caps(void)
 {
-   extern struct util_cpu_caps_t util_cpu_caps;
+   extern void _util_cpu_detect_once(void);
+   extern struct _util_cpu_caps_state_t _util_cpu_caps_state;
 
    /* On most CPU architectures, an atomic read is simply a regular memory
     * load instruction with some extra compiler magic to prevent code
@@ -164,10 +179,10 @@ util_get_cpu_caps(void)
     * sure, but that state is such that it appears to return exactly the same
     * value with the same internal data every time.
     */
-   if (unlikely(!p_atomic_read(&util_cpu_caps.detect_done)))
-      util_cpu_detect();
+   if (unlikely(!p_atomic_read(&_util_cpu_caps_state.detect_done)))
+      call_once(&_util_cpu_caps_state.once_flag, _util_cpu_detect_once);
 
-   return &util_cpu_caps;
+   return &_util_cpu_caps_state.caps;
 }
 
 #ifdef __cplusplus

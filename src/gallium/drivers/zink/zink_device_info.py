@@ -60,34 +60,70 @@ import sys
 #  - guard: adds a #if defined(`extension_name`)/#endif guard around the code generated for this Extension.
 EXTENSIONS = [
     Extension("VK_KHR_maintenance1",
-        required=True),
+              required=True),
     Extension("VK_KHR_maintenance2"),
     Extension("VK_KHR_maintenance3"),
+    Extension("VK_KHR_maintenance4",
+              alias="maint4",
+              features=True),
+    Extension("VK_KHR_maintenance5",
+              alias="maint5",
+              features=True, properties=True),
+    Extension("VK_KHR_maintenance6",
+              alias="maint6",
+              features=True, properties=True),
+    Extension("VK_KHR_maintenance7",
+              alias="maint7",
+              features=True, properties=True),
+    Extension("VK_KHR_maintenance8",
+              alias="maint8",
+              features=True),
     Extension("VK_KHR_external_memory"),
     Extension("VK_KHR_external_memory_fd"),
     Extension("VK_KHR_vulkan_memory_model"),
+    Extension("VK_KHR_workgroup_memory_explicit_layout", alias="explicit_layout", features=True),
+    Extension("VK_KHR_pipeline_executable_properties",
+              alias="pipestats",
+              features=True),
     Extension("VK_KHR_external_semaphore_fd"),
-    Extension("VK_KHR_create_renderpass2", required=True),
+    Extension("VK_KHR_create_renderpass2",
+              required=True),
     Extension("VK_KHR_synchronization2",
               alias="sync2",
               features=True),
     Extension("VK_KHR_external_memory_win32"),
     Extension("VK_KHR_external_semaphore_win32"),
     Extension("VK_EXT_external_memory_dma_buf"),
+    Extension("VK_KHR_buffer_device_address",
+              alias="bda",
+              features=True),
+    Extension("VK_EXT_external_memory_host", alias="ext_host_mem", properties=True),
     Extension("VK_EXT_queue_family_foreign"),
     Extension("VK_KHR_swapchain_mutable_format"),
+    Extension("VK_KHR_incremental_present"),
     Extension("VK_EXT_provoking_vertex",
-       alias="pv",
-       features=True,
-       properties=True,
-       conditions=["$feats.provokingVertexLast"]),
+              alias="pv",
+              features=True,
+              properties=True,
+              conditions=["$feats.provokingVertexLast"]),
     Extension("VK_EXT_shader_viewport_index_layer"),
     Extension("VK_KHR_get_memory_requirements2"),
     Extension("VK_EXT_post_depth_coverage"),
-    Extension("VK_EXT_depth_clip_control", alias="clip_control", features=True),
+    Extension("VK_EXT_depth_clip_control",
+              alias="clip_control",
+              features=True),
+    Extension("VK_EXT_depth_clamp_zero_one",
+              alias="clamp_01",
+              features=True),
     Extension("VK_EXT_shader_subgroup_ballot"),
     Extension("VK_EXT_shader_subgroup_vote"),
-    Extension("VK_EXT_shader_atomic_float", alias="atomic_float", features=True),
+    Extension("VK_EXT_legacy_vertex_attributes", alias="legacyverts", features=True, properties=True),
+    Extension("VK_EXT_shader_atomic_float",
+              alias="atomic_float",
+              features=True),
+    Extension("VK_KHR_shader_atomic_int64",
+              alias="atomic_int",
+              features=True),
     Extension("VK_KHR_8bit_storage",
               alias="storage_8bit",
               features=True,
@@ -100,53 +136,61 @@ EXTENSIONS = [
               alias="view2d",
               features=True),
     Extension("VK_KHR_driver_properties",
-        alias="driver",
-        properties=True),
+              alias="driver",
+              properties=True),
     Extension("VK_EXT_memory_budget"),
+    Extension("VK_EXT_memory_priority", alias="memprio", features=True),
+    Extension("VK_EXT_pageable_device_local_memory", alias="mempage", features=True),
     Extension("VK_KHR_draw_indirect_count"),
+    Extension("VK_EXT_dynamic_rendering_unused_attachments", alias="unused", features=True),
+    Extension("VK_EXT_shader_object", alias="shobj", features=True, properties=True),
+    Extension("VK_EXT_attachment_feedback_loop_layout",
+              alias="feedback_loop",
+              features=True),
+    Extension("VK_EXT_attachment_feedback_loop_dynamic_state", alias="feedback_dyn", features=True),
     Extension("VK_EXT_fragment_shader_interlock",
-       alias="interlock",
-       features=True,
-       conditions=["$feats.fragmentShaderSampleInterlock", "$feats.fragmentShaderPixelInterlock"]),
+              alias="interlock",
+              features=True,
+              conditions=["$feats.fragmentShaderSampleInterlock", "$feats.fragmentShaderPixelInterlock"]),
     Extension("VK_EXT_sample_locations",
-       alias="sample_locations",
-       properties=True),
-    Extension("VK_EXT_conservative_rasterization",
-       alias="cons_raster",
-       properties=True,
-       conditions=["$props.fullyCoveredFragmentShaderInputVariable"]),
+              alias="sample_locations",
+              properties=True),
     Extension("VK_KHR_shader_draw_parameters"),
     Extension("VK_KHR_sampler_mirror_clamp_to_edge"),
+    Extension("VK_EXT_descriptor_buffer", alias="db", features=True, properties=True),
     Extension("VK_EXT_conditional_rendering",
-        alias="cond_render", 
-        features=True, 
-        conditions=["$feats.conditionalRendering"]),
+              alias="cond_render",
+              features=True,
+              conditions=["$feats.conditionalRendering"]),
     Extension("VK_EXT_transform_feedback",
-        alias="tf",
-        properties=True,
-        features=True,
-        conditions=["$feats.transformFeedback"]),
+              alias="tf",
+              properties=True,
+              features=True,
+              conditions=["$feats.transformFeedback"]),
     Extension("VK_EXT_index_type_uint8",
-        alias="index_uint8",
-        features=True,
-        conditions=["$feats.indexTypeUint8"]),
+              alias="index_uint8",
+              features=True,
+              conditions=["$feats.indexTypeUint8"]),
     Extension("VK_KHR_image_format_list"),
     Extension("VK_KHR_sampler_ycbcr_conversion"),
     Extension("VK_KHR_imageless_framebuffer",
-        alias="imgless",
-        features=True,
-        required=True),
+              alias="imgless",
+              features=True,
+              required=True),
     Extension("VK_EXT_robustness2",
-        alias="rb2",
-        properties=True,
-        features=True,
-        conditions=["$feats.nullDescriptor"]),
+              alias="rb2",
+              properties=True,
+              features=True,
+              conditions=["$feats.nullDescriptor"]),
+    Extension("VK_EXT_image_robustness",
+              alias="rb_image",
+              features=True),
     Extension("VK_EXT_image_drm_format_modifier"),
     Extension("VK_EXT_vertex_attribute_divisor",
-        alias="vdiv", 
-        properties=True,
-        features=True,
-        conditions=["$feats.vertexAttributeInstanceRateDivisor"]),
+              alias="vdiv",
+              properties=True,
+              features=True,
+              conditions=["$feats.vertexAttributeInstanceRateDivisor"]),
     Extension("VK_EXT_calibrated_timestamps"),
     Extension("VK_NV_linear_color_attachment",
               alias="linear_color",
@@ -154,96 +198,138 @@ EXTENSIONS = [
     Extension("VK_KHR_dynamic_rendering",
               alias="dynamic_render",
               features=True),
+    Extension("VK_KHR_dynamic_rendering_local_read",
+              alias="drlr",
+              features=True),
+    Extension("VK_EXT_multisampled_render_to_single_sampled",
+              alias="msrtss",
+              features=True),
     Extension("VK_KHR_shader_clock",
-       alias="shader_clock",
-       features=True,
-       conditions=["$feats.shaderSubgroupClock"]),
+              alias="shader_clock",
+              features=True,
+              conditions=["$feats.shaderSubgroupClock"]),
+    Extension("VK_INTEL_shader_integer_functions2",
+              alias="shader_int_fns2",
+              features=True,
+              conditions=["$feats.shaderIntegerFunctions2"]),
     Extension("VK_EXT_sampler_filter_minmax",
-        alias="reduction",
-        properties=True,
-        conditions=["$props.filterMinmaxSingleComponentFormats"]),
+              alias="reduction",
+              properties=True,
+              conditions=["$props.filterMinmaxSingleComponentFormats"]),
     Extension("VK_EXT_custom_border_color",
-        alias="border_color",
-        properties=True,
-        features=True,
-        conditions=["$feats.customBorderColors"]),
+              alias="border_color",
+              properties=True,
+              features=True,
+              conditions=["$feats.customBorderColors"]),
     Extension("VK_EXT_non_seamless_cube_map",
-        alias="nonseamless",
-        features=True),
+              alias="nonseamless",
+              features=True),
     Extension("VK_EXT_border_color_swizzle",
-        alias="border_swizzle",
-        features=True),
+              alias="border_swizzle",
+              features=True),
     Extension("VK_EXT_blend_operation_advanced",
-        alias="blend",
-        properties=True,
-        # TODO: we can probably support non-premul here with some work?
-        conditions=["$props.advancedBlendNonPremultipliedSrcColor", "$props.advancedBlendNonPremultipliedDstColor"]),
+              alias="blend",
+              properties=True,
+              # TODO: we can probably support non-premul here with some work?
+              conditions=["$props.advancedBlendNonPremultipliedSrcColor", "$props.advancedBlendNonPremultipliedDstColor"]),
     Extension("VK_EXT_extended_dynamic_state",
-        alias="dynamic_state",
-        features=True,
-        conditions=["$feats.extendedDynamicState"]),
+              alias="dynamic_state",
+              features=True,
+              conditions=["$feats.extendedDynamicState"]),
     Extension("VK_EXT_extended_dynamic_state2",
-        alias="dynamic_state2",
-        features=True,
-        conditions=["$feats.extendedDynamicState2"]),
+              alias="dynamic_state2",
+              features=True,
+              conditions=["$feats.extendedDynamicState2"]),
+    Extension("VK_EXT_extended_dynamic_state3",
+              alias="dynamic_state3",
+              properties=True,
+              features=True),
     Extension("VK_EXT_pipeline_creation_cache_control",
-        alias="pipeline_cache_control",
-        features=True,
-        conditions=["$feats.pipelineCreationCacheControl"]),
+              alias="pipeline_cache_control",
+              features=True,
+              conditions=["$feats.pipelineCreationCacheControl"]),
     Extension("VK_EXT_shader_stencil_export",
-        alias="stencil_export"),
+              alias="stencil_export"),
     Extension("VK_KHR_portability_subset",
-        alias="portability_subset",
-        features=True,
-        guard=True),
-    Extension("VK_KHR_timeline_semaphore", alias="timeline", features=True),
-    Extension("VK_EXT_color_write_enable", alias="cwrite", features=True),
+              alias="portability_subset",
+              features=True,
+              guard=True),
+    Extension("VK_NV_compute_shader_derivatives",
+              alias="shader_derivs",
+              features=True,
+              conditions=["$feats.computeDerivativeGroupQuads", "$feats.computeDerivativeGroupLinear"]),
+    Extension("VK_KHR_timeline_semaphore",
+              alias="timeline",
+              features=True),
+    Extension("VK_EXT_color_write_enable",
+              alias="cwrite",
+              features=True),
     Extension("VK_EXT_4444_formats",
-        alias="format_4444",
-        features=True),
+              alias="format_4444",
+              features=True),
+    Extension("VK_EXT_host_image_copy",
+              alias="hic",
+              features=True,
+              properties=True),
     Extension("VK_EXT_scalar_block_layout",
-        alias="scalar_block_layout",
-        features=True,
-        conditions=["$feats.scalarBlockLayout"]),
+              alias="scalar_block_layout",
+              features=True,
+              conditions=["$feats.scalarBlockLayout"]),
     Extension("VK_KHR_swapchain"),
+    Extension("VK_EXT_rasterization_order_attachment_access",
+              alias="rast_order_access",
+              features=True,
+              conditions=["$feats.rasterizationOrderColorAttachmentAccess"]),
     Extension("VK_KHR_shader_float16_int8",
               alias="shader_float16_int8",
               features=True),
     Extension("VK_EXT_multi_draw",
               alias="multidraw",
-	      features=True,
-	      properties=True,
-	      conditions=["$feats.multiDraw"]),
+              features=True,
+              properties=True,
+              conditions=["$feats.multiDraw"]),
     Extension("VK_EXT_primitives_generated_query",
               alias="primgen",
-	             features=True),
+              features=True),
+    Extension("VK_KHR_pipeline_library"),
+    Extension("VK_EXT_graphics_pipeline_library",
+              alias="gpl",
+              features=True,
+              properties=True),
     Extension("VK_KHR_push_descriptor",
-        alias="push",
-        properties=True),
+              alias="push",
+              properties=True),
     Extension("VK_KHR_descriptor_update_template",
-        alias="template"),
+              alias="template", required=True),
     Extension("VK_EXT_line_rasterization",
-        alias="line_rast",
-        properties=True,
-        features=True),
+              alias="line_rast",
+              properties=True,
+              features=True),
     Extension("VK_EXT_vertex_input_dynamic_state",
-        alias="vertex_input",
-	features=True,
-	conditions=["$feats.vertexInputDynamicState"]),
+              alias="vertex_input",
+              features=True,
+              conditions=["$feats.vertexInputDynamicState"]),
     Extension("VK_EXT_primitive_topology_list_restart",
-        alias="list_restart",
-	features=True,
-	conditions=["$feats.primitiveTopologyListRestart"]),
+              alias="list_restart",
+              features=True,
+              conditions=["$feats.primitiveTopologyListRestart"]),
     Extension("VK_KHR_dedicated_allocation",
-        alias="dedicated"),
+              alias="dedicated"),
     Extension("VK_EXT_descriptor_indexing",
-        alias="desc_indexing",
-        features=True,
-        properties=True,
-        conditions=["$feats.descriptorBindingPartiallyBound"]),
+              alias="desc_indexing",
+              features=True,
+              properties=True,
+              conditions=["$feats.descriptorBindingPartiallyBound"]),
     Extension("VK_EXT_depth_clip_enable",
-        alias="depth_clip_enable",
-        features=True),
+              alias="depth_clip_enable",
+              features=True),
+    Extension("VK_EXT_shader_demote_to_helper_invocation",
+              alias="demote",
+              features=True,
+              conditions=["$feats.shaderDemoteToHelperInvocation"]),
+    Extension("VK_KHR_shader_float_controls",
+              alias="float_controls"),
+    Extension("VK_KHR_format_feature_flags2"),
 ]
 
 # constructor: Versions(device_version(major, minor, patch), struct_version(major, minor))
@@ -255,6 +341,7 @@ EXTENSIONS = [
 VERSIONS = [
     Version((1,1,0), (1,1)),
     Version((1,2,0), (1,2)),
+    Version((1,3,0), (1,3)),
 ]
 
 # There exists some inconsistencies regarding the enum constants, fix them.
@@ -291,7 +378,16 @@ header_code = """
 
 #include "util/u_memory.h"
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+#include <vulkan/vulkan_beta.h>
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#include <vulkan/vulkan_win32.h>
+#endif
 
 struct zink_screen;
 
@@ -314,6 +410,9 @@ struct zink_device_info {
 %endfor
 
    VkPhysicalDeviceProperties props;
+   VkPhysicalDeviceProperties vk_layered_props;
+   VkPhysicalDeviceLayeredApiPropertiesKHR layered_props;
+   VkPhysicalDeviceDriverPropertiesKHR vk_layered_driver_props;
 %for version in versions:
    VkPhysicalDeviceVulkan${version.struct()}Properties props${version.struct()};
 %endfor
@@ -348,7 +447,7 @@ zink_verify_device_extensions(struct zink_screen *screen);
 %for ext in extensions:
 %if registry.in_registry(ext.name):
 %for cmd in registry.get_registry_entry(ext.name).device_commands:
-void zink_stub_${cmd.lstrip("vk")}(void);
+void VKAPI_PTR zink_stub_${cmd.lstrip("vk")}(void);
 %endfor
 %endif
 %endfor
@@ -381,14 +480,16 @@ zink_get_physical_device_info(struct zink_screen *screen)
    // enumerate device supported extensions
    VkResult result = screen->vk.EnumerateDeviceExtensionProperties(screen->pdev, NULL, &num_extensions, NULL);
    if (result != VK_SUCCESS) {
-      mesa_loge("ZINK: vkEnumerateDeviceExtensionProperties failed (%s)", vk_Result_to_str(result));
+      if (!screen->driver_name_is_inferred)
+         mesa_loge("ZINK: vkEnumerateDeviceExtensionProperties failed (%s)", vk_Result_to_str(result));
    } else {
       if (num_extensions > 0) {
          VkExtensionProperties *extensions = MALLOC(sizeof(VkExtensionProperties) * num_extensions);
          if (!extensions) goto fail;
          result = screen->vk.EnumerateDeviceExtensionProperties(screen->pdev, NULL, &num_extensions, extensions);
          if (result != VK_SUCCESS) {
-            mesa_loge("ZINK: vkEnumerateDeviceExtensionProperties failed (%s)", vk_Result_to_str(result));
+            if (!screen->driver_name_is_inferred)
+               mesa_loge("ZINK: vkEnumerateDeviceExtensionProperties failed (%s)", vk_Result_to_str(result));
          }
 
          for (uint32_t i = 0; i < num_extensions; ++i) {
@@ -450,6 +551,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
    }
 
    // check for device properties
+   bool copy_layered_props = false;
    if (screen->vk.GetPhysicalDeviceProperties2) {
       VkPhysicalDeviceProperties2 props = {0};
       props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
@@ -483,7 +585,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
 %endif
 %endfor
 
-      if (screen->vk_version < VK_MAKE_VERSION(1,2,0) && screen->instance_info.have_KHR_external_memory_capabilities) {
+      if (screen->vk_version < VK_MAKE_VERSION(1,2,0) && screen->instance_info->have_KHR_external_memory_capabilities) {
          info->deviceid_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
          info->deviceid_props.pNext = props.pNext;
          props.pNext = &info->deviceid_props;
@@ -495,8 +597,34 @@ zink_get_physical_device_info(struct zink_screen *screen)
          props.pNext = &info->subgroup;
       }
 
+      /* set up structs to capture underlying driver info */
+      VkPhysicalDeviceLayeredApiVulkanPropertiesKHR vk_layered_props = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR,
+      };
+      vk_layered_props.properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+      info->vk_layered_driver_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+      if (support_KHR_driver_properties || info->have_vulkan12)
+        vk_layered_props.properties.pNext = &info->vk_layered_driver_props;
+      info->layered_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_KHR;
+      info->layered_props.pNext = &vk_layered_props;
+      VkPhysicalDeviceLayeredApiPropertiesListKHR layered_props_list = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_LIST_KHR,
+        props.pNext,
+        1,
+        &info->layered_props
+      };
+      if (support_KHR_maintenance7)
+         props.pNext = &layered_props_list;
+
       // note: setting up local VkPhysicalDeviceProperties2.
       screen->vk.GetPhysicalDeviceProperties2(screen->pdev, &props);
+
+      if (support_KHR_maintenance7 && layered_props_list.layeredApiCount) {
+        info->vk_layered_props = vk_layered_props.properties.properties;
+      } else {
+        info->vk_layered_props = info->props;
+        copy_layered_props = true;
+      }
    }
 
    /* We re-apply the fields from VkPhysicalDeviceVulkanXYFeatures struct
@@ -535,6 +663,9 @@ zink_get_physical_device_info(struct zink_screen *screen)
 %endif
 %endfor
 
+   if (copy_layered_props)
+     info->vk_layered_driver_props = info->driver_props;
+
    // enable the extensions if they match the conditions given by ext.enable_conds 
    if (screen->vk.GetPhysicalDeviceProperties2) {
         %for ext in extensions:
@@ -571,6 +702,36 @@ zink_get_physical_device_info(struct zink_screen *screen)
 %endfor
 
    info->num_extensions = num_extensions;
+
+   info->feats.pNext = NULL;
+
+%for version in versions:
+%if version.device_version < (1,2,0):
+      if (VK_MAKE_VERSION(1,2,0) <= screen->vk_version) {
+         /* VkPhysicalDeviceVulkan11Features was added in 1.2, not 1.1 as one would think */
+%else:
+      if (${version.version()} <= screen->vk_version) {
+%endif
+         info->feats${version.struct()}.pNext = info->feats.pNext;
+         info->feats.pNext = &info->feats${version.struct()};
+      }
+%endfor
+
+%for ext in extensions:
+%if ext.has_features:
+<%helpers:guard ext="${ext}">
+%if ext.features_promoted:
+      if (info->have_${ext.name_with_vendor()} && !info->have_vulkan${ext.core_since.struct()}) {
+%else:
+      if (info->have_${ext.name_with_vendor()}) {
+%endif
+         info->${ext.field("feats")}.sType = ${ext.stype("FEATURES")};
+         info->${ext.field("feats")}.pNext = info->feats.pNext;
+         info->feats.pNext = &info->${ext.field("feats")};
+      }
+</%helpers:guard>
+%endif
+%endfor
 
    return true;
 
@@ -623,7 +784,7 @@ zink_verify_device_extensions(struct zink_screen *screen)
 %else:
    <% generated_funcs.add(cmd) %>
 %endif
-void
+void VKAPI_PTR
 zink_stub_${cmd.lstrip("vk")}()
 {
    mesa_loge("ZINK: ${cmd} is not loaded properly!");
@@ -708,12 +869,12 @@ if __name__ == "__main__":
     lookup = TemplateLookup()
     lookup.put_string("helpers", include_template)
 
-    with open(header_path, "w") as header_file:
+    with open(header_path, "w", encoding='utf-8') as header_file:
         header = Template(header_code, lookup=lookup).render(extensions=extensions, versions=versions, registry=registry).strip()
         header = replace_code(header, replacement)
         print(header, file=header_file)
 
-    with open(impl_path, "w") as impl_file:
+    with open(impl_path, "w", encoding='utf-8') as impl_file:
         impl = Template(impl_code, lookup=lookup).render(extensions=extensions, versions=versions, registry=registry).strip()
         impl = replace_code(impl, replacement)
         print(impl, file=impl_file)

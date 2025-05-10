@@ -48,6 +48,8 @@ struct tu_subpass
    uint32_t resolve_count;
    bool resolve_depth_stencil;
 
+   bool legacy_dithering_enabled;
+
    bool feedback_loop_color;
    bool feedback_loop_ds;
 
@@ -62,6 +64,20 @@ struct tu_subpass
    struct tu_subpass_attachment *resolve_attachments;
    struct tu_subpass_attachment depth_stencil_attachment;
 
+   uint32_t fsr_attachment;
+   VkExtent2D fsr_attachment_texel_size;
+
+   /*  When using dynamic rendering depth and stencil attachments may be
+    *  set to unused independently, so we need to track this bit of
+    *  information separately for each of them.
+    *
+    *  Due to VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08916 and
+    *  VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08917 we can set
+    *  these values at cmdBeginRendering() time.
+    */
+   bool depth_used;
+   bool stencil_used;
+
    VkSampleCountFlagBits samples;
 
    uint32_t srgb_cntl;
@@ -73,7 +89,7 @@ struct tu_subpass
 struct tu_render_pass_attachment
 {
    VkFormat format;
-   uint32_t samples;
+   VkSampleCountFlagBits samples;
    uint32_t cpp;
    VkImageAspectFlags clear_mask;
    uint32_t clear_views;
@@ -90,6 +106,10 @@ struct tu_render_pass_attachment
    bool cond_store_allowed;
 
    int32_t gmem_offset_stencil[TU_GMEM_LAYOUT_COUNT];
+
+   /* The subpass id in which the attachment will be used first/last. */
+   uint32_t first_subpass_idx;
+   uint32_t last_subpass_idx;
 };
 
 struct tu_render_pass
@@ -100,13 +120,23 @@ struct tu_render_pass
    uint32_t subpass_count;
    uint32_t gmem_pixels[TU_GMEM_LAYOUT_COUNT];
    uint32_t tile_align_w;
+   uint32_t min_cpp;
+   uint64_t autotune_hash;
 
    /* memory bandwidth costs (in bytes) for gmem / sysmem rendering */
    uint32_t gmem_bandwidth_per_pixel;
    uint32_t sysmem_bandwidth_per_pixel;
 
+   unsigned num_views;
+
+   struct tu_subpass_attachment fragment_density_map;
+
    struct tu_subpass_attachment *subpass_attachments;
+
    struct tu_render_pass_attachment *attachments;
+   bool has_cond_load_store;
+   bool has_fdm;
+
    struct tu_subpass_barrier end_barrier;
    struct tu_subpass subpasses[0];
 };

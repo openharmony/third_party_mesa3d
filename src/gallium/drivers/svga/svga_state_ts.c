@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2018-2022 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2018-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
@@ -125,7 +107,7 @@ emit_hw_tcs(struct svga_context *svga, uint64_t dirty)
       if (ret != PIPE_OK)
          goto done;
 
-      svga->rebind.flags.tcs = FALSE;
+      svga->rebind.flags.tcs = false;
       svga->dirty |= SVGA_NEW_TCS_VARIANT;
       svga->state.hw_draw.tcs = variant;
    }
@@ -270,10 +252,10 @@ emit_hw_tes(struct svga_context *svga, uint64_t dirty)
        * passthough TCS in the emit_hw_tes() function.
        */
       get_passthrough_tcs(svga);
-      svga->tcs.passthrough = TRUE;
+      svga->tcs.passthrough = true;
    }
    else {
-      svga->tcs.passthrough = FALSE;
+      svga->tcs.passthrough = false;
    }
 
    make_tes_key(svga, &key);
@@ -293,7 +275,7 @@ emit_hw_tes(struct svga_context *svga, uint64_t dirty)
       if (ret != PIPE_OK)
          goto done;
 
-      svga->rebind.flags.tes = FALSE;
+      svga->rebind.flags.tes = false;
       svga->dirty |= SVGA_NEW_TES_VARIANT;
       svga->state.hw_draw.tes = variant;
    }

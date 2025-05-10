@@ -35,8 +35,10 @@
  * earlier, and even many times, trading CPU cycles for memory savings.
  */
 
-#define steal_list(mem_ctx, type, list) \
-   foreach_list_typed(type, obj, node, list) { ralloc_steal(mem_ctx, obj); }
+#define steal_list(mem_ctx, type, list)        \
+   foreach_list_typed(type, obj, node, list) { \
+      ralloc_steal(mem_ctx, obj);              \
+   }
 
 static void sweep_cf_node(nir_shader *nir, nir_cf_node *cf_node);
 
@@ -45,18 +47,23 @@ sweep_block(nir_shader *nir, nir_block *block)
 {
    ralloc_steal(nir, block);
 
-   /* sweep_impl will mark all metadata invalid.  We can safely release all of
-    * this here.
-    */
-   ralloc_free(block->live_in);
-   block->live_in = NULL;
-
-   ralloc_free(block->live_out);
-   block->live_out = NULL;
-
    nir_foreach_instr(instr, block) {
-      list_del(&instr->gc_node);
-      list_add(&instr->gc_node, &nir->gc_list);
+      gc_mark_live(nir->gctx, instr);
+
+      switch (instr->type) {
+      case nir_instr_type_tex:
+         gc_mark_live(nir->gctx, nir_instr_as_tex(instr)->src);
+         break;
+      case nir_instr_type_phi:
+         nir_foreach_phi_src(src, nir_instr_as_phi(instr))
+            gc_mark_live(nir->gctx, src);
+         break;
+      case nir_instr_type_intrinsic:
+         ralloc_steal(nir, (void*)nir_instr_as_intrinsic(instr)->name);
+         break;
+      default:
+         break;
+      }
    }
 }
 
@@ -77,6 +84,7 @@ sweep_if(nir_shader *nir, nir_if *iff)
 static void
 sweep_loop(nir_shader *nir, nir_loop *loop)
 {
+   assert(!nir_loop_has_continue_construct(loop));
    ralloc_steal(nir, loop);
 
    foreach_list_typed(nir_cf_node, cf_node, node, &loop->body) {
@@ -108,7 +116,6 @@ sweep_impl(nir_shader *nir, nir_function_impl *impl)
    ralloc_steal(nir, impl);
 
    steal_list(nir, nir_variable, &impl->locals);
-   steal_list(nir, nir_register, &impl->registers);
 
    foreach_list_typed(nir_cf_node, cf_node, node, &impl->body) {
       sweep_cf_node(nir, cf_node);
@@ -138,29 +145,24 @@ nir_sweep(nir_shader *nir)
    struct list_head instr_gc_list;
    list_inithead(&instr_gc_list);
 
-   list_replace(&nir->gc_list, &instr_gc_list);
-   list_inithead(&nir->gc_list);
-
    /* First, move ownership of all the memory to a temporary context; assume dead. */
    ralloc_adopt(rubbish, nir);
 
+   /* Start sweeping */
+   gc_sweep_start(nir->gctx);
+
+   ralloc_steal(nir, nir->gctx);
    ralloc_steal(nir, (char *)nir->info.name);
    if (nir->info.label)
       ralloc_steal(nir, (char *)nir->info.label);
 
-   /* Variables and registers are not dead.  Steal them back. */
+   /* Variables are not dead.  Steal them back. */
    steal_list(nir, nir_variable, &nir->variables);
 
    /* Recurse into functions, stealing their contents back. */
    foreach_list_typed(nir_function, func, node, &nir->functions) {
       sweep_function(nir, func);
    }
-
-   /* Sweep instrs not found while walking the shader. */
-   list_for_each_entry_safe(nir_instr, instr, &instr_gc_list, gc_node) {
-      nir_instr_free(instr);
-   }
-   assert(list_is_empty(&instr_gc_list));
 
    ralloc_steal(nir, nir->constant_data);
    ralloc_steal(nir, nir->xfb_info);
@@ -171,5 +173,6 @@ nir_sweep(nir_shader *nir)
    }
 
    /* Free everything we didn't steal back. */
+   gc_sweep_end(nir->gctx);
    ralloc_free(rubbish);
 }

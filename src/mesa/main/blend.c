@@ -29,7 +29,7 @@
 
 
 
-#include "glheader.h"
+#include "util/glheader.h"
 #include "blend.h"
 #include "context.h"
 #include "draw_validate.h"
@@ -65,7 +65,7 @@ legal_src_factor(const struct gl_context *ctx, GLenum factor)
    case GL_ONE_MINUS_CONSTANT_COLOR:
    case GL_CONSTANT_ALPHA:
    case GL_ONE_MINUS_CONSTANT_ALPHA:
-      return _mesa_is_desktop_gl(ctx) || ctx->API == API_OPENGLES2;
+      return _mesa_is_desktop_gl(ctx) || _mesa_is_gles2(ctx);
    case GL_SRC1_COLOR:
    case GL_SRC1_ALPHA:
    case GL_ONE_MINUS_SRC1_COLOR:
@@ -101,7 +101,7 @@ legal_dst_factor(const struct gl_context *ctx, GLenum factor)
    case GL_ONE_MINUS_CONSTANT_COLOR:
    case GL_CONSTANT_ALPHA:
    case GL_ONE_MINUS_CONSTANT_ALPHA:
-      return _mesa_is_desktop_gl(ctx) || ctx->API == API_OPENGLES2;
+      return _mesa_is_desktop_gl(ctx) || _mesa_is_gles2(ctx);
    case GL_SRC_ALPHA_SATURATE:
       return (ctx->API != API_OPENGLES
               && ctx->Extensions.ARB_blend_func_extended)
@@ -490,21 +490,21 @@ advanced_blend_mode_from_gl_enum(GLenum mode)
    case GL_HSL_LUMINOSITY_KHR:
       return BLEND_HSL_LUMINOSITY;
    default:
-      return BLEND_NONE;
+      return BLEND_MODE_NONE;
    }
 }
 
 /**
  * If \p mode is one of the advanced blending equations defined by
  * GL_KHR_blend_equation_advanced (and the extension is supported),
- * return the corresponding BLEND_* enum.  Otherwise, return BLEND_NONE
+ * return the corresponding BLEND_* enum.  Otherwise, return BLEND_MODE_NONE
  * (which can also be treated as false).
  */
 static enum gl_advanced_blend_mode
 advanced_blend_mode(const struct gl_context *ctx, GLenum mode)
 {
    return _mesa_has_KHR_blend_equation_advanced(ctx) ?
-          advanced_blend_mode_from_gl_enum(mode) : BLEND_NONE;
+          advanced_blend_mode_from_gl_enum(mode) : BLEND_MODE_NONE;
 }
 
 static void
@@ -687,7 +687,7 @@ blend_equation_separate(struct gl_context *ctx, GLenum modeRGB, GLenum modeA,
       ctx->Color.Blend[buf].EquationA = modeA;
    }
    ctx->Color._BlendEquationPerBuffer = GL_FALSE;
-   set_advanced_blend_mode(ctx, BLEND_NONE);
+   set_advanced_blend_mode(ctx, BLEND_MODE_NONE);
 }
 
 
@@ -743,7 +743,7 @@ blend_equation_separatei(struct gl_context *ctx, GLuint buf, GLenum modeRGB,
    ctx->Color.Blend[buf].EquationRGB = modeRGB;
    ctx->Color.Blend[buf].EquationA = modeA;
    ctx->Color._BlendEquationPerBuffer = GL_TRUE;
-   set_advanced_blend_mode(ctx, BLEND_NONE);
+   set_advanced_blend_mode(ctx, BLEND_MODE_NONE);
 }
 
 
@@ -1032,7 +1032,7 @@ _mesa_ColorMaski(GLuint buf, GLboolean red, GLboolean green,
 
    FLUSH_VERTICES(ctx, 0, GL_COLOR_BUFFER_BIT);
    ctx->NewDriverState |= ST_NEW_BLEND;
-   ctx->Color.ColorMask &= ~(0xf << (4 * buf));
+   ctx->Color.ColorMask &= ~(0xfu << (4 * buf));
    ctx->Color.ColorMask |= mask << (4 * buf);
    _mesa_update_allow_draw_out_of_order(ctx);
 }
@@ -1058,14 +1058,14 @@ _mesa_ClampColor(GLenum target, GLenum clamp)
 
    switch (target) {
    case GL_CLAMP_VERTEX_COLOR_ARB:
-      if (ctx->API == API_OPENGL_CORE)
+      if (_mesa_is_desktop_gl_core(ctx))
          goto invalid_enum;
       FLUSH_VERTICES(ctx, _NEW_LIGHT_STATE, GL_LIGHTING_BIT | GL_ENABLE_BIT);
       ctx->Light.ClampVertexColor = clamp;
       _mesa_update_clamp_vertex_color(ctx, ctx->DrawBuffer);
       break;
    case GL_CLAMP_FRAGMENT_COLOR_ARB:
-      if (ctx->API == API_OPENGL_CORE)
+      if (_mesa_is_desktop_gl_core(ctx))
          goto invalid_enum;
       if (ctx->Color.ClampFragmentColor != clamp) {
          FLUSH_VERTICES(ctx, 0, GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
@@ -1210,7 +1210,7 @@ void _mesa_init_color( struct gl_context * ctx )
       ctx->Color.DrawBuffer[0] = GL_FRONT;
    }
 
-   ctx->Color.ClampFragmentColor = ctx->API == API_OPENGL_COMPAT ?
+   ctx->Color.ClampFragmentColor = _mesa_is_desktop_gl_compat(ctx) ?
                                    GL_FIXED_ONLY_ARB : GL_FALSE;
    ctx->Color._ClampFragmentColor = GL_FALSE;
    ctx->Color.ClampReadColor = GL_FIXED_ONLY_ARB;

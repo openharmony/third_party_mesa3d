@@ -1,25 +1,8 @@
 /*
 ************************************************************************************************************************
 *
-*  Copyright (C) 2007-2022 Advanced Micro Devices, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE
+*  Copyright (C) 2007-2024 Advanced Micro Devices, Inc. All rights reserved.
+*  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
 
@@ -135,11 +118,12 @@ Lib* Lib::GetLib(
     if ((pAddrLib != NULL) &&
         (pAddrLib->GetChipFamily() <= ADDR_CHIP_FAMILY_VI))
     {
-        // only valid and GFX9+ ASIC can use AddrLib2 function.
+        // only GFX9+ ASIC can use AddrLib2 function.
         ADDR_ASSERT_ALWAYS();
         hLib = NULL;
     }
-    return static_cast<Lib*>(hLib);
+
+    return static_cast<Lib*>(pAddrLib);
 }
 
 
@@ -303,6 +287,12 @@ ADDR_E_RETURNCODE Lib::ComputeSurfaceInfo(
             if (localIn.flags.needEquation && (Log2(localIn.numFrags) == 0))
             {
                 pOut->equationIndex = GetEquationIndex(&localIn, pOut);
+                if ((localIn.flags.allowExtEquation == 0) &&
+                    (pOut->equationIndex != ADDR_INVALID_EQUATION_INDEX) &&
+                    (m_equationTable[pOut->equationIndex].numBitComponents > ADDR_MAX_LEGACY_EQUATION_COMP))
+                {
+                    pOut->equationIndex = ADDR_INVALID_EQUATION_INDEX;
+                }
             }
 
             if (localIn.flags.qbStereo)
@@ -386,6 +376,238 @@ ADDR_E_RETURNCODE Lib::ComputeSurfaceAddrFromCoord(
         if (returnCode == ADDR_OK)
         {
             pOut->prtBlockIndex = static_cast<UINT_32>(pOut->addr / (64 * 1024));
+        }
+    }
+
+    return returnCode;
+}
+
+/**
+************************************************************************************************************************
+*   Lib::CopyLinearSurface
+*
+*   @brief
+*       Implements uncompressed linear copies between memory and images.
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::CopyLinearSurface(
+    const ADDR2_COPY_MEMSURFACE_INPUT*  pIn,
+    const ADDR2_COPY_MEMSURFACE_REGION* pRegions,
+    UINT_32                             regionCount,
+    bool                                surfaceIsDst) const
+{
+    ADDR2_COMPUTE_SURFACE_INFO_INPUT  localIn  = {0};
+    ADDR2_COMPUTE_SURFACE_INFO_OUTPUT localOut = {0};
+    ADDR2_MIP_INFO                    mipInfo[MaxMipLevels] = {{0}};
+    ADDR_ASSERT(pIn->numMipLevels <= MaxMipLevels);
+    ADDR_E_RETURNCODE returnCode = ADDR_OK;
+
+    if (pIn->numSamples > 1)
+    {
+        returnCode = ADDR_INVALIDPARAMS;
+    }
+
+    localIn.size         = sizeof(localIn);
+    localIn.flags        = pIn->flags;
+    localIn.swizzleMode  = pIn->swizzleMode;
+    localIn.resourceType = pIn->resourceType;
+    localIn.format       = pIn->format;
+    localIn.bpp          = pIn->bpp;
+    localIn.width        = Max(pIn->unAlignedDims.width,  1u);
+    localIn.height       = Max(pIn->unAlignedDims.height, 1u);
+    localIn.numSlices    = Max(pIn->unAlignedDims.depth,  1u);
+    localIn.numMipLevels = Max(pIn->numMipLevels,         1u);
+    localIn.numSamples   = Max(pIn->numSamples,           1u);
+
+    if (localIn.numMipLevels <= 1)
+    {
+        localIn.pitchInElement = pIn->pitchInElement;
+    }
+
+    localOut.size     = sizeof(localOut);
+    localOut.pMipInfo = mipInfo;
+
+    if (returnCode == ADDR_OK)
+    {
+        returnCode = ComputeSurfaceInfo(&localIn, &localOut);
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        for (UINT_32 regionIdx = 0; regionIdx < regionCount; regionIdx++)
+        {
+            const ADDR2_COPY_MEMSURFACE_REGION* pCurRegion = &pRegions[regionIdx];
+
+            void* pMipBase = VoidPtrInc(pIn->pMappedSurface,
+                                        (pIn->singleSubres ? 0 : mipInfo[pCurRegion->mipId].offset));
+
+            const size_t lineSizeBytes = (localIn.bpp >> 3) * pCurRegion->copyDims.width;
+            const size_t lineImgPitchBytes = (localIn.bpp >> 3) * mipInfo[pCurRegion->mipId].pitch;
+
+            for (UINT_32 sliceIdx = 0; sliceIdx < pCurRegion->copyDims.depth; sliceIdx++)
+            {
+                UINT_32 sliceCoord = sliceIdx + pCurRegion->slice;
+                size_t imgOffsetInMip = (localOut.sliceSize * sliceCoord) +
+                                        (lineImgPitchBytes * pCurRegion->y) +
+                                        (pCurRegion->x * (pIn->bpp >> 3));
+                size_t memOffset = sliceIdx * pCurRegion->memSlicePitch;
+
+                for (UINT_32 yIdx = 0; yIdx < pCurRegion->copyDims.height; yIdx++)
+                {
+                    if (surfaceIsDst)
+                    {
+                        memcpy(VoidPtrInc(pMipBase, imgOffsetInMip), VoidPtrInc(pCurRegion->pMem, memOffset), lineSizeBytes);
+                    }
+                    else
+                    {
+                        memcpy(VoidPtrInc(pCurRegion->pMem, memOffset), VoidPtrInc(pMipBase, imgOffsetInMip), lineSizeBytes);
+                    }
+
+                    imgOffsetInMip += lineImgPitchBytes;
+                    memOffset      += pCurRegion->memRowPitch;
+                }
+            }
+        }
+    }
+
+    return returnCode;
+}
+
+/**
+************************************************************************************************************************
+*   Lib::CopyMemToSurface
+*
+*   @brief
+*       Interface function stub of Addr2CopyMemToSurface.
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::CopyMemToSurface(
+    const ADDR2_COPY_MEMSURFACE_INPUT*  pIn,
+    const ADDR2_COPY_MEMSURFACE_REGION* pRegions,
+    UINT_32                             regionCount) const
+{
+    ADDR_E_RETURNCODE returnCode = ADDR_OK;
+
+    if ((regionCount == 0) || (pRegions == NULL))
+    {
+        returnCode = ADDR_INVALIDPARAMS;
+    }
+    else if (GetFillSizeFieldsFlags() == TRUE)
+    {
+        if (pIn->size  != sizeof(ADDR2_COPY_MEMSURFACE_INPUT))
+        {
+            returnCode = ADDR_INVALIDPARAMS;
+        }
+        else
+        {
+            UINT_32 baseSlice = pRegions[0].slice;
+            UINT_32 baseMip = pRegions[0].mipId;
+            BOOL_32 singleSubres = pIn->singleSubres;
+            for (UINT_32 i = 0; i < regionCount; i++)
+            {
+                if (pRegions[i].size != sizeof(ADDR2_COPY_MEMSURFACE_REGION))
+                {
+                    returnCode = ADDR_INVALIDPARAMS;
+                    break;
+                }
+                if (singleSubres &&
+                    ((pRegions[i].copyDims.depth != 1) ||
+                     (pRegions[i].slice != baseSlice) ||
+                     (pRegions[i].mipId != baseMip)))
+                {
+                    // Copy will cover multiple/interleaved subresources, a
+                    // mapped pointer to a single subres cannot be valid.
+                    returnCode = ADDR_INVALIDPARAMS;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        if (IsLinear(pIn->swizzleMode))
+        {
+            returnCode = CopyLinearSurface(pIn, pRegions, regionCount, true);
+        }
+        else
+        {
+            returnCode = HwlCopyMemToSurface(pIn, pRegions, regionCount);
+        }
+    }
+
+    return returnCode;
+}
+
+/**
+************************************************************************************************************************
+*   Lib::CopySurfaceToMem
+*
+*   @brief
+*       Interface function stub of Addr2CopySurfaceToMem.
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::CopySurfaceToMem(
+    const ADDR2_COPY_MEMSURFACE_INPUT*  pIn,
+    const ADDR2_COPY_MEMSURFACE_REGION* pRegions,
+    UINT_32                             regionCount) const
+{
+    ADDR_E_RETURNCODE returnCode = ADDR_OK;
+
+    if (regionCount == 0)
+    {
+        returnCode = ADDR_INVALIDPARAMS;
+    }
+    else if (GetFillSizeFieldsFlags() == TRUE)
+    {
+        if (pIn->size  != sizeof(ADDR2_COPY_MEMSURFACE_INPUT))
+        {
+            returnCode = ADDR_INVALIDPARAMS;
+        }
+        else
+        {
+            UINT_32 baseSlice = pRegions[0].slice;
+            UINT_32 baseMip = pRegions[0].mipId;
+            BOOL_32 singleSubres = pIn->singleSubres;
+            for (UINT_32 i = 0; i < regionCount; i++)
+            {
+                if (pRegions[i].size != sizeof(ADDR2_COPY_MEMSURFACE_REGION))
+                {
+                    returnCode = ADDR_INVALIDPARAMS;
+                    break;
+                }
+                if (singleSubres &&
+                    ((pRegions[i].copyDims.depth != 1) ||
+                     (pRegions[i].slice != baseSlice) ||
+                     (pRegions[i].mipId != baseMip)))
+                {
+                    // Copy will cover multiple/interleaved subresources, a
+                    // mapped pointer to a single subres cannot be valid.
+                    returnCode = ADDR_INVALIDPARAMS;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (returnCode == ADDR_OK)
+    {
+        if (IsLinear(pIn->swizzleMode))
+        {
+            returnCode = CopyLinearSurface(pIn, pRegions, regionCount, false);
+        }
+        else
+        {
+            returnCode = HwlCopySurfaceToMem(pIn, pRegions, regionCount);
         }
     }
 
@@ -1178,8 +1400,10 @@ ADDR_E_RETURNCODE Lib::ComputeSurfaceAddrFromCoordLinear(
         ADDR2_COMPUTE_SURFACE_INFO_INPUT  localIn  = {0};
         ADDR2_COMPUTE_SURFACE_INFO_OUTPUT localOut = {0};
         ADDR2_MIP_INFO                    mipInfo[MaxMipLevels];
+        ADDR_ASSERT(pIn->numMipLevels <= MaxMipLevels);
 
         localIn.bpp          = pIn->bpp;
+        localIn.swizzleMode  = pIn->swizzleMode;
         localIn.flags        = pIn->flags;
         localIn.width        = Max(pIn->unalignedWidth, 1u);
         localIn.height       = Max(pIn->unalignedHeight, 1u);
@@ -1269,6 +1493,7 @@ ADDR_E_RETURNCODE Lib::ComputeSurfaceCoordFromAddrLinear(
         ADDR2_COMPUTE_SURFACE_INFO_INPUT  localIn  = {0};
         ADDR2_COMPUTE_SURFACE_INFO_OUTPUT localOut = {0};
         localIn.bpp          = pIn->bpp;
+        localIn.swizzleMode  = pIn->swizzleMode;
         localIn.flags        = pIn->flags;
         localIn.width        = Max(pIn->unalignedWidth, 1u);
         localIn.height       = Max(pIn->unalignedHeight, 1u);
@@ -1855,6 +2080,61 @@ ADDR_E_RETURNCODE Lib::Addr2GetPreferredSurfaceSetting(
 
 /**
 ************************************************************************************************************************
+*   Lib::GetPossibleSwizzleModes
+*
+*   @brief
+*       Returns a list of swizzle modes that are valid from the hardware's perspective for the client to choose from
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::GetPossibleSwizzleModes(
+    const ADDR2_GET_PREFERRED_SURF_SETTING_INPUT* pIn,
+    ADDR2_GET_PREFERRED_SURF_SETTING_OUTPUT*      pOut) const
+{
+    return HwlGetPossibleSwizzleModes(pIn, pOut);
+}
+
+/**
+************************************************************************************************************************
+*   Lib::GetAllowedBlockSet
+*
+*   @brief
+*       Returns the set of allowed block sizes given the allowed swizzle modes and resource type
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::GetAllowedBlockSet(
+    ADDR2_SWMODE_SET allowedSwModeSet,
+    AddrResourceType rsrcType,
+    ADDR2_BLOCK_SET* pAllowedBlockSet) const
+{
+    return HwlGetAllowedBlockSet(allowedSwModeSet, rsrcType, pAllowedBlockSet);
+}
+
+/**
+************************************************************************************************************************
+*   Lib::GetAllowedSwSet
+*
+*   @brief
+*       Returns the set of allowed swizzle types given the allowed swizzle modes
+*
+*   @return
+*       ADDR_E_RETURNCODE
+************************************************************************************************************************
+*/
+ADDR_E_RETURNCODE Lib::GetAllowedSwSet(
+    ADDR2_SWMODE_SET  allowedSwModeSet,
+    ADDR2_SWTYPE_SET* pAllowedSwSet) const
+{
+    return HwlGetAllowedSwSet(allowedSwModeSet, pAllowedSwSet);
+}
+
+/**
+************************************************************************************************************************
 *   Lib::ComputeBlock256Equation
 *
 *   @brief
@@ -2001,7 +2281,8 @@ VOID Lib::ComputeQbStereoInfo(
 VOID Lib::FilterInvalidEqSwizzleMode(
     ADDR2_SWMODE_SET& allowedSwModeSet,
     AddrResourceType  resourceType,
-    UINT_32           elemLog2
+    UINT_32           elemLog2,
+    UINT_32           maxComponents
     ) const
 {
     if (resourceType != ADDR_RSRC_TEX_1D)
@@ -2014,7 +2295,12 @@ VOID Lib::FilterInvalidEqSwizzleMode(
         {
             if (validSwModeSet & 1)
             {
-                if (m_equationLookupTable[rsrcTypeIdx][swModeIdx][elemLog2] == ADDR_INVALID_EQUATION_INDEX)
+                UINT_32 equation = m_equationLookupTable[rsrcTypeIdx][swModeIdx][elemLog2];
+                if (equation == ADDR_INVALID_EQUATION_INDEX)
+                {
+                    allowedSwModeSetVal &= ~(1u << swModeIdx);
+                }
+                else if (m_equationTable[equation].numBitComponents > maxComponents)
                 {
                     allowedSwModeSetVal &= ~(1u << swModeIdx);
                 }
@@ -2029,94 +2315,6 @@ VOID Lib::FilterInvalidEqSwizzleMode(
             allowedSwModeSet.value = allowedSwModeSetVal;
         }
     }
-}
-
-/**
-************************************************************************************************************************
-*   Lib::IsBlockTypeAvaiable
-*
-*   @brief
-*       Determine whether a block type is allowed in a given blockSet
-*
-*   @return
-*       N/A
-************************************************************************************************************************
-*/
-BOOL_32 Lib::IsBlockTypeAvaiable(
-    ADDR2_BLOCK_SET blockSet,
-    AddrBlockType   blockType)
-{
-    BOOL_32 avail;
-
-    if (blockType == AddrBlockLinear)
-    {
-        avail = blockSet.linear ? TRUE : FALSE;
-    }
-    else
-    {
-        avail = blockSet.value & (1 << (static_cast<UINT_32>(blockType) - 1)) ? TRUE : FALSE;
-    }
-
-    return avail;
-}
-
-/**
-************************************************************************************************************************
-*   Lib::BlockTypeWithinMemoryBudget
-*
-*   @brief
-*       Determine whether a new block type is acceptable based on memory waste ratio. Will favor larger block types.
-*
-*   @return
-*       N/A
-************************************************************************************************************************
-*/
-BOOL_32 Lib::BlockTypeWithinMemoryBudget(
-    UINT_64 minSize,
-    UINT_64 newBlockTypeSize,
-    UINT_32 ratioLow,
-    UINT_32 ratioHi,
-    DOUBLE  memoryBudget,
-    BOOL_32 newBlockTypeBigger)
-{
-    BOOL_32 accept = FALSE;
-
-    if (memoryBudget >= 1.0)
-    {
-        if (newBlockTypeBigger)
-        {
-            if ((static_cast<DOUBLE>(newBlockTypeSize) / minSize) <= memoryBudget)
-            {
-                accept = TRUE;
-            }
-        }
-        else
-        {
-            if ((static_cast<DOUBLE>(minSize) / newBlockTypeSize) > memoryBudget)
-            {
-                accept = TRUE;
-            }
-        }
-    }
-    else
-    {
-        if (newBlockTypeBigger)
-        {
-            if ((newBlockTypeSize * ratioHi) <= (minSize * ratioLow))
-            {
-                accept = TRUE;
-            }
-        }
-        else
-        {
-            if ((newBlockTypeSize * ratioLow) < (minSize * ratioHi))
-            {
-                accept = TRUE;
-            }
-        }
-    }
-
-    return accept;
 }
 
 #if DEBUG

@@ -120,7 +120,7 @@ CreateDevice(D3D10DDI_HADAPTER hAdapter,                 // IN
       break;
    default:
       DebugPrintf("%s: unsupported interface version 0x%08x\n",
-                  __FUNCTION__, pCreateData->Interface);
+                  __func__, pCreateData->Interface);
       return E_FAIL;
    }
 
@@ -132,6 +132,7 @@ CreateDevice(D3D10DDI_HADAPTER hAdapter,                 // IN
    struct pipe_screen *screen = pAdapter->screen;
    struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
    pDevice->pipe = pipe;
+   pDevice->cso = cso_create_context(pipe, CSO_NO_VBUF);
 
    pDevice->empty_vs = CreateEmptyShader(pDevice, PIPE_SHADER_VERTEX);
    pDevice->empty_fs = CreateEmptyShader(pDevice, PIPE_SHADER_FRAGMENT);
@@ -140,7 +141,7 @@ CreateDevice(D3D10DDI_HADAPTER hAdapter,                 // IN
    pipe->bind_fs_state(pipe, pDevice->empty_fs);
 
    pDevice->max_dual_source_render_targets =
-         screen->get_param(screen, PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS);
+         screen->caps.max_dual_source_render_targets;
 
    pDevice->hRTCoreLayer = pCreateData->hRTCoreLayer;
    pDevice->hDevice = (HANDLE)pCreateData->hRTDevice.handle;
@@ -334,6 +335,7 @@ DestroyDevice(D3D10DDI_HDEVICE hDevice)   // IN
 
    pipe->bind_fs_state(pipe, NULL);
    pipe->bind_vs_state(pipe, NULL);
+   cso_destroy_context(pDevice->cso);
 
    DeleteEmptyShader(pDevice, PIPE_SHADER_FRAGMENT, pDevice->empty_fs);
    DeleteEmptyShader(pDevice, PIPE_SHADER_VERTEX, pDevice->empty_vs);
@@ -392,7 +394,7 @@ RelocateDeviceFuncs(D3D10DDI_HDEVICE hDevice,                           // IN
  *
  * RelocateDeviceFuncs1 --
  *
- *    The RelocateDeviceFuncs function notifies the user-mode
+ *    The RelocateDeviceFuncs1 function notifies the user-mode
  *    display driver about the new location of the driver function table.
  *
  * ----------------------------------------------------------------------
@@ -455,7 +457,7 @@ CheckFormatSupport(D3D10DDI_HDEVICE hDevice, // IN
 
    *pFormatCaps = 0;
 
-   enum pipe_format format = FormatTranslate(Format, FALSE);
+   enum pipe_format format = FormatTranslate(Format, false);
    if (format == PIPE_FORMAT_NONE) {
       *pFormatCaps = D3D10_DDI_FORMAT_SUPPORT_NOT_SUPPORTED;
       return;

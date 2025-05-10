@@ -40,11 +40,14 @@
 #include "nir.h"
 
 #include "i915_context.h"
+#include "i915_debug.h"
 #include "i915_fpc.h"
 #include "i915_reg.h"
 #include "i915_resource.h"
 #include "i915_state.h"
 #include "i915_state_inlines.h"
+
+static void i915_delete_fs_state(struct pipe_context *pipe, void *shader);
 
 /* The i915 (and related graphics cores) do not support GL_CLAMP.  The
  * Intel drivers for "other operating systems" implement GL_CLAMP as
@@ -318,7 +321,7 @@ i915_create_sampler_state(struct pipe_context *pipe,
                      (translate_wrap_mode(wt) << SS3_TCY_ADDR_MODE_SHIFT) |
                      (translate_wrap_mode(wr) << SS3_TCZ_ADDR_MODE_SHIFT));
 
-   if (sampler->normalized_coords)
+   if (!sampler->unnormalized_coords)
       cso->state[1] |= SS3_NORMALIZED_COORDS;
 
    {
@@ -335,10 +338,10 @@ i915_create_sampler_state(struct pipe_context *pipe,
    }
 
    {
-      ubyte r = float_to_ubyte(sampler->border_color.f[0]);
-      ubyte g = float_to_ubyte(sampler->border_color.f[1]);
-      ubyte b = float_to_ubyte(sampler->border_color.f[2]);
-      ubyte a = float_to_ubyte(sampler->border_color.f[3]);
+      uint8_t r = float_to_ubyte(sampler->border_color.f[0]);
+      uint8_t g = float_to_ubyte(sampler->border_color.f[1]);
+      uint8_t b = float_to_ubyte(sampler->border_color.f[2]);
+      uint8_t a = float_to_ubyte(sampler->border_color.f[3]);
       cso->state[2] = I915PACKCOLOR8888(r, g, b, a);
    }
    return cso;
@@ -488,7 +491,7 @@ i915_create_depth_stencil_state(
 
    if (depth_stencil->alpha_enabled) {
       int test = i915_translate_compare_func(depth_stencil->alpha_func);
-      ubyte refByte = float_to_ubyte(depth_stencil->alpha_ref_value);
+      uint8_t refByte = float_to_ubyte(depth_stencil->alpha_ref_value);
 
       cso->depth_LIS6 |=
          (S6_ALPHA_TEST_ENABLE | (test << S6_ALPHA_TEST_FUNC_SHIFT) |
@@ -534,6 +537,33 @@ i915_set_polygon_stipple(struct pipe_context *pipe,
 {
 }
 
+static const struct nir_to_tgsi_options ntt_options = {
+   .lower_fabs = true,
+};
+
+static char *
+i915_check_control_flow(nir_shader *s)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_block *first = nir_start_block(impl);
+   nir_cf_node *next = nir_cf_node_next(&first->cf_node);
+
+   if (next) {
+      switch (next->type) {
+      case nir_cf_node_if:
+         return "if/then statements not supported by i915 fragment shaders, "
+                "should have been flattened by peephole_select.";
+      case nir_cf_node_loop:
+         return "looping not supported i915 fragment shaders, all loops "
+                "must be statically unrollable.";
+      default:
+         return "Unknown control flow type";
+      }
+   }
+
+   return NULL;
+}
+
 static void *
 i915_create_fs_state(struct pipe_context *pipe,
                      const struct pipe_shader_state *templ)
@@ -547,15 +577,29 @@ i915_create_fs_state(struct pipe_context *pipe,
 
    if (templ->type == PIPE_SHADER_IR_NIR) {
       nir_shader *s = templ->ir.nir;
+      ifs->internal = s->info.internal;
 
-      static const struct nir_to_tgsi_options ntt_options = {
-         .lower_fabs = true,
-      };
+      char *msg = i915_check_control_flow(s);
+      if (msg) {
+         if (I915_DBG_ON(DBG_FS) &&
+             (!s->info.internal || NIR_DEBUG(PRINT_INTERNAL))) {
+            mesa_logi("failing shader:");
+            nir_log_shaderi(s);
+         }
+         if (templ->report_compile_error) {
+            ((struct pipe_shader_state *)templ)->error_message = strdup(msg);
+            ralloc_free(s);
+            i915_delete_fs_state(NULL, ifs);
+            return NULL;
+         }
+      }
+
       ifs->state.tokens = nir_to_tgsi_options(s, pipe->screen, &ntt_options);
    } else {
       assert(templ->type == PIPE_SHADER_IR_TGSI);
       /* we need to keep a local copy of the tokens */
       ifs->state.tokens = tgsi_dup_tokens(templ->tokens);
+      ifs->internal = i915->no_log_program_errors;
    }
 
    ifs->state.type = PIPE_SHADER_IR_TGSI;
@@ -564,6 +608,11 @@ i915_create_fs_state(struct pipe_context *pipe,
 
    /* The shader's compiled to i915 instructions here */
    i915_translate_fragment_program(i915, ifs);
+   if (ifs->error && templ->report_compile_error) {
+      ((struct pipe_shader_state *)templ)->error_message = strdup(ifs->error);
+      i915_delete_fs_state(NULL, ifs);
+      return NULL;
+   }
 
    return ifs;
 }
@@ -593,6 +642,7 @@ i915_delete_fs_state(struct pipe_context *pipe, void *shader)
 {
    struct i915_fragment_shader *ifs = (struct i915_fragment_shader *)shader;
 
+   ralloc_free(ifs->error);
    FREE(ifs->program);
    ifs->program = NULL;
    FREE((struct tgsi_token *)ifs->state.tokens);
@@ -609,7 +659,7 @@ i915_create_vs_state(struct pipe_context *pipe,
 {
    struct i915_context *i915 = i915_context(pipe);
 
-   struct pipe_shader_state from_nir = { PIPE_SHADER_IR_TGSI };
+   struct pipe_shader_state from_nir = {PIPE_SHADER_IR_TGSI};
    if (templ->type == PIPE_SHADER_IR_NIR) {
       nir_shader *s = templ->ir.nir;
 
@@ -717,8 +767,7 @@ i915_set_constant_buffer(struct pipe_context *pipe,
 static void
 i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned num,
-                       unsigned unbind_num_trailing_slots,
-                       bool take_ownership,
+                       unsigned unbind_num_trailing_slots, bool take_ownership,
                        struct pipe_sampler_view **views)
 {
    if (shader != PIPE_SHADER_FRAGMENT) {
@@ -752,7 +801,8 @@ i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
          pipe_sampler_view_reference(&i915->fragment_sampler_views[i], NULL);
          i915->fragment_sampler_views[i] = views[i];
       } else {
-         pipe_sampler_view_reference(&i915->fragment_sampler_views[i], views[i]);
+         pipe_sampler_view_reference(&i915->fragment_sampler_views[i],
+                                     views[i]);
       }
    }
 
@@ -815,12 +865,8 @@ i915_set_framebuffer_state(struct pipe_context *pipe,
 {
    struct i915_context *i915 = i915_context(pipe);
 
-   i915->framebuffer.width = fb->width;
-   i915->framebuffer.height = fb->height;
-   i915->framebuffer.nr_cbufs = fb->nr_cbufs;
+   util_copy_framebuffer_state(&i915->framebuffer, fb);
    if (fb->nr_cbufs) {
-      pipe_surface_reference(&i915->framebuffer.cbufs[0], fb->cbufs[0]);
-
       struct i915_surface *surf = i915_surface(i915->framebuffer.cbufs[0]);
       if (i915->current.fixup_swizzle != surf->oc_swizzle) {
          i915->current.fixup_swizzle = surf->oc_swizzle;
@@ -828,10 +874,7 @@ i915_set_framebuffer_state(struct pipe_context *pipe,
                 sizeof(surf->color_swizzle));
          i915->dirty |= I915_NEW_COLOR_SWIZZLE;
       }
-   } else {
-      pipe_surface_reference(&i915->framebuffer.cbufs[0], NULL);
    }
-   pipe_surface_reference(&i915->framebuffer.zsbuf, fb->zsbuf);
    if (fb->zsbuf)
       draw_set_zs_format(i915->draw, fb->zsbuf->format);
 
@@ -963,21 +1006,17 @@ i915_delete_rasterizer_state(struct pipe_context *pipe, void *raster)
 }
 
 static void
-i915_set_vertex_buffers(struct pipe_context *pipe, unsigned start_slot,
-                        unsigned count, unsigned unbind_num_trailing_slots,
-                        bool take_ownership,
+i915_set_vertex_buffers(struct pipe_context *pipe, unsigned count,
                         const struct pipe_vertex_buffer *buffers)
 {
    struct i915_context *i915 = i915_context(pipe);
    struct draw_context *draw = i915->draw;
 
    util_set_vertex_buffers_count(i915->vertex_buffers, &i915->nr_vertex_buffers,
-                                 buffers, start_slot, count,
-                                 unbind_num_trailing_slots, take_ownership);
+                                 buffers, count, true);
 
    /* pass-through to draw module */
-   draw_set_vertex_buffers(draw, start_slot, count, unbind_num_trailing_slots,
-                           buffers);
+   draw_set_vertex_buffers(draw, count, buffers);
 }
 
 static void *

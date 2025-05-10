@@ -32,7 +32,7 @@
 #include "pipe/p_video_enums.h"
 
 /* u_reduce_video_profile() needs these */
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 
@@ -84,6 +84,7 @@ u_reduce_video_profile(enum pipe_video_profile profile)
          return PIPE_VIDEO_FORMAT_VP9;
 
       case PIPE_VIDEO_PROFILE_AV1_MAIN:
+      case PIPE_VIDEO_PROFILE_AV1_PROFILE2:
          return PIPE_VIDEO_FORMAT_AV1;
 
       default:

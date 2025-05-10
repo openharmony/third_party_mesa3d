@@ -19,7 +19,8 @@ SHA256 checksum
 
 ::
 
-    TBD.
+    65d76b53ca5c7b46019e0e8e5b414de45d2fecd3fcd71707f6c3bc7691c9f7ab  mesa-22.2.4.tar.xz
+
 
 
 New features
@@ -123,7 +124,7 @@ Ian Romanick (1):
 
 - intel/fs: Fix constant propagation into 32x16 integer multiplication
 
-Jason Ekstrand (2):
+Faith Ekstrand (2):
 
 - vulkan: Handle VK_SUBPASS_EXTERNAL at the end of a subpass
 - vulkan: Unconditionally add barriers for missing external subpass deps

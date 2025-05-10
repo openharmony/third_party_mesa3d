@@ -80,14 +80,14 @@ compare_mode
     If set to PIPE_TEX_COMPARE_NONE, no comparison calculation is performed.
 compare_func
     The inequality operator used when compare_mode=1.  One of PIPE_FUNC_x.
-normalized_coords
-    If set, the incoming texture coordinates (nominally in the range [0,1])
-    will be scaled by the texture width, height, depth to compute texel
-    addresses.  Otherwise, the texture coords are used as-is (they are not
-    scaled by the texture dimensions).
-    When normalized_coords=0, only a subset of the texture wrap modes are
-    allowed: PIPE_TEX_WRAP_CLAMP, PIPE_TEX_WRAP_CLAMP_TO_EDGE and
-    PIPE_TEX_WRAP_CLAMP_TO_BORDER.
+unnormalized_coords
+    If set, incoming texture coordinates are used as-is to compute
+    texel addresses. When set, only a subset of the texture wrap
+    modes are allowed: PIPE_TEX_WRAP_CLAMP, PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+    and PIPE_TEX_WRAP_CLAMP_TO_BORDER. If unset, the incoming texture
+    coordinates are assumed to be normalized to the range [0, 1],
+    and will be scaled by the texture dimensions to compute texel
+    addresses.
 lod_bias
     Bias factor which is added to the computed level of detail.
     The normal level of detail is computed from the partial derivatives of
@@ -102,7 +102,7 @@ border_color
     Color union used for texel coordinates that are outside the [0,width-1],
     [0, height-1] or [0, depth-1] ranges. Interpreted according to sampler
     view format, unless the driver reports
-    PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK, in which case special care has to be
+    pipe_caps.texture_border_color_quirk, in which case special care has to be
     taken (see description of the cap).
 max_anisotropy
     Maximum anisotropy ratio to use when sampling from textures.  For example,

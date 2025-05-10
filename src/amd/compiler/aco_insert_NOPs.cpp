@@ -1,32 +1,17 @@
 /*
  * Copyright © 2019 Valve Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #include "aco_builder.h"
 #include "aco_ir.h"
 
+#include "util/bitset.h"
+
 #include <algorithm>
 #include <bitset>
+#include <set>
 #include <stack>
 #include <vector>
 
@@ -44,8 +29,6 @@ struct NOP_ctx_gfx6 {
    {
       set_vskip_mode_then_vector =
          MAX2(set_vskip_mode_then_vector, other.set_vskip_mode_then_vector);
-      valu_wr_vcc_then_vccz = MAX2(valu_wr_vcc_then_vccz, other.valu_wr_vcc_then_vccz);
-      valu_wr_exec_then_execz = MAX2(valu_wr_exec_then_execz, other.valu_wr_exec_then_execz);
       valu_wr_vcc_then_div_fmas = MAX2(valu_wr_vcc_then_div_fmas, other.valu_wr_vcc_then_div_fmas);
       salu_wr_m0_then_gds_msg_ttrace =
          MAX2(salu_wr_m0_then_gds_msg_ttrace, other.salu_wr_m0_then_gds_msg_ttrace);
@@ -65,8 +48,6 @@ struct NOP_ctx_gfx6 {
    bool operator==(const NOP_ctx_gfx6& other)
    {
       return set_vskip_mode_then_vector == other.set_vskip_mode_then_vector &&
-             valu_wr_vcc_then_vccz == other.valu_wr_vcc_then_vccz &&
-             valu_wr_exec_then_execz == other.valu_wr_exec_then_execz &&
              valu_wr_vcc_then_div_fmas == other.valu_wr_vcc_then_div_fmas &&
              vmem_store_then_wr_data == other.vmem_store_then_wr_data &&
              salu_wr_m0_then_gds_msg_ttrace == other.salu_wr_m0_then_gds_msg_ttrace &&
@@ -83,12 +64,6 @@ struct NOP_ctx_gfx6 {
    {
       if ((set_vskip_mode_then_vector -= amount) < 0)
          set_vskip_mode_then_vector = 0;
-
-      if ((valu_wr_vcc_then_vccz -= amount) < 0)
-         valu_wr_vcc_then_vccz = 0;
-
-      if ((valu_wr_exec_then_execz -= amount) < 0)
-         valu_wr_exec_then_execz = 0;
 
       if ((valu_wr_vcc_then_div_fmas -= amount) < 0)
          valu_wr_vcc_then_div_fmas = 0;
@@ -113,10 +88,6 @@ struct NOP_ctx_gfx6 {
 
    /* setting MODE.vskip and then any vector op requires 2 wait states */
    int8_t set_vskip_mode_then_vector = 0;
-
-   /* VALU writing VCC/EXEC and then a VALU reading VCCZ/EXECZ requires 5 wait states */
-   int8_t valu_wr_vcc_then_vccz = 0;
-   int8_t valu_wr_exec_then_execz = 0;
 
    /* VALU writing VCC followed by v_div_fmas require 4 wait states */
    int8_t valu_wr_vcc_then_div_fmas = 0;
@@ -150,7 +121,7 @@ struct NOP_ctx_gfx6 {
 };
 
 struct NOP_ctx_gfx10 {
-   bool has_VOPC = false;
+   bool has_VOPC_write_exec = false;
    bool has_nonVALU_exec_read = false;
    bool has_VMEM = false;
    bool has_branch_after_VMEM = false;
@@ -165,7 +136,7 @@ struct NOP_ctx_gfx10 {
 
    void join(const NOP_ctx_gfx10& other)
    {
-      has_VOPC |= other.has_VOPC;
+      has_VOPC_write_exec |= other.has_VOPC_write_exec;
       has_nonVALU_exec_read |= other.has_nonVALU_exec_read;
       has_VMEM |= other.has_VMEM;
       has_branch_after_VMEM |= other.has_branch_after_VMEM;
@@ -181,9 +152,10 @@ struct NOP_ctx_gfx10 {
 
    bool operator==(const NOP_ctx_gfx10& other)
    {
-      return has_VOPC == other.has_VOPC && has_nonVALU_exec_read == other.has_nonVALU_exec_read &&
-             has_VMEM == other.has_VMEM && has_branch_after_VMEM == other.has_branch_after_VMEM &&
-             has_DS == other.has_DS && has_branch_after_DS == other.has_branch_after_DS &&
+      return has_VOPC_write_exec == other.has_VOPC_write_exec &&
+             has_nonVALU_exec_read == other.has_nonVALU_exec_read && has_VMEM == other.has_VMEM &&
+             has_branch_after_VMEM == other.has_branch_after_VMEM && has_DS == other.has_DS &&
+             has_branch_after_DS == other.has_branch_after_DS &&
              has_NSA_MIMG == other.has_NSA_MIMG && has_writelane == other.has_writelane &&
              sgprs_read_by_VMEM == other.sgprs_read_by_VMEM &&
              sgprs_read_by_DS == other.sgprs_read_by_DS &&
@@ -192,11 +164,152 @@ struct NOP_ctx_gfx10 {
    }
 };
 
+template <int Max> struct RegCounterMap {
+   void inc() { base++; }
+   void set(PhysReg reg) { update(reg, 0); }
+
+   uint8_t get(PhysReg reg)
+   {
+      if (present.test(reg.reg() & 0x7F)) {
+         for (entry& e : list) {
+            if (e.reg == reg.reg())
+               return MIN2(base - e.val, Max);
+         }
+      }
+      return Max;
+   }
+
+   void reset()
+   {
+      present.reset();
+      list.clear();
+      base = 0;
+   }
+
+   bool empty()
+   {
+      for (entry& e : list) {
+         if (base - e.val < Max)
+            return false;
+      }
+      return true;
+   }
+
+   void join_min(const RegCounterMap& other)
+   {
+      for (const entry& e : other.list) {
+         int idx = other.base - e.val;
+         if (idx >= Max)
+            continue;
+
+         update(e.reg, idx);
+      }
+   }
+
+   void update(uint16_t reg, int idx)
+   {
+      int16_t val = base - idx;
+      for (entry& e : list) {
+         if (e.reg == reg) {
+            e.val = MAX2(e.val, val);
+            return;
+         }
+      }
+      list.push_back(entry{reg, val});
+      present.set(reg & 0x7F);
+   }
+
+   bool operator==(const RegCounterMap& other) const
+   {
+      /* Two maps with different bases could also be equal, but for our use case,
+       * i.e. checking for changes at loop headers, this is sufficient since we
+       * always join the predecessors into an empty map with base=0.
+       */
+      return base == other.base && list == other.list;
+   }
+
+private:
+   struct entry {
+      uint16_t reg;
+      int16_t val;
+      bool operator!=(const entry& other) const { return reg != other.reg || val != other.val; }
+   };
+
+   std::bitset<128> present;
+   small_vec<entry, 4> list;
+   int base = 0;
+};
+
+struct NOP_ctx_gfx11 {
+   /* VcmpxPermlaneHazard */
+   bool has_Vcmpx = false;
+
+   /* LdsDirectVMEMHazard */
+   std::bitset<256> vgpr_used_by_vmem_load;
+   std::bitset<256> vgpr_used_by_vmem_sample;
+   std::bitset<256> vgpr_used_by_vmem_bvh;
+   std::bitset<256> vgpr_used_by_vmem_store;
+   std::bitset<256> vgpr_used_by_ds;
+
+   /* VALUTransUseHazard */
+   RegCounterMap<6> valu_since_wr_by_trans;
+   RegCounterMap<2> trans_since_wr_by_trans;
+
+   /* VALUMaskWriteHazard */
+   std::bitset<128> sgpr_read_by_valu_as_lanemask;
+   std::bitset<128> sgpr_read_by_valu_as_lanemask_then_wr_by_salu;
+
+   /* WMMAHazards */
+   std::bitset<256> vgpr_written_by_wmma;
+
+   /* VALUReadSGPRHazard */
+   std::bitset<m0.reg() / 2> sgpr_read_by_valu; /* SGPR pairs, excluding null, exec, m0 and scc */
+   std::bitset<m0.reg()> sgpr_read_by_valu_then_wr_by_valu;
+   RegCounterMap<11> sgpr_read_by_valu_then_wr_by_salu;
+
+   void join(const NOP_ctx_gfx11& other)
+   {
+      has_Vcmpx |= other.has_Vcmpx;
+      vgpr_used_by_vmem_load |= other.vgpr_used_by_vmem_load;
+      vgpr_used_by_vmem_sample |= other.vgpr_used_by_vmem_sample;
+      vgpr_used_by_vmem_bvh |= other.vgpr_used_by_vmem_bvh;
+      vgpr_used_by_vmem_store |= other.vgpr_used_by_vmem_store;
+      vgpr_used_by_ds |= other.vgpr_used_by_ds;
+      valu_since_wr_by_trans.join_min(other.valu_since_wr_by_trans);
+      trans_since_wr_by_trans.join_min(other.trans_since_wr_by_trans);
+      sgpr_read_by_valu_as_lanemask |= other.sgpr_read_by_valu_as_lanemask;
+      sgpr_read_by_valu_as_lanemask_then_wr_by_salu |=
+         other.sgpr_read_by_valu_as_lanemask_then_wr_by_salu;
+      vgpr_written_by_wmma |= other.vgpr_written_by_wmma;
+      sgpr_read_by_valu |= other.sgpr_read_by_valu;
+      sgpr_read_by_valu_then_wr_by_valu |= other.sgpr_read_by_valu_then_wr_by_valu;
+      sgpr_read_by_valu_then_wr_by_salu.join_min(other.sgpr_read_by_valu_then_wr_by_salu);
+   }
+
+   bool operator==(const NOP_ctx_gfx11& other)
+   {
+      return has_Vcmpx == other.has_Vcmpx &&
+             vgpr_used_by_vmem_load == other.vgpr_used_by_vmem_load &&
+             vgpr_used_by_vmem_sample == other.vgpr_used_by_vmem_sample &&
+             vgpr_used_by_vmem_bvh == other.vgpr_used_by_vmem_bvh &&
+             vgpr_used_by_vmem_store == other.vgpr_used_by_vmem_store &&
+             vgpr_used_by_ds == other.vgpr_used_by_ds &&
+             valu_since_wr_by_trans == other.valu_since_wr_by_trans &&
+             trans_since_wr_by_trans == other.trans_since_wr_by_trans &&
+             sgpr_read_by_valu_as_lanemask == other.sgpr_read_by_valu_as_lanemask &&
+             sgpr_read_by_valu_as_lanemask_then_wr_by_salu ==
+                other.sgpr_read_by_valu_as_lanemask_then_wr_by_salu &&
+             vgpr_written_by_wmma == other.vgpr_written_by_wmma &&
+             sgpr_read_by_valu == other.sgpr_read_by_valu &&
+             sgpr_read_by_valu_then_wr_by_salu == other.sgpr_read_by_valu_then_wr_by_salu;
+   }
+};
+
 int
 get_wait_states(aco_ptr<Instruction>& instr)
 {
    if (instr->opcode == aco_opcode::s_nop)
-      return instr->sopp().imm + 1;
+      return instr->salu().imm + 1;
    else if (instr->opcode == aco_opcode::p_constaddr)
       return 3; /* lowered to 3 instructions in the assembler */
    else
@@ -209,39 +322,12 @@ regs_intersect(PhysReg a_reg, unsigned a_size, PhysReg b_reg, unsigned b_size)
    return a_reg > b_reg ? (a_reg - b_reg < b_size) : (b_reg - a_reg < a_size);
 }
 
-template <bool Valu, bool Vintrp, bool Salu>
-bool
-handle_raw_hazard_instr(aco_ptr<Instruction>& pred, PhysReg reg, int* nops_needed, uint32_t* mask)
-{
-   unsigned mask_size = util_last_bit(*mask);
-
-   uint32_t writemask = 0;
-   for (Definition& def : pred->definitions) {
-      if (regs_intersect(reg, mask_size, def.physReg(), def.size())) {
-         unsigned start = def.physReg() > reg ? def.physReg() - reg : 0;
-         unsigned end = MIN2(mask_size, start + def.size());
-         writemask |= u_bit_consecutive(start, end - start);
-      }
-   }
-
-   bool is_hazard = writemask != 0 && ((pred->isVALU() && Valu) || (pred->isVINTRP() && Vintrp) ||
-                                       (pred->isSALU() && Salu));
-   if (is_hazard)
-      return true;
-
-   *mask &= ~writemask;
-   *nops_needed = MAX2(*nops_needed - get_wait_states(pred), 0);
-
-   if (*mask == 0)
-      *nops_needed = 0;
-
-   return *nops_needed == 0;
-}
-
-template <bool Valu, bool Vintrp, bool Salu>
-int
-handle_raw_hazard_internal(State& state, Block* block, int nops_needed, PhysReg reg, uint32_t mask,
-                           bool start_at_end)
+template <typename GlobalState, typename BlockState,
+          bool (*block_cb)(GlobalState&, BlockState&, Block*),
+          bool (*instr_cb)(GlobalState&, BlockState&, aco_ptr<Instruction>&)>
+void
+search_backwards_internal(State& state, GlobalState& global_state, BlockState block_state,
+                          Block* block, bool start_at_end)
 {
    if (block == state.block && start_at_end) {
       /* If it's the current block, block->instructions is incomplete. */
@@ -249,27 +335,78 @@ handle_raw_hazard_internal(State& state, Block* block, int nops_needed, PhysReg 
          aco_ptr<Instruction>& instr = state.old_instructions[pred_idx];
          if (!instr)
             break; /* Instruction has been moved to block->instructions. */
-         if (handle_raw_hazard_instr<Valu, Vintrp, Salu>(instr, reg, &nops_needed, &mask))
-            return nops_needed;
+         if (instr_cb(global_state, block_state, instr))
+            return;
       }
    }
+
    for (int pred_idx = block->instructions.size() - 1; pred_idx >= 0; pred_idx--) {
-      if (handle_raw_hazard_instr<Valu, Vintrp, Salu>(block->instructions[pred_idx], reg,
-                                                      &nops_needed, &mask))
-         return nops_needed;
+      if (instr_cb(global_state, block_state, block->instructions[pred_idx]))
+         return;
    }
 
-   int res = 0;
+   PRAGMA_DIAGNOSTIC_PUSH
+   PRAGMA_DIAGNOSTIC_IGNORED(-Waddress)
+   if (block_cb != nullptr && !block_cb(global_state, block_state, block))
+      return;
+   PRAGMA_DIAGNOSTIC_POP
 
-   /* Loops require branch instructions, which count towards the wait
-    * states. So even with loops this should finish unless nops_needed is some
-    * huge value. */
    for (unsigned lin_pred : block->linear_preds) {
-      res =
-         std::max(res, handle_raw_hazard_internal<Valu, Vintrp, Salu>(
-                          state, &state.program->blocks[lin_pred], nops_needed, reg, mask, true));
+      search_backwards_internal<GlobalState, BlockState, block_cb, instr_cb>(
+         state, global_state, block_state, &state.program->blocks[lin_pred], true);
    }
-   return res;
+}
+
+template <typename GlobalState, typename BlockState,
+          bool (*block_cb)(GlobalState&, BlockState&, Block*),
+          bool (*instr_cb)(GlobalState&, BlockState&, aco_ptr<Instruction>&)>
+void
+search_backwards(State& state, GlobalState& global_state, BlockState& block_state)
+{
+   search_backwards_internal<GlobalState, BlockState, block_cb, instr_cb>(
+      state, global_state, block_state, state.block, false);
+}
+
+struct HandleRawHazardGlobalState {
+   PhysReg reg;
+   int nops_needed;
+};
+
+struct HandleRawHazardBlockState {
+   uint32_t mask;
+   int nops_needed;
+};
+
+template <bool Valu, bool Vintrp, bool Salu>
+bool
+handle_raw_hazard_instr(HandleRawHazardGlobalState& global_state,
+                        HandleRawHazardBlockState& block_state, aco_ptr<Instruction>& pred)
+{
+   unsigned mask_size = util_last_bit(block_state.mask);
+
+   uint32_t writemask = 0;
+   for (Definition& def : pred->definitions) {
+      if (regs_intersect(global_state.reg, mask_size, def.physReg(), def.size())) {
+         unsigned start = def.physReg() > global_state.reg ? def.physReg() - global_state.reg : 0;
+         unsigned end = MIN2(mask_size, start + def.size());
+         writemask |= u_bit_consecutive(start, end - start);
+      }
+   }
+
+   bool is_hazard = writemask != 0 && ((pred->isVALU() && Valu) || (pred->isVINTRP() && Vintrp) ||
+                                       (pred->isSALU() && Salu));
+   if (is_hazard) {
+      global_state.nops_needed = MAX2(global_state.nops_needed, block_state.nops_needed);
+      return true;
+   }
+
+   block_state.mask &= ~writemask;
+   block_state.nops_needed = MAX2(block_state.nops_needed - get_wait_states(pred), 0);
+
+   if (block_state.mask == 0)
+      block_state.nops_needed = 0;
+
+   return block_state.nops_needed == 0;
 }
 
 template <bool Valu, bool Vintrp, bool Salu>
@@ -278,9 +415,17 @@ handle_raw_hazard(State& state, int* NOPs, int min_states, Operand op)
 {
    if (*NOPs >= min_states)
       return;
-   int res = handle_raw_hazard_internal<Valu, Vintrp, Salu>(
-      state, state.block, min_states, op.physReg(), u_bit_consecutive(0, op.size()), false);
-   *NOPs = MAX2(*NOPs, res);
+
+   HandleRawHazardGlobalState global = {op.physReg(), 0};
+   HandleRawHazardBlockState block = {u_bit_consecutive(0, op.size()), min_states};
+
+   /* Loops require branch instructions, which count towards the wait
+    * states. So even with loops this should finish unless nops_needed is some
+    * huge value. */
+   search_backwards<HandleRawHazardGlobalState, HandleRawHazardBlockState, nullptr,
+                    handle_raw_hazard_instr<Valu, Vintrp, Salu>>(state, global, block);
+
+   *NOPs = MAX2(*NOPs, global.nops_needed);
 }
 
 static auto handle_valu_then_read_hazard = handle_raw_hazard<true, true, false>;
@@ -402,13 +547,6 @@ handle_instruction_gfx6(State& state, NOP_ctx_gfx6& ctx, aco_ptr<Instruction>& i
    } else if (instr->isDS() && instr->ds().gds) {
       NOPs = MAX2(NOPs, ctx.salu_wr_m0_then_gds_msg_ttrace);
    } else if (instr->isVALU() || instr->isVINTRP()) {
-      for (Operand op : instr->operands) {
-         if (op.physReg() == vccz)
-            NOPs = MAX2(NOPs, ctx.valu_wr_vcc_then_vccz);
-         if (op.physReg() == execz)
-            NOPs = MAX2(NOPs, ctx.valu_wr_exec_then_execz);
-      }
-
       if (instr->isDPP()) {
          NOPs = MAX2(NOPs, ctx.valu_wr_exec_then_dpp);
          handle_valu_then_read_hazard(state, &NOPs, 2, instr->operands[0]);
@@ -469,10 +607,8 @@ handle_instruction_gfx6(State& state, NOP_ctx_gfx6& ctx, aco_ptr<Instruction>& i
    // TODO: try to schedule the NOP-causing instruction up to reduce the number of stall cycles
    if (NOPs) {
       /* create NOP */
-      aco_ptr<SOPP_instruction> nop{
-         create_instruction<SOPP_instruction>(aco_opcode::s_nop, Format::SOPP, 0, 0)};
-      nop->imm = NOPs - 1;
-      nop->block = -1;
+      aco_ptr<Instruction> nop{create_instruction(aco_opcode::s_nop, Format::SOPP, 0, 0)};
+      nop->salu().imm = NOPs - 1;
       new_instructions.emplace_back(std::move(nop));
    }
 
@@ -509,16 +645,14 @@ handle_instruction_gfx6(State& state, NOP_ctx_gfx6& ctx, aco_ptr<Instruction>& i
       for (Definition def : instr->definitions) {
          if (def.regClass().type() == RegType::sgpr) {
             if (def.physReg() == vcc || def.physReg() == vcc_hi) {
-               ctx.valu_wr_vcc_then_vccz = 5;
                ctx.valu_wr_vcc_then_div_fmas = 4;
             }
             if (def.physReg() == exec || def.physReg() == exec_hi) {
-               ctx.valu_wr_exec_then_execz = 5;
                ctx.valu_wr_exec_then_dpp = 5;
             }
          }
       }
-   } else if (instr->isSALU() && !instr->definitions.empty()) {
+   } else if (instr->isSALU()) {
       if (!instr->definitions.empty()) {
          /* all other definitions should be SCC */
          Definition def = instr->definitions[0];
@@ -529,7 +663,7 @@ handle_instruction_gfx6(State& state, NOP_ctx_gfx6& ctx, aco_ptr<Instruction>& i
          }
       } else if (instr->opcode == aco_opcode::s_setreg_b32 ||
                  instr->opcode == aco_opcode::s_setreg_imm32_b32) {
-         SOPK_instruction& sopk = instr->sopk();
+         SALU_instruction& sopk = instr->salu();
          unsigned offset = (sopk.imm >> 6) & 0x1f;
          unsigned size = ((sopk.imm >> 11) & 0x1f) + 1;
          unsigned reg = sopk.imm & 0x3f;
@@ -559,6 +693,95 @@ handle_instruction_gfx6(State& state, NOP_ctx_gfx6& ctx, aco_ptr<Instruction>& i
    }
 }
 
+bool
+is_latest_instr_vintrp(bool& global_state, bool& block_state, aco_ptr<Instruction>& pred)
+{
+   if (pred->isVINTRP())
+      global_state = true;
+   return true;
+}
+
+template <bool Salu, bool Sgpr>
+bool
+handle_wr_hazard_instr(int& global_state, int& block_state, aco_ptr<Instruction>& pred)
+{
+   if (Salu ? pred->isSALU() : (pred->isVALU() || pred->isVINTRP())) {
+      for (Definition dst : pred->definitions) {
+         if ((dst.physReg().reg() < 256) == Sgpr) {
+            global_state = MAX2(global_state, block_state);
+            return true;
+         }
+      }
+   }
+
+   block_state -= get_wait_states(pred);
+   return block_state <= 0;
+}
+
+template <bool Salu, bool Sgpr>
+void
+handle_wr_hazard(State& state, int* NOPs, int min_states)
+{
+   if (*NOPs >= min_states)
+      return;
+
+   int global = 0;
+   int block = min_states;
+   search_backwards<int, int, nullptr, handle_wr_hazard_instr<Salu, Sgpr>>(state, global, block);
+   *NOPs = MAX2(*NOPs, global);
+}
+
+void
+resolve_all_gfx6(State& state, NOP_ctx_gfx6& ctx,
+                 std::vector<aco_ptr<Instruction>>& new_instructions)
+{
+   int NOPs = 0;
+
+   /* SGPR->SMEM hazards */
+   if (state.program->gfx_level == GFX6) {
+      handle_wr_hazard<true, true>(state, &NOPs, 4);
+      handle_wr_hazard<false, true>(state, &NOPs, 4);
+   }
+
+   /* Break up SMEM clauses */
+   if (ctx.smem_clause || ctx.smem_write)
+      NOPs = MAX2(NOPs, 1);
+
+   /* SALU/GDS hazards */
+   NOPs = MAX2(NOPs, ctx.setreg_then_getsetreg);
+   if (state.program->gfx_level == GFX9)
+      NOPs = MAX2(NOPs, ctx.salu_wr_m0_then_moverel);
+   NOPs = MAX2(NOPs, ctx.salu_wr_m0_then_gds_msg_ttrace);
+
+   /* VALU hazards */
+   NOPs = MAX2(NOPs, ctx.valu_wr_exec_then_dpp);
+   if (state.program->gfx_level >= GFX8)
+      handle_wr_hazard<false, false>(state, &NOPs, 2); /* VALU->DPP */
+   NOPs = MAX2(NOPs, ctx.vmem_store_then_wr_data.any() ? 1 : 0);
+   if (state.program->gfx_level == GFX6) {
+      /* VINTRP->v_readlane_b32/etc */
+      bool vintrp = false;
+      search_backwards<bool, bool, nullptr, is_latest_instr_vintrp>(state, vintrp, vintrp);
+      if (vintrp)
+         NOPs = MAX2(NOPs, 1);
+   }
+   NOPs = MAX2(NOPs, ctx.valu_wr_vcc_then_div_fmas);
+
+   /* VALU(sgpr)->VMEM/v_readlane_b32/etc hazards. v_readlane_b32/etc require only 4 NOPs. */
+   handle_wr_hazard<false, true>(state, &NOPs, 5);
+
+   NOPs = MAX2(NOPs, ctx.set_vskip_mode_then_vector);
+
+   if (state.program->gfx_level == GFX9)
+      NOPs = MAX2(NOPs, ctx.salu_wr_m0_then_lds);
+
+   ctx.add_wait_states(NOPs);
+   if (NOPs) {
+      Builder bld(state.program, &new_instructions);
+      bld.sopp(aco_opcode::s_nop, NOPs - 1);
+   }
+}
+
 template <std::size_t N>
 bool
 check_written_regs(const aco_ptr<Instruction>& instr, const std::bitset<N>& check_regs)
@@ -570,6 +793,24 @@ check_written_regs(const aco_ptr<Instruction>& instr, const std::bitset<N>& chec
                          for (unsigned i = 0; i < def.size(); i++) {
                             unsigned def_reg = def.physReg() + i;
                             writes_any |= def_reg < check_regs.size() && check_regs[def_reg];
+                         }
+                         return writes_any;
+                      });
+}
+
+template <std::size_t N>
+bool
+check_read_regs(const aco_ptr<Instruction>& instr, const std::bitset<N>& check_regs)
+{
+   return std::any_of(instr->operands.begin(), instr->operands.end(),
+                      [&check_regs](const Operand& op) -> bool
+                      {
+                         if (op.isConstant())
+                            return false;
+                         bool writes_any = false;
+                         for (unsigned i = 0; i < op.size(); i++) {
+                            unsigned op_reg = op.physReg() + i;
+                            writes_any |= op_reg < check_regs.size() && check_regs[op_reg];
                          }
                          return writes_any;
                       });
@@ -613,14 +854,6 @@ VALU_writes_sgpr(aco_ptr<Instruction>& instr)
 }
 
 bool
-instr_writes_exec(const aco_ptr<Instruction>& instr)
-{
-   return std::any_of(instr->definitions.begin(), instr->definitions.end(),
-                      [](const Definition& def) -> bool
-                      { return def.physReg() == exec_lo || def.physReg() == exec_hi; });
-}
-
-bool
 instr_writes_sgpr(const aco_ptr<Instruction>& instr)
 {
    return std::any_of(instr->definitions.begin(), instr->definitions.end(),
@@ -653,6 +886,19 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
 {
    // TODO: s_dcache_inv needs to be in it's own group on GFX10
 
+   Builder bld(state.program, &new_instructions);
+
+   unsigned vm_vsrc = 7;
+   unsigned sa_sdst = 1;
+   if (debug_flags & DEBUG_FORCE_WAITDEPS) {
+      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0000);
+      vm_vsrc = 0;
+      sa_sdst = 0;
+   } else if (instr->opcode == aco_opcode::s_waitcnt_depctr) {
+      vm_vsrc = (instr->salu().imm >> 2) & 0x7;
+      sa_sdst = instr->salu().imm & 0x1;
+   }
+
    /* VMEMtoScalarWriteHazard
     * Handle EXEC/M0/SGPR write following a VMEM/DS instruction without a VALU or "waitcnt vmcnt(0)"
     * in-between.
@@ -666,12 +912,15 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
       if (instr->isFlat() || instr->isDS())
          mark_read_regs_exec(state, instr, ctx.sgprs_read_by_DS);
    } else if (instr->isSALU() || instr->isSMEM()) {
-      if (instr->opcode == aco_opcode::s_waitcnt) {
-         wait_imm imm(state.program->gfx_level, instr->sopp().imm);
+      wait_imm imm;
+      if (imm.unpack(state.program->gfx_level, instr.get())) {
          if (imm.vm == 0)
             ctx.sgprs_read_by_VMEM.reset();
-      } else if (instr->opcode == aco_opcode::s_waitcnt_depctr && instr->sopp().imm == 0xffe3) {
-         /* Hazard is mitigated by a s_waitcnt_depctr with a magic imm */
+         if (imm.lgkm == 0)
+            ctx.sgprs_read_by_DS.reset();
+         if (imm.vs == 0)
+            ctx.sgprs_read_by_VMEM_store.reset();
+      } else if (vm_vsrc == 0) {
          ctx.sgprs_read_by_VMEM.reset();
          ctx.sgprs_read_by_DS.reset();
          ctx.sgprs_read_by_VMEM_store.reset();
@@ -686,11 +935,7 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
          ctx.sgprs_read_by_VMEM_store.reset();
 
          /* Insert s_waitcnt_depctr instruction with magic imm to mitigate the problem */
-         aco_ptr<SOPP_instruction> depctr{
-            create_instruction<SOPP_instruction>(aco_opcode::s_waitcnt_depctr, Format::SOPP, 0, 0)};
-         depctr->imm = 0xffe3;
-         depctr->block = -1;
-         new_instructions.emplace_back(std::move(depctr));
+         bld.sopp(aco_opcode::s_waitcnt_depctr, 0xffe3);
       }
    } else if (instr->isVALU()) {
       /* Hazard is mitigated by any VALU instruction */
@@ -700,22 +945,20 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
    }
 
    /* VcmpxPermlaneHazard
-    * Handle any permlane following a VOPC instruction, insert v_mov between them.
+    * Handle any permlane following a VOPC instruction writing exec, insert v_mov between them.
     */
-   if (instr->isVOPC()) {
-      ctx.has_VOPC = true;
-   } else if (ctx.has_VOPC && (instr->opcode == aco_opcode::v_permlane16_b32 ||
-                               instr->opcode == aco_opcode::v_permlanex16_b32)) {
-      ctx.has_VOPC = false;
+   if (instr->isVOPC() && instr->definitions[0].physReg() == exec) {
+      /* we only need to check definitions[0] because since GFX10 v_cmpx only writes one dest */
+      ctx.has_VOPC_write_exec = true;
+   } else if (ctx.has_VOPC_write_exec && (instr->opcode == aco_opcode::v_permlane16_b32 ||
+                                          instr->opcode == aco_opcode::v_permlanex16_b32)) {
+      ctx.has_VOPC_write_exec = false;
 
       /* v_nop would be discarded by SQ, so use v_mov with the first operand of the permlane */
-      aco_ptr<VOP1_instruction> v_mov{
-         create_instruction<VOP1_instruction>(aco_opcode::v_mov_b32, Format::VOP1, 1, 1)};
-      v_mov->definitions[0] = Definition(instr->operands[0].physReg(), v1);
-      v_mov->operands[0] = Operand(instr->operands[0].physReg(), v1);
-      new_instructions.emplace_back(std::move(v_mov));
+      bld.vop1(aco_opcode::v_mov_b32, Definition(instr->operands[0].physReg(), v1),
+               Operand(instr->operands[0].physReg(), v1));
    } else if (instr->isVALU() && instr->opcode != aco_opcode::v_nop) {
-      ctx.has_VOPC = false;
+      ctx.has_VOPC_write_exec = false;
    }
 
    /* VcmpxExecWARHazard
@@ -723,24 +966,18 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
     */
    if (!instr->isVALU() && instr->reads_exec()) {
       ctx.has_nonVALU_exec_read = true;
-   } else if (instr->isVALU()) {
-      if (instr_writes_exec(instr)) {
+   } else if (instr->isVALU() && ctx.has_nonVALU_exec_read) {
+      if (instr->writes_exec()) {
          ctx.has_nonVALU_exec_read = false;
 
          /* Insert s_waitcnt_depctr instruction with magic imm to mitigate the problem */
-         aco_ptr<SOPP_instruction> depctr{
-            create_instruction<SOPP_instruction>(aco_opcode::s_waitcnt_depctr, Format::SOPP, 0, 0)};
-         depctr->imm = 0xfffe;
-         depctr->block = -1;
-         new_instructions.emplace_back(std::move(depctr));
+         bld.sopp(aco_opcode::s_waitcnt_depctr, 0xfffe);
       } else if (instr_writes_sgpr(instr)) {
          /* Any VALU instruction that writes an SGPR mitigates the problem */
          ctx.has_nonVALU_exec_read = false;
       }
-   } else if (instr->opcode == aco_opcode::s_waitcnt_depctr) {
-      /* s_waitcnt_depctr can mitigate the problem if it has a magic imm */
-      if ((instr->sopp().imm & 0xfffe) == 0xfffe)
-         ctx.has_nonVALU_exec_read = false;
+   } else if (sa_sdst == 0) {
+      ctx.has_nonVALU_exec_read = false;
    }
 
    /* SMEMtoVectorWriteHazard
@@ -755,27 +992,16 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
          ctx.sgprs_read_by_SMEM.reset();
 
          /* Insert s_mov to mitigate the problem */
-         aco_ptr<SOP1_instruction> s_mov{
-            create_instruction<SOP1_instruction>(aco_opcode::s_mov_b32, Format::SOP1, 1, 1)};
-         s_mov->definitions[0] = Definition(sgpr_null, s1);
-         s_mov->operands[0] = Operand::zero();
-         new_instructions.emplace_back(std::move(s_mov));
+         bld.sop1(aco_opcode::s_mov_b32, Definition(sgpr_null, s1), Operand::zero());
       }
    } else if (instr->isSALU()) {
-      if (instr->format != Format::SOPP) {
+      wait_imm imm;
+      if (imm.unpack(state.program->gfx_level, instr.get()) && imm.lgkm == 0) {
+         /* Reducing lgkmcnt count to 0 always mitigates the hazard. */
+         ctx.sgprs_read_by_SMEM.reset();
+      } else if (instr->format != Format::SOPP && instr->definitions.size()) {
          /* SALU can mitigate the hazard */
          ctx.sgprs_read_by_SMEM.reset();
-      } else {
-         /* Reducing lgkmcnt count to 0 always mitigates the hazard. */
-         const SOPP_instruction& sopp = instr->sopp();
-         if (sopp.opcode == aco_opcode::s_waitcnt_lgkmcnt) {
-            if (sopp.imm == 0 && sopp.definitions[0].physReg() == sgpr_null)
-               ctx.sgprs_read_by_SMEM.reset();
-         } else if (sopp.opcode == aco_opcode::s_waitcnt) {
-            unsigned lgkm = (sopp.imm >> 8) & 0x3f;
-            if (lgkm == 0)
-               ctx.sgprs_read_by_SMEM.reset();
-         }
       }
    }
 
@@ -783,36 +1009,24 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
     * Handle VMEM/GLOBAL/SCRATCH->branch->DS and DS->branch->VMEM/GLOBAL/SCRATCH patterns.
     */
    if (instr->isVMEM() || instr->isGlobal() || instr->isScratch()) {
+      if (ctx.has_branch_after_DS)
+         bld.sopk(aco_opcode::s_waitcnt_vscnt, Operand(sgpr_null, s1), 0);
+      ctx.has_branch_after_VMEM = ctx.has_branch_after_DS = ctx.has_DS = false;
       ctx.has_VMEM = true;
-      ctx.has_branch_after_VMEM = false;
-      /* Mitigation for DS is needed only if there was already a branch after */
-      ctx.has_DS = ctx.has_branch_after_DS;
    } else if (instr->isDS()) {
+      if (ctx.has_branch_after_VMEM)
+         bld.sopk(aco_opcode::s_waitcnt_vscnt, Operand(sgpr_null, s1), 0);
+      ctx.has_branch_after_VMEM = ctx.has_branch_after_DS = ctx.has_VMEM = false;
       ctx.has_DS = true;
-      ctx.has_branch_after_DS = false;
-      /* Mitigation for VMEM is needed only if there was already a branch after */
-      ctx.has_VMEM = ctx.has_branch_after_VMEM;
    } else if (instr_is_branch(instr)) {
-      ctx.has_branch_after_VMEM = ctx.has_VMEM;
-      ctx.has_branch_after_DS = ctx.has_DS;
+      ctx.has_branch_after_VMEM |= ctx.has_VMEM;
+      ctx.has_branch_after_DS |= ctx.has_DS;
+      ctx.has_VMEM = ctx.has_DS = false;
    } else if (instr->opcode == aco_opcode::s_waitcnt_vscnt) {
       /* Only s_waitcnt_vscnt can mitigate the hazard */
-      const SOPK_instruction& sopk = instr->sopk();
-      if (sopk.definitions[0].physReg() == sgpr_null && sopk.imm == 0)
+      const SALU_instruction& sopk = instr->salu();
+      if (sopk.operands[0].physReg() == sgpr_null && sopk.imm == 0)
          ctx.has_VMEM = ctx.has_branch_after_VMEM = ctx.has_DS = ctx.has_branch_after_DS = false;
-   }
-   if ((ctx.has_VMEM && ctx.has_branch_after_DS) || (ctx.has_DS && ctx.has_branch_after_VMEM)) {
-      ctx.has_VMEM = ctx.has_branch_after_VMEM = ctx.has_DS = ctx.has_branch_after_DS = false;
-
-      /* Insert s_waitcnt_vscnt to mitigate the problem */
-      aco_ptr<SOPK_instruction> wait{
-         create_instruction<SOPK_instruction>(aco_opcode::s_waitcnt_vscnt, Format::SOPK, 0, 1)};
-      wait->definitions[0] = Definition(sgpr_null, s1);
-      wait->imm = 0;
-      new_instructions.emplace_back(std::move(wait));
-
-      ctx.has_VMEM = instr->isVMEM() || instr->isGlobal() || instr->isScratch();
-      ctx.has_DS = instr->isDS();
    }
 
    /* NSAToVMEMBug
@@ -827,7 +1041,7 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
       if (instr->isMUBUF() || instr->isMTBUF()) {
          uint32_t offset = instr->isMUBUF() ? instr->mubuf().offset : instr->mtbuf().offset;
          if (offset & 6)
-            Builder(state.program, &new_instructions).sopp(aco_opcode::s_nop, -1, 0);
+            bld.sopp(aco_opcode::s_nop, 0);
       }
    }
 
@@ -839,7 +1053,743 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
    } else if (ctx.has_writelane) {
       ctx.has_writelane = false;
       if (instr->isMIMG() && get_mimg_nsa_dwords(instr.get()) > 0)
-         Builder(state.program, &new_instructions).sopp(aco_opcode::s_nop, -1, 0);
+         bld.sopp(aco_opcode::s_nop, 0);
+   }
+}
+
+void
+resolve_all_gfx10(State& state, NOP_ctx_gfx10& ctx,
+                  std::vector<aco_ptr<Instruction>>& new_instructions)
+{
+   Builder bld(state.program, &new_instructions);
+
+   size_t prev_count = new_instructions.size();
+
+   /* VcmpxPermlaneHazard */
+   if (ctx.has_VOPC_write_exec) {
+      ctx.has_VOPC_write_exec = false;
+      bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg(256), v1), Operand(PhysReg(256), v1));
+
+      /* VALU mitigates VMEMtoScalarWriteHazard. */
+      ctx.sgprs_read_by_VMEM.reset();
+      ctx.sgprs_read_by_DS.reset();
+      ctx.sgprs_read_by_VMEM_store.reset();
+   }
+
+   unsigned waitcnt_depctr = 0xffff;
+
+   /* VMEMtoScalarWriteHazard */
+   if (ctx.sgprs_read_by_VMEM.any() || ctx.sgprs_read_by_DS.any() ||
+       ctx.sgprs_read_by_VMEM_store.any()) {
+      ctx.sgprs_read_by_VMEM.reset();
+      ctx.sgprs_read_by_DS.reset();
+      ctx.sgprs_read_by_VMEM_store.reset();
+      waitcnt_depctr &= 0xffe3;
+   }
+
+   /* VcmpxExecWARHazard */
+   if (ctx.has_nonVALU_exec_read) {
+      ctx.has_nonVALU_exec_read = false;
+      waitcnt_depctr &= 0xfffe;
+   }
+
+   if (waitcnt_depctr != 0xffff)
+      bld.sopp(aco_opcode::s_waitcnt_depctr, waitcnt_depctr);
+
+   /* SMEMtoVectorWriteHazard */
+   if (ctx.sgprs_read_by_SMEM.any()) {
+      ctx.sgprs_read_by_SMEM.reset();
+      bld.sop1(aco_opcode::s_mov_b32, Definition(sgpr_null, s1), Operand::zero());
+   }
+
+   /* LdsBranchVmemWARHazard */
+   if (ctx.has_VMEM || ctx.has_branch_after_VMEM || ctx.has_DS || ctx.has_branch_after_DS) {
+      bld.sopk(aco_opcode::s_waitcnt_vscnt, Operand(sgpr_null, s1), 0);
+      ctx.has_VMEM = ctx.has_branch_after_VMEM = ctx.has_DS = ctx.has_branch_after_DS = false;
+   }
+
+   /* NSAToVMEMBug/waNsaCannotFollowWritelane */
+   if (ctx.has_NSA_MIMG || ctx.has_writelane) {
+      ctx.has_NSA_MIMG = ctx.has_writelane = false;
+      /* Any instruction resolves these hazards. */
+      if (new_instructions.size() == prev_count)
+         bld.sopp(aco_opcode::s_nop, 0);
+   }
+}
+
+void
+fill_vgpr_bitset(std::bitset<256>& set, PhysReg reg, unsigned bytes)
+{
+   if (reg.reg() < 256)
+      return;
+   for (unsigned i = 0; i < DIV_ROUND_UP(bytes, 4); i++)
+      set.set(reg.reg() - 256 + i);
+}
+
+bool
+test_vgpr_bitset(std::bitset<256>& set, Operand op)
+{
+   if (op.physReg().reg() < 256)
+      return false;
+   for (unsigned i = 0; i < op.size(); i++) {
+      if (set[op.physReg().reg() - 256 + i])
+         return true;
+   }
+   return false;
+}
+
+/* GFX11 */
+struct LdsDirectVALUHazardGlobalState {
+   unsigned wait_vdst = 15;
+   PhysReg vgpr;
+   std::set<unsigned> loop_headers_visited;
+};
+
+struct LdsDirectVALUHazardBlockState {
+   unsigned num_valu = 0;
+   bool has_trans = false;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
+};
+
+bool
+handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state,
+                                    LdsDirectVALUHazardBlockState& block_state,
+                                    aco_ptr<Instruction>& instr)
+{
+   if (instr->isVALU()) {
+      block_state.has_trans |= instr->isTrans();
+
+      bool uses_vgpr = false;
+      for (Definition& def : instr->definitions)
+         uses_vgpr |= regs_intersect(def.physReg(), def.size(), global_state.vgpr, 1);
+      for (Operand& op : instr->operands) {
+         uses_vgpr |=
+            !op.isConstant() && regs_intersect(op.physReg(), op.size(), global_state.vgpr, 1);
+      }
+      if (uses_vgpr) {
+         /* Transcendentals execute in parallel to other VALU and va_vdst count becomes unusable */
+         global_state.wait_vdst =
+            MIN2(global_state.wait_vdst, block_state.has_trans ? 0 : block_state.num_valu);
+         return true;
+      }
+
+      block_state.num_valu++;
+   }
+
+   if (parse_depctr_wait(instr.get()).va_vdst == 0)
+      return true;
+
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set wait_vdst to be safe. */
+      global_state.wait_vdst =
+         MIN2(global_state.wait_vdst, block_state.has_trans ? 0 : block_state.num_valu);
+      return true;
+   }
+
+   return block_state.num_valu >= global_state.wait_vdst;
+}
+
+bool
+handle_lds_direct_valu_hazard_block(LdsDirectVALUHazardGlobalState& global_state,
+                                    LdsDirectVALUHazardBlockState& block_state, Block* block)
+{
+   if (block->kind & block_kind_loop_header) {
+      if (global_state.loop_headers_visited.count(block->index))
+         return false;
+      global_state.loop_headers_visited.insert(block->index);
+   }
+
+   block_state.num_blocks++;
+
+   return true;
+}
+
+unsigned
+handle_lds_direct_valu_hazard(State& state, aco_ptr<Instruction>& instr)
+{
+   /* LdsDirectVALUHazard
+    * Handle LDSDIR writing a VGPR after it's used by a VALU instruction.
+    */
+   if (instr->ldsdir().wait_vdst == 0)
+      return 0; /* early exit */
+
+   LdsDirectVALUHazardGlobalState global_state;
+   global_state.wait_vdst = instr->ldsdir().wait_vdst;
+   global_state.vgpr = instr->definitions[0].physReg();
+   LdsDirectVALUHazardBlockState block_state;
+   search_backwards<LdsDirectVALUHazardGlobalState, LdsDirectVALUHazardBlockState,
+                    &handle_lds_direct_valu_hazard_block, &handle_lds_direct_valu_hazard_instr>(
+      state, global_state, block_state);
+   return global_state.wait_vdst;
+}
+
+enum VALUPartialForwardingHazardState : uint8_t {
+   nothing_written,
+   written_after_exec_write,
+   exec_written,
+};
+
+struct VALUPartialForwardingHazardGlobalState {
+   bool hazard_found = false;
+   std::set<unsigned> loop_headers_visited;
+};
+
+struct VALUPartialForwardingHazardBlockState {
+   /* initialized by number of VGPRs read by VALU, decrement when encountered to return early */
+   uint8_t num_vgprs_read = 0;
+   BITSET_DECLARE(vgprs_read, 256) = {0};
+   enum VALUPartialForwardingHazardState state = nothing_written;
+   unsigned num_valu_since_read = 0;
+   unsigned num_valu_since_write = 0;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
+};
+
+bool
+handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalState& global_state,
+                                            VALUPartialForwardingHazardBlockState& block_state,
+                                            aco_ptr<Instruction>& instr)
+{
+   /* Check if there is already a hazard found on some other control flow path. */
+   if (global_state.hazard_found)
+      return true;
+
+   if (instr->isSALU() && !instr->definitions.empty()) {
+      if (block_state.state == written_after_exec_write && instr->writes_exec())
+         block_state.state = exec_written;
+   } else if (instr->isVALU()) {
+      bool vgpr_write = false;
+      for (Definition& def : instr->definitions) {
+         if (def.physReg().reg() < 256)
+            continue;
+
+         for (unsigned i = 0; i < def.size(); i++) {
+            unsigned reg = def.physReg().reg() - 256 + i;
+            if (!BITSET_TEST(block_state.vgprs_read, reg))
+               continue;
+
+            if (block_state.state == exec_written && block_state.num_valu_since_write < 3) {
+               global_state.hazard_found = true;
+               return true;
+            }
+
+            BITSET_CLEAR(block_state.vgprs_read, reg);
+            block_state.num_vgprs_read--;
+            vgpr_write = true;
+         }
+      }
+
+      if (vgpr_write) {
+         /* If the state is nothing_written: the check below should ensure that this write is
+          * close enough to the read.
+          *
+          * If the state is exec_written: the current choice of second write has failed. Reset and
+          * try with the current write as the second one, if it's close enough to the read.
+          *
+          * If the state is written_after_exec_write: a further second write would be better, if
+          * it's close enough to the read.
+          */
+         if (block_state.state == nothing_written || block_state.num_valu_since_read < 5) {
+            block_state.state = written_after_exec_write;
+            block_state.num_valu_since_write = 0;
+         } else {
+            block_state.num_valu_since_write++;
+         }
+      } else {
+         block_state.num_valu_since_write++;
+      }
+
+      block_state.num_valu_since_read++;
+   } else if (parse_depctr_wait(instr.get()).va_vdst == 0) {
+      return true;
+   }
+
+   if (block_state.num_valu_since_read >= (block_state.state == nothing_written ? 5 : 8))
+      return true; /* Hazard not possible at this distance. */
+   if (block_state.num_vgprs_read == 0)
+      return true; /* All VGPRs have been written and a hazard was never found. */
+
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set hazard_found=true to be safe. */
+      global_state.hazard_found = true;
+      return true;
+   }
+
+   return false;
+}
+
+bool
+handle_valu_partial_forwarding_hazard_block(VALUPartialForwardingHazardGlobalState& global_state,
+                                            VALUPartialForwardingHazardBlockState& block_state,
+                                            Block* block)
+{
+   if (block->kind & block_kind_loop_header) {
+      if (global_state.loop_headers_visited.count(block->index))
+         return false;
+      global_state.loop_headers_visited.insert(block->index);
+   }
+
+   block_state.num_blocks++;
+
+   return true;
+}
+
+bool
+handle_valu_partial_forwarding_hazard(State& state, aco_ptr<Instruction>& instr)
+{
+   /* VALUPartialForwardingHazard
+    * VALU instruction reads two VGPRs: one written before an exec write by SALU and one after.
+    * For the hazard, there must be less than 3 VALU between the first and second VGPR writes.
+    * There also must be less than 5 VALU between the second VGPR write and the current instruction.
+    */
+   if (state.program->wave_size != 64 || !instr->isVALU())
+      return false;
+
+   unsigned num_vgprs = 0;
+   for (Operand& op : instr->operands)
+      num_vgprs += op.physReg().reg() < 256 ? op.size() : 1;
+   if (num_vgprs <= 1)
+      return false; /* early exit */
+
+   VALUPartialForwardingHazardBlockState block_state;
+
+   for (unsigned i = 0; i < instr->operands.size(); i++) {
+      Operand& op = instr->operands[i];
+      if (op.physReg().reg() < 256)
+         continue;
+      for (unsigned j = 0; j < op.size(); j++)
+         BITSET_SET(block_state.vgprs_read, op.physReg().reg() - 256 + j);
+   }
+   block_state.num_vgprs_read = BITSET_COUNT(block_state.vgprs_read);
+
+   if (block_state.num_vgprs_read <= 1)
+      return false; /* early exit */
+
+   VALUPartialForwardingHazardGlobalState global_state;
+   search_backwards<VALUPartialForwardingHazardGlobalState, VALUPartialForwardingHazardBlockState,
+                    &handle_valu_partial_forwarding_hazard_block,
+                    &handle_valu_partial_forwarding_hazard_instr>(state, global_state, block_state);
+   return global_state.hazard_found;
+}
+
+void
+handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>& instr,
+                         std::vector<aco_ptr<Instruction>>& new_instructions)
+{
+   Builder bld(state.program, &new_instructions);
+
+   /* Due to a hazard, an s_nop is needed before "s_sendmsg sendmsg_dealloc_vgprs". */
+   if (instr->opcode == aco_opcode::s_sendmsg && instr->salu().imm == sendmsg_dealloc_vgprs &&
+       (new_instructions.empty() || new_instructions.back()->opcode != aco_opcode::s_nop)) {
+      bld.sopp(aco_opcode::s_nop, 0);
+   }
+
+   /* VcmpxPermlaneHazard
+    * Handle any permlane following a VOPC instruction writing exec, insert v_mov between them.
+    */
+   if (instr->isVOPC() && instr->definitions[0].physReg() == exec) {
+      ctx.has_Vcmpx = true;
+   } else if (ctx.has_Vcmpx && (instr->opcode == aco_opcode::v_permlane16_b32 ||
+                                instr->opcode == aco_opcode::v_permlanex16_b32 ||
+                                instr->opcode == aco_opcode::v_permlane64_b32 ||
+                                instr->opcode == aco_opcode::v_permlane16_var_b32 ||
+                                instr->opcode == aco_opcode::v_permlanex16_var_b32)) {
+      ctx.has_Vcmpx = false;
+
+      /* Unlike on GFX10, v_nop should resolve the hazard on GFX11. */
+      bld.vop1(aco_opcode::v_nop);
+   } else if (instr->isVALU()) {
+      ctx.has_Vcmpx = false;
+   }
+
+   depctr_wait wait = parse_depctr_wait(instr.get());
+   unsigned va_vdst = wait.va_vdst;
+   unsigned vm_vsrc = 7;
+   unsigned sa_sdst = 1;
+
+   if (debug_flags & DEBUG_FORCE_WAITDEPS) {
+      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0000);
+      va_vdst = 0;
+      vm_vsrc = 0;
+      sa_sdst = 0;
+   } else if (instr->opcode == aco_opcode::s_waitcnt_depctr) {
+      /* va_vdst already obtained through parse_depctr_wait(). */
+      vm_vsrc = (instr->salu().imm >> 2) & 0x7;
+      sa_sdst = instr->salu().imm & 0x1;
+   } else if (instr->isLDSDIR() && state.program->gfx_level >= GFX12) {
+      vm_vsrc = instr->ldsdir().wait_vsrc ? 7 : 0;
+   }
+
+   if (instr->isLDSDIR()) {
+      unsigned count = handle_lds_direct_valu_hazard(state, instr);
+      LDSDIR_instruction* ldsdir = &instr->ldsdir();
+      if (count < va_vdst) {
+         ldsdir->wait_vdst = MIN2(ldsdir->wait_vdst, count);
+         va_vdst = MIN2(va_vdst, count);
+      }
+   }
+
+   /* VALUTransUseHazard
+    * VALU reads VGPR written by transcendental instruction without 6+ VALU or 2+ transcendental
+    * in-between.
+    */
+   if (state.program->gfx_level < GFX11_5 && va_vdst > 0 && instr->isVALU()) {
+      uint8_t num_valu = 15;
+      uint8_t num_trans = 15;
+      for (Operand& op : instr->operands) {
+         if (op.physReg().reg() < 256)
+            continue;
+         for (unsigned i = 0; i < op.size(); i++) {
+            PhysReg reg = op.physReg().advance(i * 4);
+            num_valu = std::min(num_valu, ctx.valu_since_wr_by_trans.get(reg));
+            num_trans = std::min(num_trans, ctx.trans_since_wr_by_trans.get(reg));
+         }
+      }
+      if (num_trans <= 1 && num_valu <= 5) {
+         bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
+         va_vdst = 0;
+      }
+   }
+
+   if (va_vdst > 0 && state.program->gfx_level < GFX12 &&
+       handle_valu_partial_forwarding_hazard(state, instr)) {
+      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
+      va_vdst = 0;
+   }
+
+   if (state.program->gfx_level < GFX12) {
+      /* VALUMaskWriteHazard
+       * VALU reads SGPR as a lane mask and later written by SALU cannot safely be read by SALU or
+       * VALU.
+       */
+      if (state.program->wave_size == 64 && (instr->isSALU() || instr->isVALU()) &&
+          check_read_regs(instr, ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu)) {
+         bld.sopp(aco_opcode::s_waitcnt_depctr, 0xfffe);
+         sa_sdst = 0;
+      }
+
+      if (va_vdst == 0) {
+         ctx.valu_since_wr_by_trans.reset();
+         ctx.trans_since_wr_by_trans.reset();
+      }
+
+      if (sa_sdst == 0)
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+
+      if (state.program->wave_size == 64 && instr->isSALU() &&
+          check_written_regs(instr, ctx.sgpr_read_by_valu_as_lanemask)) {
+         unsigned reg = instr->definitions[0].physReg().reg();
+         for (unsigned i = 0; i < instr->definitions[0].size(); i++)
+            ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu[reg + i] = 1;
+      }
+
+      if (instr->isVALU()) {
+         bool is_trans = instr->isTrans();
+
+         ctx.valu_since_wr_by_trans.inc();
+         if (is_trans)
+            ctx.trans_since_wr_by_trans.inc();
+
+         if (is_trans) {
+            for (Definition& def : instr->definitions) {
+               for (unsigned i = 0; i < def.size(); i++) {
+                  PhysReg reg = def.physReg().advance(i * 4);
+                  ctx.valu_since_wr_by_trans.set(reg);
+                  ctx.trans_since_wr_by_trans.set(reg);
+               }
+            }
+         }
+
+         if (state.program->wave_size == 64) {
+            for (Operand& op : instr->operands) {
+               /* This should ignore exec reads */
+               if (!op.isConstant() && op.physReg().reg() < 126)
+                  ctx.sgpr_read_by_valu_as_lanemask.reset();
+            }
+            switch (instr->opcode) {
+            case aco_opcode::v_addc_co_u32:
+            case aco_opcode::v_subb_co_u32:
+            case aco_opcode::v_subbrev_co_u32:
+            case aco_opcode::v_cndmask_b16:
+            case aco_opcode::v_cndmask_b32:
+            case aco_opcode::v_div_fmas_f32:
+            case aco_opcode::v_div_fmas_f64:
+               if (instr->operands.back().physReg() != exec) {
+                  ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg());
+                  ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg() + 1);
+               }
+               break;
+            default: break;
+            }
+         }
+      }
+   } else {
+      /* VALUReadSGPRHazard
+       * VALU reads SGPR and later written by SALU cannot safely be read by VALU/SALU.
+       */
+      if (instr->isVALU() || instr->isSALU()) {
+         unsigned expiry_count = instr->isSALU() ? 10 : 11;
+         uint16_t imm = 0xffff;
+
+         for (Operand& op : instr->operands) {
+            if (op.physReg() >= m0)
+               continue;
+
+            for (unsigned i = 0; i < op.size(); i++) {
+               PhysReg reg = op.physReg().advance(i * 4);
+               if (ctx.sgpr_read_by_valu_then_wr_by_salu.get(reg) < expiry_count) {
+                  imm &= 0xfffe;
+                  sa_sdst = 0;
+               }
+               if (instr->isVALU()) {
+                  ctx.sgpr_read_by_valu.set(reg / 2);
+
+                  /* s_wait_alu on va_sdst (if non-VCC SGPR) or va_vcc (if VCC SGPR) */
+                  if (ctx.sgpr_read_by_valu_then_wr_by_valu[reg]) {
+                     bool is_vcc = reg == vcc || reg == vcc_hi;
+                     imm &= is_vcc ? 0xfffd : 0xf1ff;
+                     if (is_vcc)
+                        wait.va_vcc = 0;
+                     else
+                        wait.va_sdst = 0;
+                  }
+               }
+            }
+         }
+
+         if (imm != 0xffff)
+            bld.sopp(aco_opcode::s_waitcnt_depctr, imm);
+      }
+
+      if (sa_sdst == 0)
+         ctx.sgpr_read_by_valu_then_wr_by_salu.reset();
+      else if (instr->isSALU() && !instr->isSOPP())
+         ctx.sgpr_read_by_valu_then_wr_by_salu.inc();
+
+      if (wait.va_sdst == 0) {
+         std::bitset<m0.reg()> old = ctx.sgpr_read_by_valu_then_wr_by_valu;
+         ctx.sgpr_read_by_valu_then_wr_by_valu.reset();
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = old[vcc];
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = old[vcc_hi];
+      }
+      if (wait.va_vcc == 0) {
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = false;
+      }
+
+      if (instr->isVALU() && !instr->definitions.empty()) {
+         PhysReg reg = instr->definitions[0].physReg();
+         if (reg < m0 && ctx.sgpr_read_by_valu[reg / 2]) {
+            for (unsigned i = 0; i < instr->definitions[0].size(); i++)
+               ctx.sgpr_read_by_valu_then_wr_by_valu.set(reg + i);
+         }
+      } else if (instr->isSALU() && !instr->definitions.empty()) {
+         PhysReg reg = instr->definitions[0].physReg();
+         if (reg < m0 && ctx.sgpr_read_by_valu[reg / 2]) {
+            for (unsigned i = 0; i < instr->definitions[0].size(); i++)
+               ctx.sgpr_read_by_valu_then_wr_by_salu.set(reg.advance(i * 4));
+         }
+      }
+   }
+
+   /* LdsDirectVMEMHazard
+    * Handle LDSDIR writing a VGPR after it's used by a VMEM/DS instruction.
+    */
+   if (instr->isVMEM() || instr->isFlatLike()) {
+      if (instr->definitions.empty()) {
+         for (Operand& op : instr->operands)
+            fill_vgpr_bitset(ctx.vgpr_used_by_vmem_store, op.physReg(), op.bytes());
+      } else {
+         uint8_t vmem_type = state.program->gfx_level >= GFX12
+                                ? get_vmem_type(state.program->gfx_level, instr.get())
+                                : vmem_nosampler;
+         std::bitset<256>* vgprs = &ctx.vgpr_used_by_vmem_load;
+         if (vmem_type == vmem_sampler)
+            vgprs = &ctx.vgpr_used_by_vmem_sample;
+         else if (vmem_type == vmem_bvh)
+            vgprs = &ctx.vgpr_used_by_vmem_bvh;
+
+         for (Definition& def : instr->definitions)
+            fill_vgpr_bitset(*vgprs, def.physReg(), def.bytes());
+         for (Operand& op : instr->operands)
+            fill_vgpr_bitset(*vgprs, op.physReg(), op.bytes());
+      }
+   }
+   if (instr->isDS() || instr->isFlat()) {
+      for (Definition& def : instr->definitions)
+         fill_vgpr_bitset(ctx.vgpr_used_by_ds, def.physReg(), def.bytes());
+      for (Operand& op : instr->operands)
+         fill_vgpr_bitset(ctx.vgpr_used_by_ds, op.physReg(), op.bytes());
+   }
+   wait_imm imm;
+   if (instr->isVALU() || instr->isEXP() || vm_vsrc == 0) {
+      ctx.vgpr_used_by_vmem_load.reset();
+      ctx.vgpr_used_by_vmem_sample.reset();
+      ctx.vgpr_used_by_vmem_bvh.reset();
+      ctx.vgpr_used_by_vmem_store.reset();
+      ctx.vgpr_used_by_ds.reset();
+   } else if (imm.unpack(state.program->gfx_level, instr.get())) {
+      if (imm.vm == 0)
+         ctx.vgpr_used_by_vmem_load.reset();
+      if (imm.sample == 0)
+         ctx.vgpr_used_by_vmem_sample.reset();
+      if (imm.bvh == 0)
+         ctx.vgpr_used_by_vmem_bvh.reset();
+      if (imm.lgkm == 0)
+         ctx.vgpr_used_by_ds.reset();
+      if (imm.vs == 0)
+         ctx.vgpr_used_by_vmem_store.reset();
+   }
+   if (instr->isLDSDIR()) {
+      if (ctx.vgpr_used_by_vmem_load[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_vmem_sample[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_vmem_bvh[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_vmem_store[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_ds[instr->definitions[0].physReg().reg() - 256]) {
+         if (state.program->gfx_level >= GFX12)
+            instr->ldsdir().wait_vsrc = 0;
+         else
+            bld.sopp(aco_opcode::s_waitcnt_depctr, 0xffe3);
+         ctx.vgpr_used_by_vmem_load.reset();
+         ctx.vgpr_used_by_vmem_sample.reset();
+         ctx.vgpr_used_by_vmem_bvh.reset();
+         ctx.vgpr_used_by_vmem_store.reset();
+         ctx.vgpr_used_by_ds.reset();
+      }
+   }
+
+   /* WMMA Hazards */
+   if (instr_info.classes[(int)instr->opcode] == instr_class::wmma) {
+      assert(instr->operands.back().regClass() == instr->definitions[0].regClass());
+
+      bool is_swmma = instr->operands.size() == 4;
+      if (test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[0]) ||
+          test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[1]) ||
+          (is_swmma && test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[2]))) {
+         bld.vop1(aco_opcode::v_nop);
+      }
+
+      ctx.vgpr_written_by_wmma.reset();
+      fill_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->definitions[0].physReg(),
+                       instr->definitions[0].bytes());
+   } else if (instr->isVALU()) {
+      ctx.vgpr_written_by_wmma.reset();
+   }
+}
+
+bool
+has_vdst0_since_valu_instr(bool& global_state, unsigned& block_state, aco_ptr<Instruction>& pred)
+{
+   if (parse_depctr_wait(pred.get()).va_vdst == 0)
+      return true;
+
+   if (--block_state == 0) {
+      global_state = false;
+      return true;
+   }
+
+   if (pred->isVALU()) {
+      bool vgpr_rd_or_wr = false;
+      for (Definition def : pred->definitions) {
+         if (def.physReg().reg() >= 256)
+            vgpr_rd_or_wr = true;
+      }
+      for (Operand op : pred->operands) {
+         if (op.physReg().reg() >= 256)
+            vgpr_rd_or_wr = true;
+      }
+      if (vgpr_rd_or_wr) {
+         global_state = false;
+         return true;
+      }
+   }
+
+   return false;
+}
+
+void
+resolve_all_gfx11(State& state, NOP_ctx_gfx11& ctx,
+                  std::vector<aco_ptr<Instruction>>& new_instructions)
+{
+   Builder bld(state.program, &new_instructions);
+
+   unsigned waitcnt_depctr = 0xffff;
+   bool valu_read_sgpr = false;
+
+   /* LdsDirectVALUHazard/VALUPartialForwardingHazard/VALUTransUseHazard */
+   bool has_vdst0_since_valu = true;
+   unsigned depth = 16;
+   search_backwards<bool, unsigned, nullptr, has_vdst0_since_valu_instr>(
+      state, has_vdst0_since_valu, depth);
+   if (!has_vdst0_since_valu) {
+      waitcnt_depctr &= 0x0fff;
+      ctx.valu_since_wr_by_trans.reset();
+      ctx.trans_since_wr_by_trans.reset();
+   }
+
+   /* VcmpxPermlaneHazard/WMMAHazards */
+   if (ctx.has_Vcmpx || ctx.vgpr_written_by_wmma.any()) {
+      ctx.has_Vcmpx = false;
+      ctx.vgpr_written_by_wmma.reset();
+      bld.vop1(aco_opcode::v_nop);
+   }
+
+   /* VALUMaskWriteHazard */
+   if (state.program->gfx_level < GFX12 && state.program->wave_size == 64) {
+      if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.any()) {
+         waitcnt_depctr &= 0xfffe;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+      }
+      if (ctx.sgpr_read_by_valu_as_lanemask.any()) {
+         valu_read_sgpr = true;
+         ctx.sgpr_read_by_valu_as_lanemask.reset();
+      }
+   }
+
+   /* VALUReadSGPRHazard */
+   if (state.program->gfx_level >= GFX12) {
+      if (!ctx.sgpr_read_by_valu_then_wr_by_salu.empty())
+         waitcnt_depctr &= 0xfffe;
+
+      ctx.sgpr_read_by_valu_then_wr_by_salu.reset();
+      if (ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] ||
+          ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi]) {
+         waitcnt_depctr &= 0xfffd;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = false;
+      }
+      if (ctx.sgpr_read_by_valu_then_wr_by_valu.any()) {
+         waitcnt_depctr &= 0xf1ff;
+         ctx.sgpr_read_by_valu_then_wr_by_valu.reset();
+      }
+   }
+
+   /* LdsDirectVMEMHazard */
+   if (ctx.vgpr_used_by_vmem_load.any() || ctx.vgpr_used_by_vmem_store.any() ||
+       ctx.vgpr_used_by_ds.any() || ctx.vgpr_used_by_vmem_sample.any() ||
+       ctx.vgpr_used_by_vmem_bvh.any()) {
+      waitcnt_depctr &= 0xffe3;
+      ctx.vgpr_used_by_vmem_load.reset();
+      ctx.vgpr_used_by_vmem_store.reset();
+      ctx.vgpr_used_by_ds.reset();
+   }
+
+   if (waitcnt_depctr != 0xffff)
+      bld.sopp(aco_opcode::s_waitcnt_depctr, waitcnt_depctr);
+
+   if (valu_read_sgpr) {
+      /* This has to be after the s_waitcnt_depctr so that the instruction is not involved in any
+       * other hazards. */
+      bld.vop3(aco_opcode::v_xor3_b32, Definition(PhysReg(256), v1), Operand(PhysReg(256), v1),
+               Operand(PhysReg(0), s1), Operand(PhysReg(0), s1));
+
+      /* workaround possible LdsDirectVALUHazard/VALUPartialForwardingHazard */
+      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
    }
 }
 
@@ -847,7 +1797,10 @@ template <typename Ctx>
 using HandleInstr = void (*)(State& state, Ctx&, aco_ptr<Instruction>&,
                              std::vector<aco_ptr<Instruction>>&);
 
-template <typename Ctx, HandleInstr<Ctx> Handle>
+template <typename Ctx>
+using ResolveAll = void (*)(State& state, Ctx&, std::vector<aco_ptr<Instruction>>&);
+
+template <typename Ctx, HandleInstr<Ctx> Handle, ResolveAll<Ctx> Resolve>
 void
 handle_block(Program* program, Ctx& ctx, Block& block)
 {
@@ -862,15 +1815,36 @@ handle_block(Program* program, Ctx& ctx, Block& block)
    block.instructions.clear(); // Silence clang-analyzer-cplusplus.Move warning
    block.instructions.reserve(state.old_instructions.size());
 
+   bool found_end = false;
    for (aco_ptr<Instruction>& instr : state.old_instructions) {
       Handle(state, ctx, instr, block.instructions);
+
+      /* Resolve all possible hazards (we don't know what s_setpc_b64 jumps to). */
+      if (instr->opcode == aco_opcode::s_setpc_b64) {
+         block.instructions.emplace_back(std::move(instr));
+
+         std::vector<aco_ptr<Instruction>> resolve_instrs;
+         Resolve(state, ctx, resolve_instrs);
+         block.instructions.insert(std::prev(block.instructions.end()),
+                                   std::move_iterator(resolve_instrs.begin()),
+                                   std::move_iterator(resolve_instrs.end()));
+
+         found_end = true;
+         continue;
+      }
+
+      found_end |= instr->opcode == aco_opcode::s_endpgm;
       block.instructions.emplace_back(std::move(instr));
    }
+
+   /* Resolve all possible hazards (we don't know what the shader is concatenated with). */
+   if (block.linear_succs.empty() && !found_end)
+      Resolve(state, ctx, block.instructions);
 }
 
-template <typename Ctx, HandleInstr<Ctx> Handle>
+template <typename Ctx, HandleInstr<Ctx> Handle, ResolveAll<Ctx> Resolve>
 void
-mitigate_hazards(Program* program)
+mitigate_hazards(Program* program, Ctx initial_ctx = Ctx())
 {
    std::vector<Ctx> all_ctx(program->blocks.size());
    std::stack<unsigned, std::vector<unsigned>> loop_header_indices;
@@ -878,6 +1852,9 @@ mitigate_hazards(Program* program)
    for (unsigned i = 0; i < program->blocks.size(); i++) {
       Block& block = program->blocks[i];
       Ctx& ctx = all_ctx[i];
+
+      if (i == 0 || (block.kind & block_kind_resume))
+         ctx = initial_ctx;
 
       if (block.kind & block_kind_loop_header) {
          loop_header_indices.push(i);
@@ -888,7 +1865,7 @@ mitigate_hazards(Program* program)
             for (unsigned b : program->blocks[idx].linear_preds)
                loop_block_ctx.join(all_ctx[b]);
 
-            handle_block<Ctx, Handle>(program, loop_block_ctx, program->blocks[idx]);
+            handle_block<Ctx, Handle, Resolve>(program, loop_block_ctx, program->blocks[idx]);
 
             /* We only need to continue if the loop header context changed */
             if (idx == loop_header_indices.top() && loop_block_ctx == all_ctx[idx])
@@ -903,7 +1880,71 @@ mitigate_hazards(Program* program)
       for (unsigned b : block.linear_preds)
          ctx.join(all_ctx[b]);
 
-      handle_block<Ctx, Handle>(program, ctx, block);
+      handle_block<Ctx, Handle, Resolve>(program, ctx, block);
+   }
+}
+
+/* FeatureRequiredExportPriority in LLVM */
+void
+required_export_priority(Program* program)
+{
+   /* Skip callees, assuming that the caller has already increased the priority. */
+   bool increase_priority = !program->is_epilog && !program->info.vs.has_prolog &&
+                            (!program->info.merged_shader_compiled_separately ||
+                             program->stage.sw == SWStage::VS || program->stage.sw == SWStage::TES);
+   increase_priority |= program->is_prolog;
+
+   for (Block& block : program->blocks) {
+      std::vector<aco_ptr<Instruction>> new_instructions;
+      new_instructions.reserve(block.instructions.size() + 6);
+
+      Builder bld(program, &new_instructions);
+
+      if (increase_priority && block.index == 0) {
+         if (!block.instructions.empty() && block.instructions[0]->opcode == aco_opcode::s_setprio)
+            block.instructions[0]->salu().imm = MAX2(block.instructions[0]->salu().imm, 2);
+         else
+            bld.sopp(aco_opcode::s_setprio, 2);
+      }
+
+      for (unsigned i = 0; i < block.instructions.size(); i++) {
+         Instruction* instr = block.instructions[i].get();
+         new_instructions.push_back(std::move(block.instructions[i]));
+
+         if (instr->opcode == aco_opcode::s_setprio) {
+            instr->salu().imm = MAX2(instr->salu().imm, 2);
+            continue;
+         }
+
+         bool end_of_export_sequence = instr->isEXP() && (i == block.instructions.size() - 1 ||
+                                                          !block.instructions[i + 1]->isEXP());
+         if (!end_of_export_sequence)
+            continue;
+
+         bool before_endpgm = false;
+         if (i != block.instructions.size() - 1) {
+            before_endpgm = block.instructions[i + 1]->opcode == aco_opcode::s_endpgm;
+         } else {
+            /* Does this fallthrough to a s_endpgm? */
+            for (unsigned j = block.index + 1; j < program->blocks.size(); j++) {
+               if (program->blocks[j].instructions.size() == 1 &&
+                   program->blocks[j].instructions[0]->opcode == aco_opcode::s_endpgm)
+                  before_endpgm = true;
+               if (!program->blocks[j].instructions.empty())
+                  break;
+            }
+         }
+
+         bld.sopp(aco_opcode::s_setprio, 0);
+         if (!before_endpgm)
+            bld.sopk(aco_opcode::s_waitcnt_expcnt, Operand(sgpr_null, s1), 0);
+         bld.sopp(aco_opcode::s_nop, 0);
+         bld.sopp(aco_opcode::s_nop, 0);
+         if (!before_endpgm)
+            bld.sopp(aco_opcode::s_setprio, 2);
+      }
+
+      block.instructions = std::move(new_instructions);
    }
 }
 
@@ -912,12 +1953,33 @@ mitigate_hazards(Program* program)
 void
 insert_NOPs(Program* program)
 {
-   if (program->gfx_level >= GFX10_3)
+   if (program->gfx_level >= GFX11) {
+      NOP_ctx_gfx11 initial_ctx;
+
+      bool has_previous_part =
+         program->is_epilog || program->info.vs.has_prolog || program->info.ps.has_prolog ||
+         (program->info.merged_shader_compiled_separately && program->stage.sw != SWStage::VS &&
+          program->stage.sw != SWStage::TES) || program->stage == raytracing_cs;
+      if (program->gfx_level >= GFX12 && has_previous_part) {
+         /* resolve_all_gfx11 can't resolve VALUReadSGPRHazard entirely. We have to assume that any
+          * SGPR might have been read by VALU if there was a previous shader part.
+          */
+         initial_ctx.sgpr_read_by_valu.flip();
+      }
+
+      mitigate_hazards<NOP_ctx_gfx11, handle_instruction_gfx11, resolve_all_gfx11>(program,
+                                                                                   initial_ctx);
+   } else if (program->gfx_level >= GFX10_3) {
       ; /* no hazards/bugs to mitigate */
-   else if (program->gfx_level >= GFX10)
-      mitigate_hazards<NOP_ctx_gfx10, handle_instruction_gfx10>(program);
-   else
-      mitigate_hazards<NOP_ctx_gfx6, handle_instruction_gfx6>(program);
+   } else if (program->gfx_level >= GFX10) {
+      mitigate_hazards<NOP_ctx_gfx10, handle_instruction_gfx10, resolve_all_gfx10>(program);
+   } else {
+      mitigate_hazards<NOP_ctx_gfx6, handle_instruction_gfx6, resolve_all_gfx6>(program);
+   }
+
+   if (program->gfx_level == GFX11_5 && (program->stage.hw == AC_HW_NEXT_GEN_GEOMETRY_SHADER ||
+                                         program->stage.hw == AC_HW_PIXEL_SHADER))
+      required_export_priority(program);
 }
 
 } // namespace aco

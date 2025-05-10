@@ -1,5 +1,5 @@
 ohos_project_dir=ohos_project_directory_stub
-libdir=${ohos_project_dir}/out/ohos-arm-release/packages/phone/system/lib/
+libdir=${ohos_project_dir}/out/ohos-arm-release/packages/phone/system/lib64/
 includedir=${ohos_project_dir}/third_party/eudev/export_include
 
 Name: eudev

@@ -26,12 +26,12 @@
 #include "st_program.h"
 #include "st_shader_cache.h"
 #include "st_util.h"
-#include "compiler/glsl/program.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_serialize.h"
 #include "main/uniforms.h"
 #include "pipe/p_shader_tokens.h"
 #include "util/u_memory.h"
+#include "util/perf/cpu_trace.h"
 
 void
 st_get_program_binary_driver_sha1(struct gl_context *ctx, uint8_t *sha1)
@@ -55,8 +55,7 @@ write_stream_out_to_cache(struct blob *blob,
 static void
 copy_blob_to_driver_cache_blob(struct blob *blob, struct gl_program *prog)
 {
-   prog->driver_cache_blob = ralloc_size(NULL, blob->size);
-   memcpy(prog->driver_cache_blob, blob->data, blob->size);
+   prog->driver_cache_blob = ralloc_memdup(NULL, blob->data, blob->size);
    prog->driver_cache_blob_size = blob->size;
 }
 
@@ -146,6 +145,8 @@ st_deserialise_nir_program(struct gl_context *ctx,
    size_t size = prog->driver_cache_blob_size;
    uint8_t *buffer = (uint8_t *) prog->driver_cache_blob;
 
+   MESA_TRACE_FUNC();
+
    st_set_prog_affected_state_flags(prog);
 
    /* Avoid reallocation of the program parameter list, because the uniform
@@ -196,7 +197,7 @@ st_deserialise_nir_program(struct gl_context *ctx,
       }
    }
 
-   st_finalize_program(st, prog);
+   st_finalize_program(st, prog, false);
 }
 
 bool

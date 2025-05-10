@@ -1,28 +1,38 @@
 #!/bin/bash
+# shellcheck disable=SC2086 # we want word splitting
+set -uex
 
-set -ex
+uncollapsed_section_start piglit "Building piglit"
+
+# When changing this file, you need to bump the following
+# .gitlab-ci/image-tags.yml tags:
+# DEBIAN_TEST_GL_TAG
+# DEBIAN_TEST_VK_TAG
+# KERNEL_ROOTFS_TAG
+
+REV="631b72944f56e688f56a08d26c8a9f3988801a08"
 
 git clone https://gitlab.freedesktop.org/mesa/piglit.git --single-branch --no-checkout /piglit
 pushd /piglit
-git checkout b2c9d8f56b45d79f804f4cb5ac62520f0edd8988
-
-# TODO: Remove the following patch when piglit commit got past
-# 1cd716180cfb6ef0c1fc54702460ef49e5115791
-git apply $OLDPWD/.gitlab-ci/piglit/build-piglit_backport-s3-migration.diff
-
+git checkout "$REV"
 patch -p1 <$OLDPWD/.gitlab-ci/piglit/disable-vs_in.diff
-cmake -S . -B . -G Ninja -DCMAKE_BUILD_TYPE=Release $PIGLIT_OPTS $EXTRA_CMAKE_ARGS
-ninja $PIGLIT_BUILD_TARGETS
-find -name .git -o -name '*ninja*' -o -iname '*cmake*' -o -name '*.[chao]' | xargs rm -rf
+cmake -S . -B . -G Ninja -DCMAKE_BUILD_TYPE=Release $PIGLIT_OPTS ${EXTRA_CMAKE_ARGS:-}
+ninja ${PIGLIT_BUILD_TARGETS:-}
+find . -depth \( -name .git -o -name '*ninja*' -o -iname '*cmake*' -o -name '*.[chao]' \) \
+       ! -name 'include_test.h' -exec rm -rf {} \;
 rm -rf target_api
-if [ "x$PIGLIT_BUILD_TARGETS" = "xpiglit_replayer" ]; then
-    find ! -regex "^\.$" \
+if [ "${PIGLIT_BUILD_TARGETS:-}" = "piglit_replayer" ]; then
+    find . -depth \
+         ! -regex "^\.$" \
          ! -regex "^\.\/piglit.*" \
          ! -regex "^\.\/framework.*" \
          ! -regex "^\.\/bin$" \
          ! -regex "^\.\/bin\/replayer\.py" \
          ! -regex "^\.\/templates.*" \
          ! -regex "^\.\/tests$" \
-         ! -regex "^\.\/tests\/replay\.py" 2>/dev/null | xargs rm -rf
+         ! -regex "^\.\/tests\/replay\.py" \
+         -exec rm -rf {} \; 2>/dev/null
 fi
 popd
+
+section_end piglit

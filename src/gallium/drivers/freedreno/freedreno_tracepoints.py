@@ -1,24 +1,7 @@
 #
-# Copyright (C) 2020 Google, Inc.
+# Copyright © 2020 Google, Inc.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice (including the next
-# paragraph) shall be included in all copies or substantial portions of the
-# Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 #
 
 import argparse
@@ -62,10 +45,12 @@ def begin_end_tp(name, args=[], tp_struct=None, tp_print=None,
                args=args,
                tp_struct=tp_struct,
                tp_perfetto='fd_start_{0}'.format(name),
-               tp_print=tp_print)
+               tp_print=tp_print,
+               tp_markers='fd_cs_trace_start')
     Tracepoint('end_{0}'.format(name),
                toggle_name=name,
-               tp_perfetto='fd_end_{0}'.format(name))
+               tp_perfetto='fd_end_{0}'.format(name),
+               tp_markers='fd_cs_trace_end')
 
 
 def singular_tp(name, args=[], tp_struct=None, tp_print=None,
@@ -77,12 +62,13 @@ def singular_tp(name, args=[], tp_struct=None, tp_print=None,
                toggle_name=name,
                args=args,
                tp_struct=tp_struct,
-               tp_print=tp_print)
+               tp_print=tp_print,
+               tp_markers='fd_cs_trace_msg')
 
 begin_end_tp('state_restore')
 
 singular_tp('flush_batch',
-    args=[TracepointArg(type='struct fd_batch *', var='batch',       c_format='%x'),
+    args=[TracepointArg(type='struct fd_batch *', var='batch',       c_format='%p'),
           TracepointArg(type='uint16_t',          var='cleared',     c_format='%x'),
           TracepointArg(type='uint16_t',          var='gmem_reason', c_format='%x'),
           TracepointArg(type='uint16_t',          var='num_draws',   c_format='%u')],
@@ -120,13 +106,21 @@ begin_end_tp('binning_ib')
 begin_end_tp('vsc_overflow_test')
 begin_end_tp('prologue')
 
-# For GMEM pass, where this could either be a clear or resolve
-begin_end_tp('clear_restore',
+# Either sysmem or gmem clears
+begin_end_tp('clears',
     args=[TracepointArg(type='uint16_t', var='fast_cleared', c_format='0x%x')],
     tp_print=['fast_cleared: 0x%x', '__entry->fast_cleared'],
 )
 
-begin_end_tp('resolve')
+begin_end_tp('tile_loads',
+    args=[TracepointArg(type='uint16_t', var='load', c_format='0x%x')],
+    tp_print=['load=0x%x', '__entry->load'],
+)
+
+begin_end_tp('tile_stores',
+    args=[TracepointArg(type='uint16_t', var='store', c_format='0x%x')],
+    tp_print=['store: 0x%x', '__entry->store'],
+)
 
 singular_tp('start_tile',
     args=[TracepointArg(type='uint16_t', var='bin_h', c_format='%u'),
@@ -146,7 +140,17 @@ begin_end_tp('blit',
         'util_str_tex_target(__entry->dst_target, true)'],
 )
 
-begin_end_tp('compute')
+begin_end_tp('compute',
+    args=[TracepointArg(type='uint8_t',  var='indirect',     c_format='%u'),
+          TracepointArg(type='uint8_t',  var='work_dim',     c_format='%u'),
+          TracepointArg(type='uint16_t', var='local_size_x', c_format='%u'),
+          TracepointArg(type='uint16_t', var='local_size_y', c_format='%u'),
+          TracepointArg(type='uint16_t', var='local_size_z', c_format='%u'),
+          TracepointArg(type='uint32_t', var='num_groups_x', c_format='%u'),
+          TracepointArg(type='uint32_t', var='num_groups_y', c_format='%u'),
+          TracepointArg(type='uint32_t', var='num_groups_z', c_format='%u'),
+          TracepointArg(type='uint32_t', var='shader_id',    c_format='%u')]
+)
 
 utrace_generate(cpath=args.src,
                 hpath=args.hdr,
