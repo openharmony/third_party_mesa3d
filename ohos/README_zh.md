@@ -27,9 +27,9 @@ sudo apt-get install pkg-config
 
 |  参数   | 说明  |
 |  ----  | ----  |
-| arg1  | openharmony代码路径 |
-| arg2  | 产品名字，实际上为out目录下存放系统编译结果的那个目录 如hi3516dv300 或则 rk3568， 注： LTS3.0 的版本必须是 ohos-arm-release|
-| arg3 |  mesa 源码路径|
+| arg1   | openharmony代码路径 |
+| arg2   | 产品名字，实际上为out目录下存放系统编译结果的那个目录 如hi3516dv300 或则 rk3568， 注： LTS3.0 的版本必须是 ohos-arm-release|
+| arg3   | mesa 源码路径 |
 
 示例如下：
 ~/openharmony  是openharmony源码路径， rk3568是对应的产品输出目录，~/mesa3d为mesa源码路径, 执行完命令后会生成一个名叫builddir的文件夹，该文件夹是mesa的编译目录. 编译完成后相关的库存放在builddir/install/lib 下
