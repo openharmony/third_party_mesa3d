@@ -1587,7 +1587,7 @@ if dep_zlib.found()
   pre_args += '-DHAVE_ZLIB'
 endif
 
-dep_zstd = dependency('libzstd', required : get_option('zstd'))
+dep_zstd = dependency('libzstd', version : '>= 2.9.9', required : get_option('zstd'))
 if dep_zstd.found()
   pre_args += '-DHAVE_ZSTD'
 endif
