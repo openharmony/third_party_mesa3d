@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import("//build/ohos.gni")
+import("dependency_inputs.gni")
 
 SUBSYSTEM_NAME="thirdparty"
 PART_NAME="mesa3d"
@@ -19,6 +20,7 @@ PART_NAME="mesa3d"
 action("mesa3d_action_build") {
   print("mesa3d_action_build")
   script = "//third_party/mesa3d/ohos/build_ohos64.py"
+  inputs = deps_inputs
   outputs = [
     "${root_build_dir}/thirdparty/mesa3d/lib/libEGL_mesa.so",
     "${root_build_dir}/thirdparty/mesa3d/lib/libgallium-25.0.1.so",

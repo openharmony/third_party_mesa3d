@@ -20,7 +20,6 @@ import("//build/config/clang/clang.gni")
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import("//build/ohos.gni")
-import("dependency_inputs.gni")
 mesa3d_libs_dir = "$root_build_dir/packages/phone/mesa3d"
 
 mesa3d_gallium_symlinks = [ "panfrost_dri.so" ]
@@ -73,7 +72,6 @@ mesa3d_all_lib_items = [
 ]
 
 action("mesa3d_build") {
-  inputs = deps_inputs
   script = "build_mesa3d.py"
   deps = [
     "//foundation/graphic/graphic_2d:libsurface",
