@@ -36,13 +36,17 @@ c_args = [
     '--target=aarch64-linux-ohosmusl',
     '--sysroot=sysroot_stub',
     '-fno-emulated-tls',
-    '-fPIC']
+    '-fPIC',
+    asan_compile_args_stub
+    ]
 
 cpp_args = [
     '--target=aarch64-linux-ohosmusl',
     '--sysroot=sysroot_stub',
     '-fno-emulated-tls',
-    '-fPIC']
+    '-fPIC',
+    asan_compile_args_stub
+    ]
     
 c_link_args = [
     '--target=aarch64-linux-ohosmusl',
@@ -52,6 +56,7 @@ c_link_args = [
     '-Lproject_stub/prebuilts/clang/ohos/linux-x86_64/llvm/lib/clang/current/lib/aarch64-linux-ohos',
     '-Lproject_stub/prebuilts/clang/ohos/linux-x86_64/llvm/lib/aarch64-linux-ohos/c++',
     '--rtlib=compiler-rt',
+    asan_link_args_stub
     ]
 
 cpp_link_args = [
@@ -66,6 +71,7 @@ cpp_link_args = [
     '-Wl,--exclude-libs=libvpx_assembly_arm.a',
     '-Wl,--warn-shared-textrel',
     '--rtlib=compiler-rt',
+    asan_link_args_stub
     ]
 	
 [binaries]
@@ -84,10 +90,47 @@ cpu = 'armv8'
 endian = 'little'
 '''
 
-def generate_cross_file(project_stub_in, sysroot_stub_in):
+hwasan_compile_args = '''
+    '-shared-libasan',
+    '-fsanitize=hwaddress',
+    '-mllvm',
+    '-hwasan-globals=0',
+    '-fno-lto',
+    '-fno-whole-program-vtables',
+'''
+hwasan_link_args = '''
+    '-shared-libasan',
+    '-fsanitize=hwaddress',
+'''
+
+swasan_compile_args = '''
+    '-fsanitize=address',
+    '-fno-inline-functions',
+    '-fno-inline',
+    '-fsanitize-address-use-after-scope',
+    '-fno-omit-frame-pointer',
+'''
+swasan_link_args = '''
+    '-lclang_rt.asan',
+'''
+
+noasan_compile_args = '''
+'''
+noasan_link_args = '''
+'''
+def generate_cross_file(project_stub_in, sysroot_stub_in, asan_option):
     with open("thirdparty/mesa3d/cross_file", 'w+') as file:
         result = corss_file_content.replace("project_stub", project_stub_in)
         result = result.replace("sysroot_stub", sysroot_stub_in)
+        if asan_option == "hwasan":
+            result = result.replace("asan_compile_args_stub", hwasan_compile_args)
+            result = result.replace("asan_link_args_stub", hwasan_link_args)
+        elif asan_option == "swasan":
+            result = result.replace("asan_compile_args_stub", swasan_compile_args)
+            result = result.replace("asan_link_args_stub", swasan_link_args)
+        else:
+            result = result.replace("asan_compile_args_stub", noasan_compile_args)
+            result = result.replace("asan_link_args_stub", noasan_link_args)
         file.write(result)
     print("generate_cross_file")
 
@@ -113,17 +156,17 @@ def process_pkgconfig(project_dir, product_name):
             generate_pc_file(template_dir + '/' + template, project_dir, product_name)
     print("process_pkgconfig")
 
-def prepare_environment(project_path, product):
+def prepare_environment(project_path, product, asan_option):
     global project_stub
     global sysroot_stub
     product = product.lower()
     project_stub = project_path
     sysroot_stub = os.path.join(project_stub, "out", product, "obj", "third_party", "musl")
-    generate_cross_file(project_path, sysroot_stub)
+    generate_cross_file(project_path, sysroot_stub, asan_option)
     process_pkgconfig(project_path, product)
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print("must input the OpenHarmony directory and the product name")
+    if len(sys.argv) < 4:
+        print("must input the OpenHarmony directory and the product name and the asan option")
         exit(-1)
-    prepare_environment(sys.argv[1], sys.argv[2])
+    prepare_environment(sys.argv[1], sys.argv[2], sys.argv[3])
