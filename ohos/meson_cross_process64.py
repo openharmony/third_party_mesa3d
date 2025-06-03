@@ -37,6 +37,10 @@ c_args = [
     '--sysroot=sysroot_stub',
     '-fno-emulated-tls',
     '-fPIC',
+    '-g',
+    '-O2',
+    '-D_FORTIFY_SOURCE=2',
+    '-fstack-protector-all',
     asan_compile_args_stub
     ]
 
@@ -45,6 +49,10 @@ cpp_args = [
     '--sysroot=sysroot_stub',
     '-fno-emulated-tls',
     '-fPIC',
+    '-g',
+    '-O2',
+    '-D_FORTIFY_SOURCE=2',
+    '-fstack-protector-all',
     asan_compile_args_stub
     ]
     
