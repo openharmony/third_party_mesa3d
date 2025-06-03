@@ -50,13 +50,27 @@ action("mesa3d_action_build") {
   ]
 }
 
+ohos_copy("mesa3d_unstripped_copy") {
+  sources = [
+    "${root_build_dir}/thirdparty/mesa3d/lib/libEGL_mesa.so",
+    "${root_build_dir}/thirdparty/mesa3d/lib/libgallium-25.0.1.so",
+  ]
+  outputs = [ root_out_dir + "/lib.unstripped/thirdparty/mesa3d/{{source_file_part}}" ]
+  deps = [ ":mesa3d_action_build" ]
+}
+
 ohos_prebuilt_shared_library("mesa3d_libEGL") {
   source = "${root_build_dir}/thirdparty/mesa3d/lib/libEGL_mesa.so"
   subsystem_name = "$SUBSYSTEM_NAME"
   part_name = "$PART_NAME"
   module_install_dir = "lib64"
   install_enable = true
-  deps = [ ":mesa3d_action_build" ]
+  enable_strip = true
+  mini_debug = true
+  deps = [
+    ":mesa3d_action_build",
+    ":mesa3d_unstripped_copy"
+  ]
 }
 
 ohos_prebuilt_shared_library("mesa3d_libgallium") {
@@ -65,7 +79,12 @@ ohos_prebuilt_shared_library("mesa3d_libgallium") {
   part_name = "$PART_NAME"
   module_install_dir = "lib64"
   install_enable = true
-  deps = [ ":mesa3d_action_build" ]
+  enable_strip = true
+  mini_debug = true
+  deps = [
+    ":mesa3d_action_build",
+    ":mesa3d_unstripped_copy"
+  ]
 }
 
 group("zink_opengl") {
