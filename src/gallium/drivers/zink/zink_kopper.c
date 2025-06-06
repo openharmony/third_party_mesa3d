@@ -30,6 +30,8 @@
 #include "zink_resource.h"
 #include "zink_kopper.h"
 
+#define SWAP_BUFFER_COUNT 5
+
 static void
 zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
 {
@@ -304,7 +306,11 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
       cswap->scci.clipped = VK_TRUE;
    }
    cswap->scci.presentMode = cdt->present_mode;
-   cswap->scci.minImageCount = cdt->caps.minImageCount;
+   if (SWAP_BUFFER_COUNT >= cdt->caps.minImageCount && SWAP_BUFFER_COUNT <= cdt->caps.maxImageCount) {
+      cswap->scci.minImageCount = SWAP_BUFFER_COUNT;
+   } else {
+      cswap->scci.minImageCount = cdt->caps.minImageCount;
+   }
    cswap->scci.preTransform = cdt->caps.currentTransform;
    if (cdt->formats[1])
       cswap->scci.pNext = &cdt->format_list;
