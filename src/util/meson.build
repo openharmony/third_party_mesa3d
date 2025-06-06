@@ -249,6 +249,7 @@ endif
 
 if with_platform_ohos
   deps_for_libmesa_util += dependency('libhilog')
+  deps_for_libmesa_util += dependency('libhitrace')
 endif
 
 if with_perfetto

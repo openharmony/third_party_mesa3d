@@ -40,6 +40,7 @@
 #include "mtypes.h"
 #include "state.h"
 #include "api_exec_decl.h"
+#include "util/perf/cpu_trace.h"
 
 #include "state_tracker/st_cb_clear.h"
 
@@ -237,6 +238,7 @@ _mesa_Clear_no_error(GLbitfield mask)
 void GLAPIENTRY
 _mesa_Clear(GLbitfield mask)
 {
+   MESA_TRACE_SCOPE("Mesa-glClear");
    GET_CURRENT_CONTEXT(ctx);
 
    if (MESA_VERBOSE & VERBOSE_API)

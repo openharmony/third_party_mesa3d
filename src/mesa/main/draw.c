@@ -49,6 +49,7 @@
 #include "state_tracker/st_draw.h"
 #include "util/u_draw.h"
 #include "util/u_threaded_context.h"
+#include "util/perf/cpu_trace.h"
 
 typedef struct {
    GLuint count;
@@ -1368,6 +1369,7 @@ _mesa_EvalMesh2(GLenum mode, GLint i1, GLint i2, GLint j1, GLint j2)
 void GLAPIENTRY
 _mesa_DrawArrays(GLenum mode, GLint start, GLsizei count)
 {
+   MESA_TRACE_SCOPE("Mesa-glDrawArrays");
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_FOR_DRAW(ctx);
 

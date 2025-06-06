@@ -26,7 +26,8 @@
             "components": [
                 "c_utils",
                 "graphic_surface",
-                "hilog"
+                "hilog",
+                "hitrace"
             ],
             "third_party": [
                 "zlib"
