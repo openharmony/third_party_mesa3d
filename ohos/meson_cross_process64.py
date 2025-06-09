@@ -155,39 +155,47 @@ def generate_cross_file(project_stub_in, sysroot_stub_in, asan_option, coverage_
         file.write(result)
     print("generate_cross_file")
 
-def generate_pc_file(file_raw, project_dir, product_name):
+def generate_pc_file(file_raw, project_dir, product_name, skia_version):
     print(file_raw)
     if not os.path.exists('thirdparty/mesa3d/pkgconfig'):
         os.makedirs('thirdparty/mesa3d/pkgconfig')
-    filename = 'thirdparty/mesa3d/pkgconfig/'+ ntpath.basename(file_raw)
+    shortfilename = ntpath.basename(file_raw)
+    filename = 'thirdparty/mesa3d/pkgconfig/'+ shortfilename
     with open(file_raw, 'r+') as file_raw:
         with open(filename, "w+") as pc_file:
             raw_content = file_raw.read()
             raw_content = raw_content.replace("ohos_project_directory_stub", project_dir)
             raw_content = raw_content.replace("ohos-arm-release", product_name)
             raw_content = raw_content.replace("ohos-arm", "ohos-arm64")
+            if shortfilename == "expat.pc":
+                if skia_version == "new_skia":
+                    raw_content = raw_content.replace("skia_folder_stub", "skia/m133")
+                    raw_content = raw_content.replace("expat_lib_stub", "expatm133")
+                else:
+                    raw_content = raw_content.replace("skia_folder_stub", "skia")
+                    raw_content = raw_content.replace("expat_lib_stub", "expat")
             pc_file.write(raw_content)
     print("generate_pc_file")
 
-def process_pkgconfig(project_dir, product_name):
+def process_pkgconfig(project_dir, product_name, skia_version):
     template_dir = os.path.split(os.path.abspath( __file__))[0] + r"/pkgconfig_template"
     templates = os.listdir(template_dir)
     for template in templates:
         if not os.path.isdir(template):
-            generate_pc_file(template_dir + '/' + template, project_dir, product_name)
+            generate_pc_file(template_dir + '/' + template, project_dir, product_name, skia_version)
     print("process_pkgconfig")
 
-def prepare_environment(project_path, product, asan_option, coverage_option):
+def prepare_environment(project_path, product, asan_option, coverage_option, skia_version):
     global project_stub
     global sysroot_stub
     product = product.lower()
     project_stub = project_path
     sysroot_stub = os.path.join(project_stub, "out", product, "obj", "third_party", "musl")
     generate_cross_file(project_path, sysroot_stub, asan_option, coverage_option)
-    process_pkgconfig(project_path, product)
+    process_pkgconfig(project_path, product, skia_version)
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
+    if len(sys.argv) < 6:
         print("must input the OpenHarmony directory, the product name, the asan option and the coverage option")
         exit(-1)
-    prepare_environment(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+    prepare_environment(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])

@@ -24,11 +24,11 @@ import sys
 import ntpath
 import os
 if __name__ == '__main__':
-    if len(sys.argv) < 6:
-        print("must input the OpenHarmony directory, the product name, the source dir, the asan option and the coverage option")
+    if len(sys.argv) < 7:
+        print("must input the OpenHarmony directory, the product name, the source dir, the asan option, the coverage option and the skia version")
         exit(-1)
     script_dir = os.path.split(os.path.abspath( __file__))[0]
-    run_cross_pross_cmd = 'python3 ' + script_dir + '/meson_cross_process64.py ' + sys.argv[1] + ' ' + sys.argv[2] + ' ' + sys.argv[4] + ' ' + sys.argv[5]
+    run_cross_pross_cmd = 'python3 ' + script_dir + '/meson_cross_process64.py ' + sys.argv[1] + ' ' + sys.argv[2] + ' ' + sys.argv[4] + ' ' + sys.argv[5] + ' ' + sys.argv[6]
     os.system(run_cross_pross_cmd)
 
     run_build_cmd = 'PKG_CONFIG_PATH=./thirdparty/mesa3d/pkgconfig '
