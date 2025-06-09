@@ -44,6 +44,7 @@ action("mesa3d_action_build") {
   ]
   external_deps = [
     "hilog:libhilog",
+    "hitrace:hitrace_meter",
     "graphic_surface:surface",
     "skia:expat",
     "zlib:libz",
