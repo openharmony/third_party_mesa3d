@@ -41,7 +41,7 @@ c_args = [
     '-O2',
     '-D_FORTIFY_SOURCE=2',
     '-fstack-protector-all',
-    asan_compile_args_stub
+    compile_args_stub
     ]
 
 cpp_args = [
@@ -53,7 +53,7 @@ cpp_args = [
     '-O2',
     '-D_FORTIFY_SOURCE=2',
     '-fstack-protector-all',
-    asan_compile_args_stub
+    compile_args_stub
     ]
     
 c_link_args = [
@@ -64,7 +64,7 @@ c_link_args = [
     '-Lproject_stub/prebuilts/clang/ohos/linux-x86_64/llvm/lib/clang/current/lib/aarch64-linux-ohos',
     '-Lproject_stub/prebuilts/clang/ohos/linux-x86_64/llvm/lib/aarch64-linux-ohos/c++',
     '--rtlib=compiler-rt',
-    asan_link_args_stub
+    link_args_stub
     ]
 
 cpp_link_args = [
@@ -79,7 +79,7 @@ cpp_link_args = [
     '-Wl,--exclude-libs=libvpx_assembly_arm.a',
     '-Wl,--warn-shared-textrel',
     '--rtlib=compiler-rt',
-    asan_link_args_stub
+    link_args_stub
     ]
 	
 [binaries]
@@ -121,24 +121,37 @@ swasan_compile_args = '''
 swasan_link_args = '''
     '-lclang_rt.asan',
 '''
-
 noasan_compile_args = '''
 '''
 noasan_link_args = '''
 '''
-def generate_cross_file(project_stub_in, sysroot_stub_in, asan_option):
+
+coverage_compile_args = '''
+    '--coverage',
+'''
+coverage_link_args = '''
+    '--coverage',
+'''
+def generate_cross_file(project_stub_in, sysroot_stub_in, asan_option, coverage_option):
     with open("thirdparty/mesa3d/cross_file", 'w+') as file:
         result = corss_file_content.replace("project_stub", project_stub_in)
         result = result.replace("sysroot_stub", sysroot_stub_in)
+        compile_args = ""
+        link_args = ""
         if asan_option == "hwasan":
-            result = result.replace("asan_compile_args_stub", hwasan_compile_args)
-            result = result.replace("asan_link_args_stub", hwasan_link_args)
+            compile_args = hwasan_compile_args
+            link_args = hwasan_link_args
         elif asan_option == "swasan":
-            result = result.replace("asan_compile_args_stub", swasan_compile_args)
-            result = result.replace("asan_link_args_stub", swasan_link_args)
+            compile_args = swasan_compile_args
+            link_args = swasan_link_args
         else:
-            result = result.replace("asan_compile_args_stub", noasan_compile_args)
-            result = result.replace("asan_link_args_stub", noasan_link_args)
+            compile_args = noasan_compile_args
+            link_args = noasan_link_args
+        if coverage_option == "use_clang_coverage":
+            compile_args = compile_args + coverage_compile_args
+            link_args = link_args + coverage_link_args
+        result = result.replace("compile_args_stub", compile_args)
+        result = result.replace("link_args_stub", link_args)
         file.write(result)
     print("generate_cross_file")
 
@@ -164,17 +177,17 @@ def process_pkgconfig(project_dir, product_name):
             generate_pc_file(template_dir + '/' + template, project_dir, product_name)
     print("process_pkgconfig")
 
-def prepare_environment(project_path, product, asan_option):
+def prepare_environment(project_path, product, asan_option, coverage_option):
     global project_stub
     global sysroot_stub
     product = product.lower()
     project_stub = project_path
     sysroot_stub = os.path.join(project_stub, "out", product, "obj", "third_party", "musl")
-    generate_cross_file(project_path, sysroot_stub, asan_option)
+    generate_cross_file(project_path, sysroot_stub, asan_option, coverage_option)
     process_pkgconfig(project_path, product)
 
 if __name__ == '__main__':
-    if len(sys.argv) < 4:
-        print("must input the OpenHarmony directory and the product name and the asan option")
+    if len(sys.argv) < 5:
+        print("must input the OpenHarmony directory, the product name, the asan option and the coverage option")
         exit(-1)
-    prepare_environment(sys.argv[1], sys.argv[2], sys.argv[3])
+    prepare_environment(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])

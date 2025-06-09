@@ -28,19 +28,28 @@ action("mesa3d_action_build") {
   ohos_root_path = rebase_path("//")
   product_name = rebase_path("${root_build_dir}", "//out")
   mesa3d_source_path = rebase_path("//third_party/mesa3d", root_build_dir)
-  asan_option = "noasan"
+
   if (is_asan) {
     if (use_hwasan) {
       asan_option = "hwasan"
     } else {
       asan_option = "swasan"
     }
+  } else {
+    asan_option = "noasan"
+  }
+
+  if (use_clang_coverage) {
+    coverage_option = "use_clang_coverage"
+  } else {
+    coverage_option = "no_coverage"
   }
   args = [
     "$ohos_root_path",
     "$product_name",
     "$mesa3d_source_path",
     "$asan_option",
+    "$coverage_option"
   ]
   external_deps = [
     "hilog:libhilog",
