@@ -74,8 +74,10 @@ Note:If the text contains special characters, please escape them according to th
                 <filteritem type="filepath" name="src/microsoft/compiler/dxcapi.h" desc="未找到对应LICENSE.TXT"/>
                 <filteritem type="filepath" name="src/imgui/imstb_textedit.h" desc="LICENSE是MIT，在文件末尾"/>
                 <filteritem type="filepath" name="src/freedreno/registers/rules-ng.xsd" desc="没有LICENSE"/>
+                <filteritem type="filepath" name="src/freedreno/registers/rules-fd.xsd" desc="没有LICENSE"/>
                 <filteritem type="filepath" name="ohos/BUILD.gn" desc="没有LICENSE"/>
                 <filteritem type="filename" name="*.rst" desc="third party"/>
+                <filteritem type="filepath" name="licenses/*" desc="licenses"/>
             </filefilter>
             <filefilter name="defaultPolicyFilter" desc="Filters for compatibility，license header policies">
                 <filteritem type="filename" name="README.OpenSource"/>
@@ -84,6 +86,10 @@ Note:If the text contains special characters, please escape them according to th
                 <filteritem type="filename" name="doxygen.ini.in"  desc="not used in ohos"/>
                 <filteritem type="filename" name="COPYING"  desc="data/COPYING not used in ohos"/>
                 <filteritem type="filename" name="DCO-1.1.txt"  desc="not used in ohos"/>
+                <filteritem type="filepath" name="include/drm-uapi/sync_file.h" desc="not used in ohos"/>
+                <filteritem type="filepath" name="src/etnaviv/hwdb/amlogic/gc_feature_database.h" desc="not used in ohos"/>
+                <filteritem type="filepath" name="src/util/perf/gpuvis_trace_utils.h" desc="not used in ohos"/>
+                <filteritem type="filepath" name="src/amd/vpelib/src/core/geometric_scaling.c" desc="not used in ohos"/>
             </filefilter>
             <filefilter name="copyrightPolicyFilter" desc="Filters for copyright header policies" >
                 <filteritem type="filename" name="README.OpenSource"/>
