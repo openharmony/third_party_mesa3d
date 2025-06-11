@@ -71,7 +71,7 @@
 #define _MESA_TRACE_TIMESTAMP_BEGIN(name, track_id, flow_id, clock, timestamp)
 #define _MESA_TRACE_TIMESTAMP_END(name, track_id, clock, timestamp)
 
-#elif DETECT_OS_OHOS
+#elif DETECT_OS_OHOS && MESA_DEBUG
 #include <hitrace_meter/hitrace_meter_c.h>
 #ifndef HITRACE_TAG_GRAPHIC_AGP
 #define HITRACE_TAG_GRAPHIC_AGP (1ULL << 38)    // Graphic module tag
