@@ -57,25 +57,6 @@ float3 rgb565to888( float rgb565 )
 	retVal.x = floor( rgb565 / 2048.0f );
 	retVal.y = floor( mod( rgb565, 2048.0f ) / 32.0f );
 	retVal.z = floor( mod( rgb565, 32.0f ) );
-
-	// This is the correct 565 to 888 conversion:
-	//		rgb = floor( rgb * ( 255.0f / float3( 31.0f, 63.0f, 31.0f ) ) + 0.5f )
-	//
-	// However stb_dxt follows a different one:
-	//		rb = floor( rb * ( 256 / 32 + 8 / 32 ) );
-	//		g  = floor( g  * ( 256 / 64 + 4 / 64 ) );
-	//
-	// I'm not sure exactly why but it's possible this is how the S3TC specifies it should be decoded
-	// It's quite possible this is the reason:
-	//		http://www.ludicon.com/castano/blog/2009/03/gpu-dxt-decompression/
-	//
-	// Or maybe it's just because it's cheap to do with integer shifts.
-	// Anyway, we follow stb_dxt's conversion just in case
-	// (gives almost the same result, with 1 or -1 of difference for a very few values)
-	//
-	// Perhaps when we make 888 -> 565 -> 888 it doesn't matter
-	// because they end up mapping to the original number
-
 	return floor( retVal * float3( 8.25f, 4.0625f, 8.25f ) );
 }
 
@@ -219,15 +200,6 @@ uint MatchColorsBlock( const uint srcPixelsBlock[16], float3 colour[4] )
 
 	for( int i = 0; i < 4; ++i )
 		stops[i] = dot( colour[i], dir );
-
-	// think of the colors as arranged on a line; project point onto that line, then choose
-	// next color out of available ones. we compute the crossover points for "best color in top
-	// half"/"best in bottom half" and then the same inside that subinterval.
-	//
-	// relying on this 1d approximation isn't always optimal in terms of euclidean distance,
-	// but it's very close and a lot faster.
-	// http://cbloomrants.blogspot.com/2008/12/12-08-08-dxtc-summary.html
-
 	float c0Point = trunc( ( stops[1] + stops[3] ) * 0.5f );
 	float halfPoint = trunc( ( stops[3] + stops[2] ) * 0.5f );
 	float c3Point = trunc( ( stops[2] + stops[0] ) * 0.5f );

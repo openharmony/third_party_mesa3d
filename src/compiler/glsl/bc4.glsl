@@ -101,9 +101,6 @@ void main()
 		maxVal = max( g_minMaxValues[minMaxIdxBase + i].y, maxVal );
 	}
 
-	// determine bias and emit color indices
-	// given the choice of maxVal/minVal, these indices are optimal:
-	// http://fgiesen.wordpress.com/2009/12/15/dxt5-alpha-block-index-determination/
 	float dist = maxVal - minVal;
 	float dist4 = dist * 4.0f;
 	float dist2 = dist * 2.0f;
