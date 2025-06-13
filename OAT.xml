@@ -87,7 +87,7 @@ Note:If the text contains special characters, please escape them according to th
                 <filteritem type="filename" name="COPYING"  desc="data/COPYING not used in ohos"/>
                 <filteritem type="filename" name="DCO-1.1.txt"  desc="not used in ohos"/>
                 <filteritem type="filepath" name="include/drm-uapi/sync_file.h" desc="not used in ohos"/>
-                <filteritem type="filepath" name="src/etnaviv/hwdb/amlogic/gc_feature_database.h" desc="not used in ohos"/>
+                <filteritem type="filename" name="gc_feature_database.h" desc="not used in ohos"/>
                 <filteritem type="filepath" name="src/util/perf/gpuvis_trace_utils.h" desc="not used in ohos"/>
                 <filteritem type="filepath" name="src/amd/vpelib/src/core/geometric_scaling.c" desc="not used in ohos"/>
             </filefilter>
