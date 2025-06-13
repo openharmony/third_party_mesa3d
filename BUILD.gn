@@ -28,17 +28,54 @@ action("mesa3d_action_build") {
   ohos_root_path = rebase_path("//")
   product_name = rebase_path("${root_build_dir}", "//out")
   mesa3d_source_path = rebase_path("//third_party/mesa3d", root_build_dir)
+
+  if (is_asan) {
+    if (use_hwasan) {
+      asan_option = "hwasan"
+    } else {
+      asan_option = "swasan"
+    }
+  } else {
+    asan_option = "noasan"
+  }
+
+  if (use_clang_coverage) {
+    coverage_option = "use_clang_coverage"
+  } else {
+    coverage_option = "no_coverage"
+  }
+  if (use_new_skia) {
+    skia_version = "new_skia"
+  } else {
+    skia_version = "skia"
+  }
   args = [
     "$ohos_root_path",
     "$product_name",
     "$mesa3d_source_path",
+    "$asan_option",
+    "$coverage_option",
+    "$skia_version"
   ]
   external_deps = [
     "hilog:libhilog",
     "graphic_surface:surface",
-    "skia:expat",
     "zlib:libz",
   ]
+  if (use_new_skia) {
+    external_deps += [ "skia:expatm133", ]
+  } else {
+    external_deps += [ "skia:expat", ]
+  }
+}
+
+ohos_copy("mesa3d_unstripped_copy") {
+  sources = [
+    "${root_build_dir}/thirdparty/mesa3d/lib/libEGL_mesa.so",
+    "${root_build_dir}/thirdparty/mesa3d/lib/libgallium-25.0.1.so",
+  ]
+  outputs = [ root_out_dir + "/lib.unstripped/thirdparty/mesa3d/{{source_file_part}}" ]
+  deps = [ ":mesa3d_action_build" ]
 }
 
 ohos_prebuilt_shared_library("mesa3d_libEGL") {
@@ -47,7 +84,12 @@ ohos_prebuilt_shared_library("mesa3d_libEGL") {
   part_name = "$PART_NAME"
   module_install_dir = "lib64"
   install_enable = true
-  deps = [ ":mesa3d_action_build" ]
+  enable_strip = true
+  mini_debug = true
+  deps = [
+    ":mesa3d_action_build",
+    ":mesa3d_unstripped_copy"
+  ]
 }
 
 ohos_prebuilt_shared_library("mesa3d_libgallium") {
@@ -56,7 +98,12 @@ ohos_prebuilt_shared_library("mesa3d_libgallium") {
   part_name = "$PART_NAME"
   module_install_dir = "lib64"
   install_enable = true
-  deps = [ ":mesa3d_action_build" ]
+  enable_strip = true
+  mini_debug = true
+  deps = [
+    ":mesa3d_action_build",
+    ":mesa3d_unstripped_copy"
+  ]
 }
 
 group("zink_opengl") {
