@@ -252,6 +252,13 @@ if with_platform_ohos
   deps_for_libmesa_util += dependency('libhitrace')
 endif
 
+if with_platform_ohos
+  files_mesa_util += files(
+    'perf/sys_param.cpp',
+    'perf/sys_param.h',
+  )
+endif
+
 if with_perfetto
   files_mesa_util += files(
     'perf/u_perfetto.cc',

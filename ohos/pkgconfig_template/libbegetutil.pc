@@ -1,0 +1,9 @@
+ohos_project_dir=ohos_project_directory_stub
+libdir=${ohos_project_dir}/out/ohos-arm-release/startup/init
+includedir=${ohos_project_dir}/base/startup/init/interfaces/innerkits/include
+
+Name: libbegetutil
+Version: 1.0.0
+Description: libbegetutil
+Libs: -L${libdir} -lbegetutil.z
+Cflags: -I${includedir}

@@ -27,7 +27,8 @@
                 "c_utils",
                 "graphic_surface",
                 "hilog",
-                "hitrace"
+                "hitrace",
+                "init"
             ],
             "third_party": [
                 "zlib"
