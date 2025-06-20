@@ -16,7 +16,7 @@
         "name": "mesa3d",
         "subsystem": "thirdparty",
         "syscap": [],
-        "features": [],
+        "features": [ "mesa3d_feature_upgrade_skia" ],
         "adapted_system_type": [
             "standard"
         ],
