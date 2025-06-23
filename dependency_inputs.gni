@@ -19,6 +19,8 @@
 # SOFTWARE.
 
 declare_args() {
+  mesa3d_feature_upgrade_skia = false
+
   deps_inputs = [
     "./include/drm-uapi/xe_drm.h",
     "./include/drm-uapi/etnaviv_drm.h",

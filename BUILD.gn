@@ -44,7 +44,7 @@ action("mesa3d_action_build") {
   } else {
     coverage_option = "no_coverage"
   }
-  if (use_new_skia) {
+  if (mesa3d_feature_upgrade_skia) {
     skia_version = "new_skia"
   } else {
     skia_version = "skia"
@@ -62,7 +62,7 @@ action("mesa3d_action_build") {
     "graphic_surface:surface",
     "zlib:libz",
   ]
-  if (use_new_skia) {
+  if (mesa3d_feature_upgrade_skia) {
     external_deps += [ "skia:expatm133", ]
   } else {
     external_deps += [ "skia:expat", ]
