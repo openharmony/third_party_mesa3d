@@ -385,6 +385,14 @@ ttn_emit_declaration(struct ttn_compile *c)
                      else
                         var->data.location = FRAG_RESULT_DATA0 + semantic_index;
                   }
+                  switch (decl->Declaration.ValueType) {
+                     case TGSI_RETURN_TYPE_SINT:
+                        var->type = glsl_ivec4_type();
+                        break;
+                     case TGSI_RETURN_TYPE_UINT:
+                        var->type = glsl_uvec4_type();
+                        break;
+                  }
                   break;
                }
                case TGSI_SEMANTIC_POSITION:

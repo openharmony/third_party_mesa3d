@@ -144,6 +144,7 @@ struct ureg_program
       unsigned last;
       unsigned array_id;
       bool invariant;
+      unsigned value_type; /* = TGSI_RETURN_TYPE_* */
    } output[UREG_MAX_OUTPUT];
    unsigned nr_outputs, nr_output_regs;
 
@@ -500,6 +501,17 @@ ureg_DECL_output(struct ureg_program *ureg,
 {
    return ureg_DECL_output_masked(ureg, name, index, TGSI_WRITEMASK_XYZW,
                                   0, 1);
+}
+
+struct ureg_dst
+ureg_DECL_output_typed(struct ureg_program *ureg,
+                       enum tgsi_semantic name,
+                       unsigned index,
+                       enum tgsi_return_type value_type)
+{
+   struct ureg_dst dst = ureg_DECL_output(ureg, name, index);
+   ureg->output[ureg->nr_outputs - 1].value_type = value_type;
+   return dst;
 }
 
 struct ureg_dst
@@ -1511,16 +1523,17 @@ ureg_memory_insn(struct ureg_program *ureg,
 
 
 static void
-emit_decl_semantic(struct ureg_program *ureg,
-                   unsigned file,
-                   unsigned first,
-                   unsigned last,
-                   enum tgsi_semantic semantic_name,
-                   unsigned semantic_index,
-                   unsigned streams,
-                   unsigned usage_mask,
-                   unsigned array_id,
-                   bool invariant)
+emit_decl_semantic_typed(struct ureg_program *ureg,
+                         unsigned file,
+                         unsigned first,
+                         unsigned last,
+                         enum tgsi_semantic semantic_name,
+                         unsigned semantic_index,
+                         unsigned streams,
+                         unsigned usage_mask,
+                         unsigned array_id,
+                         bool invariant,
+                         enum tgsi_return_type value_type)
 {
    union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, array_id ? 4 : 3);
 
@@ -1532,6 +1545,7 @@ emit_decl_semantic(struct ureg_program *ureg,
    out[0].decl.Semantic = 1;
    out[0].decl.Array = array_id != 0;
    out[0].decl.Invariant = invariant;
+   out[0].decl.ValueType = value_type;
 
    out[1].value = 0;
    out[1].decl_range.First = first;
@@ -1549,6 +1563,23 @@ emit_decl_semantic(struct ureg_program *ureg,
       out[3].value = 0;
       out[3].array.ArrayID = array_id;
    }
+}
+
+static void
+emit_decl_semantic(struct ureg_program *ureg,
+                   unsigned file,
+                   unsigned first,
+                   unsigned last,
+                   enum tgsi_semantic semantic_name,
+                   unsigned semantic_index,
+                   unsigned streams,
+                   unsigned usage_mask,
+                   unsigned array_id,
+                   bool invariant)
+{
+   emit_decl_semantic_typed(ureg, file, first, last, 
+       semantic_name, semantic_index, streams, usage_mask, array_id, 
+       invariant, TGSI_RETURN_TYPE_UNKNOWN);
 }
 
 static void
@@ -1941,31 +1972,34 @@ static void emit_decls( struct ureg_program *ureg )
 
    if (ureg->supports_any_inout_decl_range) {
       for (i = 0; i < ureg->nr_outputs; i++) {
-         emit_decl_semantic(ureg,
-                            TGSI_FILE_OUTPUT,
-                            ureg->output[i].first,
-                            ureg->output[i].last,
-                            ureg->output[i].semantic_name,
-                            ureg->output[i].semantic_index,
-                            ureg->output[i].streams,
-                            ureg->output[i].usage_mask,
-                            ureg->output[i].array_id,
-                            ureg->output[i].invariant);
+         emit_decl_semantic_typed(ureg,
+                                  TGSI_FILE_OUTPUT,
+                                  ureg->output[i].first,
+                                  ureg->output[i].last,
+                                  ureg->output[i].semantic_name,
+                                  ureg->output[i].semantic_index,
+                                  ureg->output[i].streams,
+                                  ureg->output[i].usage_mask,
+                                  ureg->output[i].array_id,
+                                  ureg->output[i].invariant,
+                                  ureg->output[i].value_type);
+
       }
    }
    else {
       for (i = 0; i < ureg->nr_outputs; i++) {
          for (j = ureg->output[i].first; j <= ureg->output[i].last; j++) {
-            emit_decl_semantic(ureg,
-                               TGSI_FILE_OUTPUT,
-                               j, j,
-                               ureg->output[i].semantic_name,
-                               ureg->output[i].semantic_index +
-                               (j - ureg->output[i].first),
-                               ureg->output[i].streams,
-                               ureg->output[i].usage_mask,
-                               0,
-                               ureg->output[i].invariant);
+            emit_decl_semantic_typed(ureg,
+                                     TGSI_FILE_OUTPUT,
+                                     j, j,
+                                     ureg->output[i].semantic_name,
+                                     ureg->output[i].semantic_index +
+                                     (j - ureg->output[i].first),
+                                     ureg->output[i].streams,
+                                     ureg->output[i].usage_mask,
+                                     0,
+                                     ureg->output[i].invariant,
+                                     ureg->output[i].value_type);
          }
       }
    }
