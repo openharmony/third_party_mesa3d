@@ -273,9 +273,9 @@ util_make_fragment_tex_shader(struct pipe_context *pipe,
                              TGSI_SEMANTIC_GENERIC, 0, 
                              TGSI_INTERPOLATE_LINEAR );
 
-   out = ureg_DECL_output( ureg, 
-                           TGSI_SEMANTIC_COLOR,
-                           0 );
+   out = ureg_DECL_output_typed( ureg, 
+                                 TGSI_SEMANTIC_COLOR,
+                                 0, dtype);
 
    temp = ureg_DECL_temporary(ureg);
 

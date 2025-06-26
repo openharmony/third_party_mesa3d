@@ -255,6 +255,12 @@ ureg_DECL_output(struct ureg_program *,
                  unsigned semantic_index);
 
 struct ureg_dst
+ureg_DECL_output_typed(struct ureg_program *,
+                       enum tgsi_semantic semantic_name,
+                       unsigned semantic_index,
+                       enum tgsi_return_type value_type);
+
+struct ureg_dst
 ureg_DECL_output_array(struct ureg_program *ureg,
                        enum tgsi_semantic semantic_name,
                        unsigned semantic_index,

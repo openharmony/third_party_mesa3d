@@ -412,6 +412,28 @@ spirv_builder_emit_member_offset(struct spirv_builder *b, SpvId target,
                           args, ARRAY_SIZE(args));
 }
 
+void
+spirv_builder_emit_member_builtin(struct spirv_builder *b, SpvId target,
+                                  uint32_t member, SpvBuiltIn builtin)
+{
+    uint32_t args[] = { builtin };
+    emit_member_decoration(b, target, member, SpvDecorationBuiltin,
+                           args, ARRAY_SIZE(args));
+}
+
+void
+spirv_builder_emit_member_name(struct spirv_builder *b, SpvId struct_name,
+                               unsigned member, const char *name)
+{
+    size_t pos = b->debug_names.num_words;
+    spirv_buffer_prepare(&b->debug_names, b->mem_ctx, 3);
+    spirv_buffer_emit_word(&b->debug_names, SpvOpMemberName);
+    spirv_buffer_emit_word(&b->debug_names, struct_name);
+    spirv_buffer_emit_word(&b->debug_names, member);
+    int len = spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, name);
+    b->debug_names.words[pos] |= (3 + len) << 16;
+}
+
 SpvId
 spirv_builder_emit_undef(struct spirv_builder *b, SpvId result_type)
 {

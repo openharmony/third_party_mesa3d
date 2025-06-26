@@ -112,7 +112,7 @@ tgsi_default_declaration( void )
    declaration.Array = 0;
    declaration.Atomic = 0;
    declaration.MemType = TGSI_MEMORY_TYPE_GLOBAL;
-   declaration.Padding = 0;
+   declaration.ValueType = TGSI_RETURN_TYPE_UNKNOWN;
 
    return declaration;
 }
