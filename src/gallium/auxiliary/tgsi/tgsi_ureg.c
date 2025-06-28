@@ -1577,8 +1577,8 @@ emit_decl_semantic(struct ureg_program *ureg,
                    unsigned array_id,
                    bool invariant)
 {
-   emit_decl_semantic_typed(ureg, file, first, last, 
-       semantic_name, semantic_index, streams, usage_mask, array_id, 
+   emit_decl_semantic_typed(ureg, file, first, last,
+       semantic_name, semantic_index, streams, usage_mask, array_id,
        invariant, TGSI_RETURN_TYPE_UNKNOWN);
 }
 
