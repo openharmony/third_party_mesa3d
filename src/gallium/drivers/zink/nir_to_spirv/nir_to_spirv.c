@@ -4720,6 +4720,8 @@ nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *sinfo, const s
 
    struct ntv_context ctx = {0};
    ctx.mem_ctx = ralloc_context(NULL);
+   ctx.builder.name_syms = _mesa_set_create(NULL, _mesa_hash_string, _mesa_key_string_equal);
+   ctx.builder.name_symcs_index = 0;
    ctx.nir = s;
    ctx.builder.mem_ctx = ctx.mem_ctx;
    assert(spirv_version >= SPIRV_VERSION(1, 0));

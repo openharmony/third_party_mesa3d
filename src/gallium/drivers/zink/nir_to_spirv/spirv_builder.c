@@ -218,12 +218,28 @@ spirv_builder_emit_name(struct spirv_builder *b, SpvId target,
             ptr[i] = '_';
       }
    }
+   char *new_name = NULL;
+   struct set_entry *entry = _mesa_set_search(b->name_syms, ptr);
+   if (entry != NULL) {
+      /* we have a collision with another name, append an _ + a unique index */
+      asprintf(&new_name, "%s_%u", ptr, b->name_symcs_index++);
+   } else {
+      /* Mark this one as seen */
+      _mesa_set_add(b->name_syms, ptr);
+   }
 
    size_t pos = b->debug_names.num_words;
    spirv_buffer_prepare(&b->debug_names, b->mem_ctx, 2);
    spirv_buffer_emit_word(&b->debug_names, SpvOpName);
    spirv_buffer_emit_word(&b->debug_names, target);
-   int len = spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, name);
+   int len = 0;
+   if (new_name != NULL) {
+      spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, new_name);
+      free(new_name);
+      new_name = NULL;
+   } else {
+      spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, name);
+   }
    b->debug_names.words[pos] |= (2 + len) << 16;
 }
 
