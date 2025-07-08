@@ -62,7 +62,7 @@ struct spirv_builder {
    unsigned local_vars_begin;
 
    struct set* name_syms;
-   int name_symcs_index;
+   int name_syms_index;
 };
 
 struct spriv_tex_src {

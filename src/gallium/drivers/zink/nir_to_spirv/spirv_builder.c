@@ -222,7 +222,7 @@ spirv_builder_emit_name(struct spirv_builder *b, SpvId target,
    struct set_entry *entry = _mesa_set_search(b->name_syms, ptr);
    if (entry != NULL) {
       /* we have a collision with another name, append an _ + a unique index */
-      asprintf(&new_name, "%s_%u", ptr, b->name_symcs_index++);
+      asprintf(&new_name, "%s_%u", ptr, b->name_syms_index++);
    } else {
       /* Mark this one as seen */
       _mesa_set_add(b->name_syms, ptr);
