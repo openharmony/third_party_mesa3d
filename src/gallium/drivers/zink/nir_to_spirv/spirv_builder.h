@@ -60,6 +60,9 @@ struct spirv_builder {
    struct spirv_buffer instructions;
    SpvId prev_id;
    unsigned local_vars_begin;
+
+   struct set* name_syms;
+   int name_syms_index;
 };
 
 struct spriv_tex_src {
