@@ -234,11 +234,11 @@ spirv_builder_emit_name(struct spirv_builder *b, SpvId target,
    spirv_buffer_emit_word(&b->debug_names, target);
    int len = 0;
    if (new_name != NULL) {
-      spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, new_name);
+      len = spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, new_name);
       free(new_name);
       new_name = NULL;
    } else {
-      spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, name);
+      len = spirv_buffer_emit_string(&b->debug_names, b->mem_ctx, name);
    }
    b->debug_names.words[pos] |= (2 + len) << 16;
 }
