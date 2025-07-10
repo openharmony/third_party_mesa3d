@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-bool get_trace_enabled(void);
+extern bool open_mesa3d_trace;
 
 #ifdef __cplusplus
 }

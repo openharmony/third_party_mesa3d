@@ -79,19 +79,19 @@
 #endif
 #define _MESA_TRACE_BEGIN(name)                                              \
    do {                                                                      \
-      if (get_trace_enabled()) {                                             \
+      if (open_mesa3d_trace) {                                               \
          HiTraceStartTrace(HITRACE_TAG_GRAPHIC_AGP, name);                   \
       }                                                                      \
    } while (0)
 #define _MESA_TRACE_END()                                                    \
    do {                                                                      \
-      if (get_trace_enabled()) {                                             \
+      if (open_mesa3d_trace) {                                               \
          HiTraceFinishTrace(HITRACE_TAG_GRAPHIC_AGP);                        \
       }                                                                      \
    } while (0)
 #define _MESA_TRACE_FLOW_BEGIN(name, id)                                     \
    do {                                                                      \
-      if (get_trace_enabled()) {                                             \
+      if (open_mesa3d_trace) {                                               \
          HiTraceStartTrace(HITRACE_TAG_GRAPHIC_AGP, name);                   \
       }                                                                      \
    } while (0)
