@@ -250,6 +250,7 @@ endif
 if with_platform_ohos
   deps_for_libmesa_util += dependency('libhilog')
   deps_for_libmesa_util += dependency('libhitrace')
+  deps_for_libmesa_util += dependency('libbegetutil')
 endif
 
 if with_platform_ohos
