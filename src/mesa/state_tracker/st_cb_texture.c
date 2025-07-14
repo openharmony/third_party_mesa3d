@@ -2122,7 +2122,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
                GLenum format, GLenum type, const void *pixels,
                const struct gl_pixelstore_attrib *unpack)
 {
-   MESA_TRACE_SCOPE("Mesa-stTexSubImage");
+   MESA_TRACE_FUNC();
    struct st_context *st = st_context(ctx);
    struct gl_texture_object *stObj = texImage->TexObject;
    struct pipe_context *pipe = st->pipe;
@@ -2404,7 +2404,7 @@ st_TexImage(struct gl_context * ctx, GLuint dims,
             GLenum format, GLenum type, const void *pixels,
             const struct gl_pixelstore_attrib *unpack)
 {
-   MESA_TRACE_SCOPE("Mesa-stTexImage");
+   MESA_TRACE_FUNC();
    assert(dims == 1 || dims == 2 || dims == 3);
 
    prep_teximage(ctx, texImage, format, type);
@@ -2806,7 +2806,7 @@ fallback_copy_texsubimage(struct gl_context *ctx,
                           GLint srcX, GLint srcY,
                           GLsizei width, GLsizei height)
 {
-   MESA_TRACE_SCOPE("Mesa-fallbackCopyTexSubImage");
+   MESA_TRACE_FUNC();
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
    struct pipe_transfer *src_trans;
@@ -2993,7 +2993,7 @@ st_CopyTexSubImage(struct gl_context *ctx, GLuint dims,
                    struct gl_renderbuffer *rb,
                    GLint srcX, GLint srcY, GLsizei width, GLsizei height)
 {
-   MESA_TRACE_SCOPE("Mesa-stCopyTexSubImage");
+   MESA_TRACE_FUNC();
    struct gl_texture_image *stImage = texImage;
    struct gl_texture_object *stObj = texImage->TexObject;
    struct st_context *st = st_context(ctx);

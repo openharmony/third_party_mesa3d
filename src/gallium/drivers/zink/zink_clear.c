@@ -152,7 +152,7 @@ zink_clear(struct pipe_context *pctx,
            const union pipe_color_union *pcolor,
            double depth, unsigned stencil)
 {
-   MESA_TRACE_SCOPE("Mesa-zinkClear");
+   MESA_TRACE_FUNC();
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct pipe_framebuffer_state *fb = &ctx->fb_state;

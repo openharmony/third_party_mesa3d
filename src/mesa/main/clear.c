@@ -238,7 +238,7 @@ _mesa_Clear_no_error(GLbitfield mask)
 void GLAPIENTRY
 _mesa_Clear(GLbitfield mask)
 {
-   MESA_TRACE_SCOPE("Mesa-glClear");
+   MESA_TRACE_FUNC();
    GET_CURRENT_CONTEXT(ctx);
 
    if (MESA_VERBOSE & VERBOSE_API)

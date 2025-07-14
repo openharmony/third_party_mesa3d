@@ -1369,7 +1369,7 @@ _mesa_EvalMesh2(GLenum mode, GLint i1, GLint i2, GLint j1, GLint j2)
 void GLAPIENTRY
 _mesa_DrawArrays(GLenum mode, GLint start, GLsizei count)
 {
-   MESA_TRACE_SCOPE("Mesa-glDrawArrays");
+   MESA_TRACE_FUNC();
    GET_CURRENT_CONTEXT(ctx);
    FLUSH_FOR_DRAW(ctx);
 
