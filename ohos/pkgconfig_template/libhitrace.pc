@@ -1,0 +1,9 @@
+ohos_project_dir=ohos_project_directory_stub
+libdir=${ohos_project_dir}/out/ohos-arm-release/hiviewdfx/hitrace
+includedir=${ohos_project_dir}/base/hiviewdfx/hitrace/interfaces/native/innerkits/include
+
+Name: libhitrace
+Version: 2.4.1
+Description: libhitrace
+Libs: -L${libdir} -lhitrace_meter
+Cflags: -I${includedir}

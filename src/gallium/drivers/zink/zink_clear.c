@@ -37,6 +37,7 @@
 #include "util/u_rect.h"
 #include "util/u_surface.h"
 #include "util/u_helpers.h"
+#include "util/perf/cpu_trace.h"
 
 static inline bool
 scissor_states_equal(const struct pipe_scissor_state *a, const struct pipe_scissor_state *b)
@@ -151,6 +152,7 @@ zink_clear(struct pipe_context *pctx,
            const union pipe_color_union *pcolor,
            double depth, unsigned stencil)
 {
+   MESA_TRACE_FUNC();
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct pipe_framebuffer_state *fb = &ctx->fb_state;

@@ -18,6 +18,7 @@
 #include "util/u_inlines.h"
 #include "util/u_prim.h"
 #include "util/u_prim_restart.h"
+#include "util/perf/cpu_trace.h"
 
 static void
 zink_emit_xfb_counter_barrier(struct zink_context *ctx)
@@ -950,6 +951,7 @@ zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_start_count_bias *draws,
               unsigned num_draws)
 {
+   MESA_TRACE_FUNC();
    zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
 }
 

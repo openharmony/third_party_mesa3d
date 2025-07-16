@@ -70,6 +70,35 @@
 #define _MESA_TRACE_SET_COUNTER(name, value)
 #define _MESA_TRACE_TIMESTAMP_BEGIN(name, track_id, flow_id, clock, timestamp)
 #define _MESA_TRACE_TIMESTAMP_END(name, track_id, clock, timestamp)
+
+#elif DETECT_OS_OHOS
+#include <hitrace_meter/hitrace_meter_c.h>
+#include "sys_param.h"
+#ifndef HITRACE_TAG_GRAPHIC_AGP
+#define HITRACE_TAG_GRAPHIC_AGP (1ULL << 38)    // Graphic module tag
+#endif
+#define _MESA_TRACE_BEGIN(name)                                              \
+   do {                                                                      \
+      if (open_mesa3d_trace) {                                               \
+         HiTraceStartTrace(HITRACE_TAG_GRAPHIC_AGP, name);                   \
+      }                                                                      \
+   } while (0)
+#define _MESA_TRACE_END()                                                    \
+   do {                                                                      \
+      if (open_mesa3d_trace) {                                               \
+         HiTraceFinishTrace(HITRACE_TAG_GRAPHIC_AGP);                        \
+      }                                                                      \
+   } while (0)
+#define _MESA_TRACE_FLOW_BEGIN(name, id)                                     \
+   do {                                                                      \
+      if (open_mesa3d_trace) {                                               \
+         HiTraceStartTrace(HITRACE_TAG_GRAPHIC_AGP, name);                   \
+      }                                                                      \
+   } while (0)
+#define _MESA_TRACE_SET_COUNTER(name, value)
+#define _MESA_TRACE_TIMESTAMP_BEGIN(name, track_id, flow_id, clock, timestamp)
+#define _MESA_TRACE_TIMESTAMP_END(name, track_id, clock, timestamp)
+
 #else
 
 #define _MESA_TRACE_BEGIN(name)

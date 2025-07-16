@@ -59,6 +59,7 @@
 #include "api_exec_decl.h"
 
 #include "util/u_memory.h"
+#include "util/perf/cpu_trace.h"
 
 #include "program/prog_instruction.h"
 
@@ -3409,6 +3410,7 @@ _mesa_TexImage2D( GLenum target, GLint level, GLint internalFormat,
                   GLenum format, GLenum type,
                   const GLvoid *pixels )
 {
+   MESA_TRACE_FUNC();
    GET_CURRENT_CONTEXT(ctx);
    teximage_err(ctx, GL_FALSE, 2, target, level, internalFormat, width, height, 1,
                 border, format, type, 0, pixels);
@@ -4866,6 +4868,7 @@ _mesa_CopyTexSubImage2D(GLenum target, GLint level,
                         GLint xoffset, GLint yoffset,
                         GLint x, GLint y, GLsizei width, GLsizei height)
 {
+   MESA_TRACE_FUNC();
    struct gl_texture_object* texObj;
    const char *self = "glCopyTexSubImage2D";
    GET_CURRENT_CONTEXT(ctx);
