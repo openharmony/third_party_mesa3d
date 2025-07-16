@@ -3392,6 +3392,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
       goto fail;
    }
 
+   screen->info.feats11.protectedMemory = false;
    screen->info.have_EXT_provoking_vertex = true;
 
    if (zink_set_driver_strings(screen)) {
