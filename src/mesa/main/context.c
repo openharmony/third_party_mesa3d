@@ -147,6 +147,7 @@
 #include "compiler/glsl/glsl_parser_extras.h"
 #include <stdbool.h>
 #include "util/u_memory.h"
+#include "util/perf/cpu_trace.h"
 #include "api_exec_decl.h"
 
 #include "state_tracker/st_cb_texture.h"
@@ -1635,6 +1636,7 @@ _mesa_flush(struct gl_context *ctx)
 void GLAPIENTRY
 _mesa_Finish(void)
 {
+   MESA_TRACE_FUNC();
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
@@ -1653,6 +1655,7 @@ _mesa_Finish(void)
 void GLAPIENTRY
 _mesa_Flush(void)
 {
+   MESA_TRACE_FUNC();
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_BEGIN_END(ctx);
    _mesa_flush(ctx);
