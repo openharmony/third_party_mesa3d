@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 declare_args() {
-  mesa3d_feature_upgrade_skia = false
+  mesa3d_feature_upgrade_skia = true
 
   deps_inputs = [
     "./include/drm-uapi/xe_drm.h",
