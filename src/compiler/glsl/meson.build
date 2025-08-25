@@ -62,6 +62,13 @@ float64_glsl_h = custom_target(
   command : [prog_python, '@INPUT@', '@OUTPUT@', '-n', 'float64_source'],
 )
 
+float64q_glsl_h = custom_target(
+  'float64q_glsl.h',
+  input : [files_xxd, 'float64q.glsl'],
+  output : 'float64q_glsl.h',
+  command : [prog_python, '@INPUT@', '@OUTPUT@', '-n', 'float64q_source'],
+)
+
 cross_platform_settings_piece_all_h = custom_target(
   'cross_platform_settings_piece_all.h',
   input : [files_xxd, 'CrossPlatformSettings_piece_all.glsl'],
@@ -210,7 +217,7 @@ libglsl = static_library(
   'glsl',
   [files_libglsl, glsl_parser, glsl_lexer_cpp, libglsl_headers,
    ir_expression_operation_strings_h, ir_expression_operation_constant_h,
-   float64_glsl_h],
+   float64_glsl_h, float64q_glsl_h],
   c_args : [c_msvc_compat_args, no_override_init_args],
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
