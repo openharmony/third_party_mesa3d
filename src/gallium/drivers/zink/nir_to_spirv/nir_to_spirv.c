@@ -1023,8 +1023,20 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
                                                    var_type);
    SpvId var_id = spirv_builder_emit_var(&ctx->builder, pointer_type,
                                          SpvStorageClassOutput);
-   if (var->name)
-      spirv_builder_emit_name(&ctx->builder, var_id, var->name);
+   if (var->name) {
+      if (ctx->stage == MESA_SHADER_FRAGMENT && var->data.location >= FRAG_RESULT_DATA0 &&
+         !strncmp(var->name, "gl_", 3)) {
+         char* new_name = NULL;
+         if (asprintf(&new_name, "%s_%s", "_RESERVED_IDENTIFIER_FIXUP", var->name) > 0 && new_name) {
+            spirv_builder_emit_name(&ctx->builder, var_id, new_name);
+            free(new_name);
+         } else {
+            spirv_builder_emit_name(&ctx->builder, var_id, var->name);
+         }
+      } else {
+         spirv_builder_emit_name(&ctx->builder, var_id, var->name);
+      }
+   }
 
    if (var->data.precision == GLSL_PRECISION_MEDIUM || var->data.precision == GLSL_PRECISION_LOW) {
       spirv_builder_emit_decoration(&ctx->builder, var_id,
