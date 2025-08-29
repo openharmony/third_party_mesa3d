@@ -28,7 +28,10 @@
 #include "util/u_memory.h"
 #include "util/u_mm.h"
 #include "util/macros.h"
-
+#include "util/detect_os.h"
+#if DETECT_OS_OHOS
+#include <arm_neon.h>
+#endif
 
 void
 u_mmDumpMemInfo(const struct mem_block *heap)
@@ -296,4 +299,50 @@ u_mmDestroy(struct mem_block *heap)
    }
 
    FREE(heap);
+}
+
+void
+memcpy_neon(void *dst, const void* src, size_t size)
+{
+#if DETECT_OS_OHOS
+   unsigned char* dst0 = (unsigned char*) dst;
+   const unsigned char* src0 = (const unsigned char*) src;
+   if (dst0 == NULL || src0 == NULL) {
+      return;
+   }
+   size_t nn = size / 64;
+   size -= nn * 64;
+   while (nn--) {
+      __builtin_prefetch(src0 + 64);
+      uint8x16_t _p0 = vld1q_u8(src0);
+      uint8x16_t _p1 = vld1q_u8(src0 + 16);
+      uint8x16_t _p2 = vld1q_u8(src0 + 32);
+      uint8x16_t _p3 = vld1q_u8(src0 + 48);
+      vst1q_u8(dst0, _p0);
+      vst1q_u8(dst0 + 16, _p1);
+      vst1q_u8(dst0 + 32, _p2);
+      vst1q_u8(dst0 + 48, _p3);
+      src0 += 64;
+      dst0 += 64;
+   }
+   if (size > 16) {
+      uint8x16_t _p0 = vld1q_u8(src0);
+      vst1q_u8(dst0, _p0);
+      src0 += 16;
+      dst0 += 16;
+      size -= 16;
+   }
+   if (size > 8) {
+      uint8x8_t _p0 = vld1_u8(src0);
+      vst1_u8(dst0, _p0);
+      src0 += 8;
+      dst0 += 8;
+      size -= 8;
+   }
+   while (size--) {
+      *dst0++ = *src0++;
+   }
+#else
+   memcpy(dst, src, size);
+#endif
 }
