@@ -550,12 +550,12 @@ st_ReadPixels(struct gl_context *ctx, GLint x, GLint y,
                                          type, 0, 0);
 
       if (tex_xfer->stride == bytesPerRow && destStride == bytesPerRow) {
-         memcpy(dest, map, bytesPerRow * height);
+         memcpy_neon(dest, map, bytesPerRow * height);
       } else {
          GLuint row;
 
          for (row = 0; row < (unsigned) height; row++) {
-            memcpy(dest, map, bytesPerRow);
+            memcpy_neon(dest, map, bytesPerRow);
             map += tex_xfer->stride;
             dest += destStride;
          }
