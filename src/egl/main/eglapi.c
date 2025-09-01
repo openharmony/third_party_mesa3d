@@ -407,6 +407,7 @@ setenv_to_ohos(void)
    setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 0);
    setenv("MESA_GLES_VERSION_OVERRIDE", "3.0", 0);
    setenv("MESA_GL_VERSION_OVERRIDE", "4.2", 0);
+   setenv("MESA_SHADER_CACHE_DIR", "/data/storage/el2/base/cache/", 1);
 }
 
 /**
