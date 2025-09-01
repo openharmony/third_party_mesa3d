@@ -884,7 +884,7 @@ get_per_vertex_member_type(struct ntv_context *ctx, uint32_t member_idx)
       // Use cached type or create it once
       if (ctx->float_array_1_type == 0) {
          SpvId float_type = get_glsl_type(ctx, glsl_float_type());
-         SpvId array_size = spirv_builder_const_uint(&ctx->builder, 32, 5);
+         SpvId array_size = spirv_builder_const_uint(&ctx->builder, 32, 8);
          ctx->float_array_1_type = spirv_builder_type_array(&ctx->builder, float_type, array_size);
       }
       return ctx->float_array_1_type;
