@@ -35,7 +35,7 @@ if __name__ == '__main__':
     run_build_cmd += 'meson setup '+ sys.argv[3] + ' thirdparty/mesa3d/build-ohos '
     run_build_cmd += '-Dplatforms=ohos -Degl-native-platform=ohos -Dgallium-drivers=zink -Dbuildtype=release -Degl-lib-suffix=_mesa  \
                       -Dvulkan-drivers= -Degl=enabled -Dgles1=enabled -Dgles2=enabled -Dopengl=true -Dcpp_rtti=false -Dglx=disabled -Dtools= \
-                      -Dglvnd=disabled -Dshared-glapi=enabled -Dshader-cache=disabled '
+                      -Dglvnd=disabled -Dshared-glapi=enabled -Dshader-cache=enabled '
     run_build_cmd += '--cross-file=thirdparty/mesa3d/cross_file '
     run_build_cmd += '--prefix=' + os.getcwd() + '/thirdparty/mesa3d'
     print("build command: %s" %run_build_cmd)
