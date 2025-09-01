@@ -83,6 +83,8 @@ mem_dup(const void *src, size_t size)
    return dup;
 }
 
+extern void memcpy_neon(void *dst, const void* src, size_t size);
+
 /* TODO: this could be different on non-x86 architectures. */
 #define CACHE_LINE_SIZE 64
 
