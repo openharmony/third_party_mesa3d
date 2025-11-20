@@ -332,31 +332,23 @@ compute_version(const struct gl_extensions *extensions,
                          extensions->ARB_texture_query_lod &&
                          extensions->ARB_transform_feedback2 &&
                          extensions->ARB_transform_feedback3);
-#if DETECT_OS_OHOS
    const bool ver_4_1 = (ver_4_0 &&
                         consts->GLSLVersion >= 410 &&
+#if DETECT_OS_OHOS
                         consts->MaxTextureSize >= 8192 &&
                         consts->MaxRenderbufferSize >= 8192 &&
                         consts->MaxCubeTextureLevels >= 14 &&
+#else
+                        consts->MaxTextureSize >= 16384 &&
+                        consts->MaxRenderbufferSize >= 16384 &&
+                        consts->MaxCubeTextureLevels >= 15 &&
+#endif
                         consts->Max3DTextureLevels >= 12 &&
                         consts->MaxArrayTextureLayers >= 2048 &&
                         extensions->ARB_ES2_compatibility &&
                         extensions->ARB_shader_precision &&
                         extensions->ARB_vertex_attrib_64bit &&
                         extensions->ARB_viewport_array);
-#else
-   const bool ver_4_1 = (ver_4_0 &&
-                         consts->GLSLVersion >= 410 &&
-                         consts->MaxTextureSize >= 16384 &&
-                         consts->MaxRenderbufferSize >= 16384 &&
-                         consts->MaxCubeTextureLevels >= 15 &&
-                         consts->Max3DTextureLevels >= 12 &&
-                         consts->MaxArrayTextureLayers >= 2048 &&
-                         extensions->ARB_ES2_compatibility &&
-                         extensions->ARB_shader_precision &&
-                         extensions->ARB_vertex_attrib_64bit &&
-                         extensions->ARB_viewport_array);
-#endif
    const bool ver_4_2 = (ver_4_1 &&
                          consts->GLSLVersion >= 420 &&
                          extensions->ARB_base_instance &&
