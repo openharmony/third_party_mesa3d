@@ -634,13 +634,20 @@ lower_line_stipple_gs(nir_shader *shader, bool line_rectangular)
    if (!state.pos_out)
       return false;
 
+   int num_varying_slot = 0;
+   nir_foreach_shader_out_variable(var, shader) {
+      if (var->data.location >= VARYING_SLOT_VAR0)
+         num_varying_slot++;
+   }
+
    state.stipple_out = nir_variable_create(shader, nir_var_shader_out,
                                            glsl_float_type(),
                                            "__stipple");
    state.stipple_out->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
-   state.stipple_out->data.driver_location = shader->num_outputs++;
+   state.stipple_out->data.driver_location = num_varying_slot;
    state.stipple_out->data.location = MAX2(util_last_bit64(shader->info.outputs_written), VARYING_SLOT_VAR0);
    shader->info.outputs_written |= BITFIELD64_BIT(state.stipple_out->data.location);
+   shader->num_outputs++;
 
    // create temp variables
    state.prev_pos = nir_variable_create(shader, nir_var_shader_temp,
