@@ -722,8 +722,13 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       case MESA_SHADER_TESS_CTRL:
       case MESA_SHADER_TESS_EVAL:
       case MESA_SHADER_GEOMETRY:
-         if (!screen->info.feats.features.vertexPipelineStoresAndAtomics)
+         if (!screen->info.feats.features.vertexPipelineStoresAndAtomics) {
+#if DETECT_OS_OHOS
+            mesa_logw("ZINK: SSBO is readonly in vertex stage!");
+#else
             return 0;
+#endif
+         }
          break;
 
       case MESA_SHADER_FRAGMENT:
@@ -1165,9 +1170,13 @@ zink_init_screen_caps(struct zink_screen *screen)
 
    caps->viewport_transform_lowered = true;
 
-   caps->point_size_fixed =
+#if DETECT_OS_OHOS
+      caps->point_size_fixed = PIPE_POINT_SIZE_LOWER_USER_ONLY; // avoid point size fixed to 1
+#else
+      caps->point_size_fixed =
       screen->info.have_KHR_maintenance5 ?
       PIPE_POINT_SIZE_LOWER_USER_ONLY : PIPE_POINT_SIZE_LOWER_ALWAYS;
+#endif
    caps->flatshade = false;
    caps->alpha_test = false;
    caps->clip_planes = 0;
