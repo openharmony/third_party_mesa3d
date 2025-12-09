@@ -1094,6 +1094,9 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
       return;
    }
 
+   if (is_io_var_comp(ctx, var))
+      return;
+
    SpvId var_type = get_glsl_type(ctx, var->type);
 
    /* SampleMask is always an array in spirv */
