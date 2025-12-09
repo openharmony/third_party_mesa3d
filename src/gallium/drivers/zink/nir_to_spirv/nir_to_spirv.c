@@ -29,8 +29,20 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/hash_table.h"
+#include "util/list.h"
 
 #define SLOT_UNSET ((unsigned char) -1)
+
+typedef struct spv_io_var {
+   SpvId id;
+   char *name;
+   glsl_type* type;
+   unsigned int num_comps;
+   unsigned int len;
+   unsigned int location;
+   nir_variable *src;
+   struct list_headlist;
+}spv_io_var;
 
 struct ntv_context {
    void *mem_ctx;
@@ -937,6 +949,70 @@ create_per_vertex_block_type(struct ntv_context *ctx, bool in)
    return block_type;
 }
 
+static inline bool
+stage_merge_io_var_comps(struct ntv_context *ctx)
+{
+   return ctx->merge_io_var_comps
+      && ctx->stage <= MESA_SHADER_FRAGMENT
+}
+
+static inline unsigned int
+get_var_layout_location(struct ntv_context *ctx, struct nir_variable *var)
+{
+   nir_variable_mode support_modes = (nir_var_shader_in | nir_var_shader_out);
+   if (!(var->data.mode & support_modes))
+      return UINT_MAX;
+
+   if (var->data.mode & nir_var_shader_in | ctx->stage != MESA_SHADER_FRAGMENT)
+      return var->data.driver_location;
+
+   return var->data.location >= FRAG_RESULT_DATA0
+      ? var->data.location - FRAG_RESULT_DATA0 : var->data.location;
+
+}
+
+static spv_io_var*
+get_spv_io_var(struct ntv_context *ctx, nir_variable *var)
+{
+   if (var == NULL)
+      return NULL;
+   spv_io_var *ret = NULL;
+   unsigned int loc = get_var_layout_location(ctx, var);
+   list_for_each_entry(struct spv_io_var, spv_var, &ctx->io_vars, list) {
+      if (spv_var->src->data.mode != var->data.mode || spv_var->location != loc)
+         continue;
+      ret = spv_var;
+      break;
+   }
+   return ret;
+}
+
+static spv_io_var*
+create_spv_io_var(struct ntv_context *ctx, nir_variable *var)
+{
+   spv_io_var* spv_var = get_spv_io_var(ctx, var);
+   if (spv_var)
+      return spv_var;
+   unsigned int loc = get_var_layout_location(ctx, var);
+   spv_var = ralloc(ctx->mem_ctx, struct spv_io_var);
+   spv_var->location = loc;
+   spv_var->num_comps = 0;
+   spv_var->len = 0;
+   spv_var->src = var;
+   spv_var->name = var->name;
+   spv_var->type = (glsl_type *) glsl_get_scalar_type(var->type);
+   list_addtial(&spv_var->list, &ctx->io_vars);
+   return spv_var;
+}
+
+static inline bool
+is_io_var_comp(struct ntv_context *ctx, struct nir_variable *var)
+{
+   if (!stage_merge_io_var_comps(ctx))
+      return false;
+   return get_spv_io_var(ctx, var) != NULL;
+}
+
 static void
 emit_input(struct ntv_context *ctx, struct nir_variable *var)
 {
@@ -945,6 +1021,9 @@ emit_input(struct ntv_context *ctx, struct nir_variable *var)
          ctx->gl_in_num_vertices[ctx->stage - 1] = glsl_get_length(var->type);
       return;
    }
+
+   if (is_io_var_comp(ctx, var))
+      return;
 
    SpvId var_id = input_var_init(ctx, var);
    if (ctx->stage == MESA_SHADER_VERTEX)
@@ -4267,6 +4346,69 @@ try_emit_gl_per_vertex_access(struct ntv_context *ctx, nir_deref_instr *deref)
    return true;
 }
 
+static bool
+try_emit_io_var_comp(struct ntv_context *ctx, nir_deref_instr *deref)
+{
+   if (!stage_merge_io_var_comps(ctx) || deref->deref_type == nir_deref_type_struct)
+      return false;
+
+   nir_variable *var = nir_deref_instr_get_variable(deref);
+   spv_io_var *spv_var = get_spv_io_var(ctx, var);
+   if (!spv_var)
+      return false;
+
+   // Build the SPIR-V access chain
+   SpvId base = spv_var->id;
+   SpvId indices[2] = {0, 0};
+   int num_indices = 0;
+   SpvId mumber_type = 0;
+
+   // setup array index if need
+   if (deref->deref_type == nir_deref_type_array) {
+      nir_alu_type itype;
+      SpvId arr_index = get_src(ctx, &deref->arr.index, &itype);
+      if (itype == nir_type_float)
+         arr_index = emit_bitcast(ctx, get_uvec_type(ctx, 32, 1), arr_index);
+      indices[num_indices++] = def_inedx;
+   }
+
+   const glsl_type *ele_type = glsl_type_is_array(var->type)
+      ? var->type->field.array : var->type;
+   assert(!glsl_type_is_array(ele_type));
+
+   // setup component index if need
+   if (glsl_type_is_scalar(ele_type)) {
+      unsigned int loc_frac = var->data.location_frac;
+      SpvId comp_index = spirv_builder_const_uint(&ctx->builder, 32, loc_frac);
+      indices[num_indices++] = comp_index;
+      member_type = get_glsl_type(CTX, spv_var->type);
+   } else if (glsl_type_is_vector(ele_type)) {
+      member_type = get_glsl_type(ctx,
+         glsl_vector_type(spv_var->type->base_type, spv_var->num_comps));
+   }
+
+   // emit access chain
+   SpvStorageClass storage_class = get_storage_class(var);
+   SpvId ptr_type = spirv_builder_type_pointer(&ctx->builder, storage_class, member_type);
+   SpvId result = spirv_builder_emit_access_chain(&ctx->builder, ptr_type, base,indices, member_type);
+
+   if (glsl_type_is_vector(ele_type)) {
+      result = spirv_builder_emit_load(&ctx->builder, member_type, result);
+      uint32_t comps[4] = { 0 };
+      size_t num_comps = ele_type->vector_elements;
+      for (int i = 0; i < num_comps; i++)
+         comps[i] = var->data.location_frac + i;
+      SpvId vec_id = spirv_builder_emit_vector_shuffle(&ctx->builder,
+         get_glsl_type(ctx, ele_type), result, result, comps, num_comps);
+      ptr_type = spirv_builder_type_pointer(&ctx->builder, SpvStorageClassFunction, get_glsl_type(ctx, ele_type));
+      result = spirv_builder_emit_var(&ctx->builder, ptr_type, SpvStorageClassFunction);
+      spirv_builder_emit_store(&ctx->builder, result, vec_id);
+   }
+
+   store_def(ctx, deref->def.index, result, get_nir_alu_type(deref->type));
+   return true;
+}
+
 static void
 emit_deref_var(struct ntv_context *ctx, nir_deref_instr *deref)
 {
@@ -4393,6 +4535,9 @@ static void
 emit_deref(struct ntv_context *ctx, nir_deref_instr *deref)
 {
    if (try_emit_gl_per_vertex_access(ctx, deref))
+      return;
+
+   if (try_emit_io_var_comp(ctx, deref))
       return;
 
    switch (deref->deref_type) {
@@ -4724,6 +4869,80 @@ setup_per_vertex_blocks(struct ntv_context *ctx)
    }
 }
 
+static vhoid
+emit_spv_io_var(struct ntv_context *ctx, spv_io_var* spv_var)
+{
+   const glsl_type* ele_type = glsl_vector_type(spv_var->type->base_type, spv_var->num_comps);
+   const glsl_type* type = spv_var->len > 1 ? glsl_array_type(ele_type, spv_var->len, 0) : ele_type;
+   SpvId var_type = get_glsl_type(ctx, type);
+   SpvStorageClass sc = get_storage_class(spv_var->src);
+   SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder, sc, var_type);
+   SpvId var_id = spirv_builder_emit_var(&ctx->builder, pointer_type, sc);
+   if (spv_var->name)
+      spirv_builder_emit_name(&ctx->builder, var_id, spv_var->name);
+   spirv_builder_emit_location(&ctx->builder, var_id, spv_var->loation)
+   emit_interpolation(ctx, var_id, spv_var->src->data.interpolation);
+   if (spv_var->src->data.patch)
+      spirv_builder_emit_decoration(&ctx->builder, var_id, SpvDecorationPatch);
+   spv_var->id = var_id;
+   ctx->entry_ifaces[ctx->num_entry_ifaces++] = var_id;
+}
+
+static void
+setup_spv_io_vars(struct ntv_context *ctx, struct nir_shader *s)
+{
+   if (!stage_merge_io_var_comps(ctx))
+      return;
+
+   list_inithead(&ctx->var);
+
+   bool has_comps = false;
+
+#define RETURN_IF_NO_COMPS              \
+   if (!hsa_comps) {                    \
+      ctx->merge_io_var_comps = false;  \
+      list_delinit(&ctx->io_vars);      \
+      return;                           \
+   }
+
+#define CHECK_MUL_DIM_VARS(var)                             \
+   if (glsl_type_is_array(var->type)                        \
+      && glsl_type_is_array(var->var_type->field.array)) {  \
+      has_comps = false;                                    \
+      break;                                                \
+   }
+
+   nir_foreach_variable_with_modes(var, s, nir_var_shader_in | nir_var_shader_out) {
+      if (!var->data.location_frac)
+         continue;
+      if (var->data.explicit_xfb_buffer && ctx->nir->xfb_info)
+         continue;
+      CHECK_MUL_DIM_VARS(var)
+      has_comps = create_spv_io_var(ctx, var) != NULL;
+   }
+
+   RETURN_IF_NO_COMPS
+
+   nir_foreach_variable_with_modes(var, s, nir_var_shader_in | nir_var_shader_out) {
+      spv_io_var* spv_var = get_spv_io_var(ctx, var);
+      if (spv_var) {
+         CHECK_MUL_DIM_VARS(var)
+         spv_var->name = var_name;
+         unsigned int num_comps = glsl_type_is_array(var->type)
+            ? glsl_get_component_slots(var->type->fields.array)
+            : glsl_get_component_slots(var->type);
+         spv_var->num_comps = MAX2(var->data.location_frac + num_comps, spv_var->num_comps);
+         unsigned int len = glsl_type_is_array(var->type) ? glsl_get_length(var->type) : 1;
+         spv_var->len = MAX2(spv_var->len, len);
+      }
+   }
+
+   RETURN_IF_NO_COMPS
+
+   list_for_each_entry(struct spv_io_var, spv_var, &ctx->io_vars, list)
+      emit_spv_io_var(ctx, spv_var);
+}
+
 struct spirv_shader *
 nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *sinfo, const struct zink_screen *screen)
 {
@@ -4893,7 +5112,10 @@ nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *sinfo, const s
                                       _mesa_key_pointer_equal);
 
    // TODO: set this on a per driver basis
-   ctx.use_gl_per_vertex = true;
+   ctx.use_gl_per_vertex = true; 
+   ctx.merge_io_var_comps = true;
+
+   setup_spv_io_vars(&ctx, s);
 
    nir_foreach_variable_with_modes(var, s, nir_var_mem_push_const)
       input_var_init(&ctx, var);
