@@ -952,18 +952,18 @@ create_per_vertex_block_type(struct ntv_context *ctx, bool in)
 static inline bool
 stage_merge_io_var_comps(struct ntv_context *ctx)
 {
-   return ctx->merge_io_var_comps
+   return ctx->merge_io_var_comps    
       && ctx->stage <= MESA_SHADER_FRAGMENT;
 }
 
 static inline unsigned int
 get_var_layout_location(struct ntv_context *ctx, struct nir_variable *var)
 {
-   nir_variable_mode support_modes = (nir_var_shader_in || nir_var_shader_out);
+   nir_variable_mode support_modes = (nir_var_shader_in | nir_var_shader_out);
    if (!(var->data.mode & support_modes))
       return UINT_MAX;
 
-   if (var->data.mode & nir_var_shader_in | ctx->stage != MESA_SHADER_FRAGMENT)
+   if (var->data.mode & nir_var_shader_in || ctx->stage != MESA_SHADER_FRAGMENT)
       return var->data.driver_location;
 
    return var->data.location >= FRAG_RESULT_DATA0
@@ -4357,7 +4357,7 @@ try_emit_io_var_comp(struct ntv_context *ctx, nir_deref_instr *deref)
       return false;
 
    // Build the SPIR-V access chain
-   SpvId base = spv_var->id;
+   SpvId base = spv_var->id; 
    SpvId indices[2] = {0, 0};    // Max: [array_index, comp_index]
    int num_indices = 0;
    SpvId member_type = 0;
@@ -4368,7 +4368,6 @@ try_emit_io_var_comp(struct ntv_context *ctx, nir_deref_instr *deref)
       SpvId arr_index = get_src(ctx, &deref->arr.index, &itype);
       if (itype == nir_type_float)
          arr_index = emit_bitcast(ctx, get_uvec_type(ctx, 32, 1), arr_index);
-
       indices[num_indices++] = arr_index;
    }
    else if ((deref->deref_type == nir_deref_type_var) && glsl_type_is_array(var->type)) {
@@ -4394,7 +4393,7 @@ try_emit_io_var_comp(struct ntv_context *ctx, nir_deref_instr *deref)
    // emit access chain
    SpvStorageClass storage_class = get_storage_class(var);
    SpvId ptr_type = spirv_builder_type_pointer(&ctx->builder, storage_class, member_type);
-   SpvId result = spirv_builder_emit_access_chain(&ctx->builder, ptr_type, base,indices, num_indices);
+   SpvId result = spirv_builder_emit_access_chain(&ctx->builder, ptr_type, base, indices, num_indices);
 
    if (glsl_type_is_vector(ele_type)) {
       result = spirv_builder_emit_load(&ctx->builder, member_type, result);
@@ -4872,7 +4871,7 @@ setup_per_vertex_blocks(struct ntv_context *ctx)
       ctx->entry_ifaces[ctx->num_entry_ifaces++] = var_id;
    }
 }
-
+ 
 static void
 emit_spv_io_var(struct ntv_context *ctx, spv_io_var* spv_var)
 {
