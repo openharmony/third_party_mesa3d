@@ -133,6 +133,9 @@ struct ntv_context {
    SpvId float_array_1_type;
    int gl_in_num_vertices[3];
    int gl_out_num_vertices;
+
+   bool merge_io_var_comps;
+   struct list_head io_vars;
 };
 
 static SpvId
@@ -952,7 +955,7 @@ create_per_vertex_block_type(struct ntv_context *ctx, bool in)
 static inline bool
 stage_merge_io_var_comps(struct ntv_context *ctx)
 {
-   return ctx->merge_io_var_comps    
+   return ctx->merge_io_var_comps
       && ctx->stage <= MESA_SHADER_FRAGMENT;
 }
 
@@ -4357,7 +4360,7 @@ try_emit_io_var_comp(struct ntv_context *ctx, nir_deref_instr *deref)
       return false;
 
    // Build the SPIR-V access chain
-   SpvId base = spv_var->id; 
+   SpvId base = spv_var->id;
    SpvId indices[2] = {0, 0};    // Max: [array_index, comp_index]
    int num_indices = 0;
    SpvId member_type = 0;
