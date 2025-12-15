@@ -1,8 +1,8 @@
 [
     {
         "Name": "Mesa3D - MesaLib",
-        "License": "MIT license",
-        "License File": "docs/license.rst",
+        "License": "Apache-2.0;BSL-1.0;GPL-1.0-or-later;GPL-2.0-only;MIT;SGI-B-2.0",
+        "License File": "licenses/Apache-2.0;licenses/BSL-1.0;licenses/GPL-1.0-or-later;licenses/GPL-2.0-only;licenses/MIT;licenses/SGI-B-2.0",
         "Version Number": "25.0.1",
         "Owner": "liaosirui@huawei.com",
         "Upstream URL": "https://gitlab.freedesktop.org/mesa/mesa",
