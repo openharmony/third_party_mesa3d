@@ -6,4 +6,4 @@ Name: libsurface
 Version: 2.4.1
 Description: libsurface
 Libs: -L${libdir} -lsurface.z
-Cflags: -I${includedir} -I${ohos_project_dir}/drivers/peripheral/display/interfaces/include -I${ohos_project_dir}/drivers/peripheral/base
+Cflags: -I${includedir} -I${ohos_project_dir}/drivers/interface/display/composer/common/include -I${ohos_project_dir}/drivers/hdf_core/interfaces/inner_api/hdi/base
