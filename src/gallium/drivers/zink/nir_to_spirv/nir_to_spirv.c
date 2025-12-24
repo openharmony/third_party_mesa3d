@@ -130,9 +130,10 @@ struct ntv_context {
    SpvId per_vertex_block_type[2];
    SpvId per_vertex_in;
    SpvId per_vertex_out;
-   SpvId float_array_1_type;
+   SpvId clip_array_type;
    int gl_in_num_vertices[3];
    int gl_out_num_vertices;
+   int num_clips;
 
    bool merge_io_var_comps;
    struct list_head io_vars;
@@ -897,12 +898,13 @@ get_per_vertex_member_type(struct ntv_context *ctx, uint32_t member_idx)
    case PV_MEMBER_CLIP_DISTANCE:
    case PV_MEMBER_CULL_DISTANCE:
       // Use cached type or create it once
-      if (ctx->float_array_1_type == 0) {
+      if (ctx->clip_array_type == 0) {
          SpvId float_type = get_glsl_type(ctx, glsl_float_type());
-         SpvId array_size = spirv_builder_const_uint(&ctx->builder, 32, 8);
-         ctx->float_array_1_type = spirv_builder_type_array(&ctx->builder, float_type, array_size);
+         int num_clips = ctx->num_clips > 0 ? MIN2(ctx->num_clips, 8) : 8;
+         SpvId array_size = spirv_builder_const_uint(&ctx->builder, 32, num_clips);
+         ctx->clip_array_type = spirv_builder_type_array(&ctx->builder, float_type, array_size);
       }
-      return ctx->float_array_1_type;
+      return ctx->clip_array_type;
    default:
       unreachable("invalid per-vertex member");
    }
@@ -1021,6 +1023,9 @@ emit_input(struct ntv_context *ctx, struct nir_variable *var)
    if (stage_has_per_vertex(ctx) && is_per_vertex_builtin(ctx, var)) {
       if (glsl_type_is_array(var->type))
          ctx->gl_in_num_vertices[ctx->stage - 1] = glsl_get_length(var->type);
+      if (var->data.location == VARYING_SLOT_CLIP_DIST0
+         || var->data.location == VARYING_SLOT_CULL_DIST0)
+         ctx->num_clips = MAX2(ctx->num_clips, glsl_get_length(var->type));
       return;
    }
 
@@ -1091,6 +1096,9 @@ emit_output(struct ntv_context *ctx, struct nir_variable *var)
    if (stage_has_per_vertex(ctx) && is_per_vertex_builtin(ctx, var)) {
       if (glsl_type_is_array(var->type))
          ctx->gl_out_num_vertices = glsl_get_length(var->type);
+      if (var->data.location == VARYING_SLOT_CLIP_DIST0
+         || var->data.location == VARYING_SLOT_CULL_DIST0)
+         ctx->num_clips = MAX2(ctx->num_clips, glsl_get_length(var->type));
       return;
    }
 
@@ -5122,6 +5130,7 @@ nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *sinfo, const s
 
    // TODO: set this on a per driver basis
    ctx.use_gl_per_vertex = true;
+   ctx.num_clips = 0;
    ctx.merge_io_var_comps = true;
 
    setup_spv_io_vars(&ctx, s);
