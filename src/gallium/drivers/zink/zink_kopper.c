@@ -311,7 +311,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
    } else {
       cswap->scci.minImageCount = cdt->caps.minImageCount;
    }
-   cswap->scci.preTransform = cdt->caps.currentTransform;
+   cswap->scci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    if (cdt->formats[1])
       cswap->scci.pNext = &cdt->format_list;
 
