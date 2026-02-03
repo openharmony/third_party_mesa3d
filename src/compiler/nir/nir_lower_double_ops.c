@@ -24,6 +24,7 @@
 
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_double_pack_records.h"
 
 #include <float.h>
 #include <math.h>
@@ -532,15 +533,17 @@ lower_sat(nir_builder *b, nir_def *src)
 
 static nir_def *
 lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
-                            const nir_shader *softfp64,
-                            nir_lower_doubles_options options)
+                            const struct lower_doubles_data *data)
 {
+   nir_lower_doubles_options options = data->options;
    if (!(options & nir_lower_fp64_full_software))
       return NULL;
 
    const char *name;
    const char *mangled_name;
    const struct glsl_type *return_type = glsl_uint64_t_type();
+   const nir_shader *softfp64 = data->softfp64;
+   bool unpack = false;
 
    switch (instr->op) {
    case nir_op_f2i64:
@@ -559,11 +562,13 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
    case nir_op_f2f64:
       name = "__fp32_to_fp64";
       mangled_name = "__fp32_to_fp64(f1;";
+      unpack = true;
       break;
    case nir_op_f2f32:
       name = "__fp64_to_fp32";
       mangled_name = "__fp64_to_fp32(u641;";
       return_type = glsl_float_type();
+      unpack = true;
       break;
    case nir_op_f2i32:
       name = "__fp64_to_int";
@@ -604,6 +609,7 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
    case nir_op_fneg:
       name = "__fneg64";
       mangled_name = "__fneg64(u641;";
+      unpack = true;
       break;
    case nir_op_fround_even:
       name = "__fround64";
@@ -634,36 +640,44 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
       name = "__fneu64";
       mangled_name = "__fneu64(u641;u641;";
       return_type = glsl_bool_type();
+      unpack = true;
       break;
    case nir_op_flt:
       name = "__flt64";
       mangled_name = "__flt64(u641;u641;";
       return_type = glsl_bool_type();
+      unpack = true;
       break;
    case nir_op_fge:
       name = "__fge64";
       mangled_name = "__fge64(u641;u641;";
       return_type = glsl_bool_type();
+      unpack = true;
       break;
    case nir_op_fmin:
       name = "__fmin64";
       mangled_name = "__fmin64(u641;u641;";
+      unpack = true;
       break;
    case nir_op_fmax:
       name = "__fmax64";
       mangled_name = "__fmax64(u641;u641;";
+      unpack = true;
       break;
    case nir_op_fadd:
       name = "__fadd64";
       mangled_name = "__fadd64(u641;u641;";
+      unpack = true;
       break;
    case nir_op_fmul:
       name = "__fmul64";
       mangled_name = "__fmul64(u641;u641;";
+      unpack = true;
       break;
    case nir_op_ffma:
       name = "__ffma64";
       mangled_name = "__ffma64(u641;u641;u641;";
+      unpack = true;
       break;
    case nir_op_fsat:
       name = "__fsat64";
@@ -674,8 +688,40 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
       mangled_name = "__fisfinite64(u641;";
       return_type = glsl_bool_type();
       break;
+   case nir_op_fsqrt:
+      name = "__fsqrt64";
+      mangled_name = "__fsqrt64(u641;";
+      unpack = true;
+      break;
    default:
-      return false;
+      if (is_quick_softfp64(softfp64)) {
+         switch (instr->op) {
+            case nir_op_frcp:
+               name = "__frcp64";
+               mangled_name = "__frcp64(u641;";
+               unpack = true;
+               break;
+            case nir_op_frsq:
+               name = "__frsq64";
+               mangled_name = "__frsq64(u641;";
+               unpack = true;
+               break;
+            case nir_op_fdiv:
+               name = "__fdiv64";
+               mangled_name = "__fdiv64(u641;u641;";
+               unpack = true;
+               break;
+            case nir_op_fsub:
+               name = "__fsub64";
+               mangled_name = "__fsub64(u641;u641;";
+               unpack = true;
+               break;
+            default:
+               return pack_double_before_lower_alu(b, instr, data);
+         }
+      } else {
+         return false;
+      }
    }
 
    assert(softfp64 != NULL);
@@ -711,10 +757,16 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
       const struct glsl_type *param_type =
          glsl_scalar_type(nir_get_glsl_base_type_for_nir_type(n_type));
 
+      // convert `instr->src[i]` before inline
+      nir_def* src_def = NULL;
+      if (is_quick_softfp64(softfp64)) {
+         src_def = convert_double_before_inline(b, instr->src[i], data, unpack);
+      }
+
       nir_variable *param =
          nir_local_variable_create(b->impl, param_type, "param");
       nir_deref_instr *param_deref = nir_build_deref_var(b, param);
-      nir_store_deref(b, param_deref, nir_mov_alu(b, instr->src[i], 1), ~0);
+      nir_store_deref(b, param_deref, src_def ? src_def : nir_mov_alu(b, instr->src[i], 1), ~0);
 
       assert(i + 1 < ARRAY_SIZE(params));
       params[i + 1] = &param_deref->def;
@@ -722,7 +774,20 @@ lower_doubles_instr_to_soft(nir_builder *b, nir_alu_instr *instr,
 
    nir_inline_function_impl(b, func->impl, params, NULL);
 
-   return nir_load_deref(b, ret_deref);
+   if (is_quick_softfp64(softfp64)) {
+      nir_def* out_def = nir_load_deref(b, ret_deref);
+      if (unpack) {
+         struct nir_lower_double_def *key = ralloc(b->shader, struct nir_lower_double_def);
+         key->index = 0;
+         key->src = out_def;
+         key->dest = NULL;
+         key->packed = false;
+         add_lower_double_def(data->defs, key);
+      }
+      return out_def;
+   } else {
+      return nir_load_deref(b, ret_deref);
+   }
 }
 
 nir_lower_doubles_options
@@ -761,19 +826,19 @@ nir_lower_doubles_op_to_options_mask(nir_op opcode)
    }
 }
 
-struct lower_doubles_data {
-   const nir_shader *softfp64;
-   nir_lower_doubles_options options;
-};
-
 static bool
 should_lower_double_instr(const nir_instr *instr, const void *_data)
 {
    const struct lower_doubles_data *data = _data;
    const nir_lower_doubles_options options = data->options;
 
-   if (instr->type != nir_instr_type_alu)
-      return false;
+   if (instr->type != nir_instr_type_alu) {
+      if (data != NULL && is_quick_softfp64(data->softfp64)) {
+         return should_lower_double_phi_instr(instr, options);
+      } else {
+         return false;
+      }
+   }
 
    const nir_alu_instr *alu = nir_instr_as_alu(instr);
 
@@ -798,13 +863,17 @@ lower_doubles_instr(nir_builder *b, nir_instr *instr, void *_data)
 {
    const struct lower_doubles_data *data = _data;
    const nir_lower_doubles_options options = data->options;
+
+   if (instr->type == nir_instr_type_phi && data != NULL && is_quick_softfp64(data->softfp64)) {
+      return pack_double_before_lower_phi(b, nir_instr_as_phi(instr), data);
+   }
+
    nir_alu_instr *alu = nir_instr_as_alu(instr);
 
    /* Easier to set it here than pass it around all over ther place. */
    b->fp_fast_math = alu->fp_fast_math;
 
-   nir_def *soft_def =
-      lower_doubles_instr_to_soft(b, alu, data->softfp64, options);
+   nir_def *soft_def = lower_doubles_instr_to_soft(b, alu, data);
    if (soft_def)
       return soft_def;
 
@@ -869,6 +938,7 @@ nir_lower_doubles_impl(nir_function_impl *impl,
    struct lower_doubles_data data = {
       .softfp64 = softfp64,
       .options = options,
+      .defs = _mesa_set_create(NULL, hash_nir_lower_double_def, nir_lower_double_def_equal),
    };
 
    bool progress =
@@ -893,6 +963,10 @@ nir_lower_doubles_impl(nir_function_impl *impl,
       nir_metadata_preserve(impl, nir_metadata_all);
    }
 
+   if (data.defs) {
+      _mesa_set_destroy(data.defs, destroy_lower_double_def);
+      data.defs = NULL;
+   }
    return progress;
 }
 
