@@ -1619,6 +1619,7 @@ _mesa_get_current_context( void )
 void
 _mesa_flush(struct gl_context *ctx)
 {
+   MESA_TRACE_FUNC();
    bool async = !ctx->Shared->HasExternallySharedImages;
    FLUSH_VERTICES(ctx, 0, 0);
 
