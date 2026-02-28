@@ -64,6 +64,22 @@
  */
 #define RELAXED_NAN_PROPAGATION
 
+/* Returns the result of split the double-precision floating-point values
+ * `a' to two float-precision floating-point values.
+ */
+vec2 __splitFloat64ToFloats(uint64_t __a)
+{
+   return uintBitsToFloat(unpackUint2x32(__a));
+}
+
+/* Returns the result of pack two the float-precision floating-point values
+ * `se' to the double-precision floating-point values.
+ */
+uint64_t __packFloat64FromFloats(vec2 se)
+{
+   return packUint2x32(floatBitsToUint(se));
+}
+
 /* Absolute value of a Float64 :
  * Clear the sign bit
  */
@@ -91,6 +107,18 @@ __is_nan(uint64_t __a)
  */
 uint64_t
 __fneg64(uint64_t __a)
+{
+   vec2 a = __splitFloat64ToFloats(__a);
+   a.x = -a.x;
+   a.y = -a.y;
+   return __packFloat64FromFloats(a);
+}
+
+/* Negate value of a Float64 :
+ * Toggle the sign bit
+ */
+uint64_t
+__fneg64Packed(uint64_t __a)
 {
    uvec2 a = unpackUint2x32(__a);
    a.y ^= (1u << 31);
@@ -155,12 +183,11 @@ __feq64(uint64_t a, uint64_t b)
  * performed according to the IEEE Standard for Floating-Point Arithmetic.
  */
 bool
-__fneu64(uint64_t a, uint64_t b)
+__fneu64(uint64_t __a, uint64_t __b)
 {
-   if (__is_nan(a) || __is_nan(b))
-      return true;
-
-   return !__feq64_nonnan(a, b);
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 b = __splitFloat64ToFloats(__b);
+   return (a.x != b.x) || (a.y != b.y);
 }
 
 /* Returns the sign bit of the double-precision floating-point value `a'.*/
@@ -253,17 +280,11 @@ __flt64_nonnan_minmax(uint64_t __a, uint64_t __b)
  * according to the IEEE Standard for Floating-Point Arithmetic.
  */
 bool
-__flt64(uint64_t a, uint64_t b)
+__flt64(uint64_t __a, uint64_t __b)
 {
-   /* This weird layout matters.  Doing the "obvious" thing results in extra
-    * flow control being inserted to implement the short-circuit evaluation
-    * rules.  Flow control is bad!
-    */
-   bool x = !__is_nan(a);
-   bool y = !__is_nan(b);
-   bool z = __flt64_nonnan(a, b);
-
-   return (x && y && z);
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 b = __splitFloat64ToFloats(__b);
+   return a.x < b.x || ((a.x == b.x) && a.y < b.y);
 }
 
 /* Returns true if the double-precision floating-point value `a' is greater
@@ -272,17 +293,11 @@ __flt64(uint64_t a, uint64_t b)
  * Arithmetic.
  */
 bool
-__fge64(uint64_t a, uint64_t b)
+__fge64(uint64_t __a, uint64_t __b)
 {
-   /* This weird layout matters.  Doing the "obvious" thing results in extra
-    * flow control being inserted to implement the short-circuit evaluation
-    * rules.  Flow control is bad!
-    */
-   bool x = !__is_nan(a);
-   bool y = !__is_nan(b);
-   bool z = !__flt64_nonnan(a, b);
-
-   return (x && y && z);
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 b = __splitFloat64ToFloats(__b);
+   return a.x >= b.x || ((a.x == b.x) && a.y >= b.y);
 }
 
 uint64_t
@@ -701,74 +716,65 @@ __packFloat32(uint zSign, int zExp, uint zFrac)
 /* Returns the result of split the double-precision floating-point values
  * `a' to two float-precision floating-point values.
  */
-vec2 __splitFloat64ToFloats(uint64_t __a)
+uint64_t __unpackFp64ToFp32(uint64_t __a)
 {
-   uint sign = __extractFloat64Sign(__a);
-   int exp = __extractFloat64Exp(__a);
-   uint frac32x = __extractFloat64FracHi(__a);
-   uint frac32y = __extractFloat64FracLo(__a);
+   uint signa = __extractFloat64Sign(__a);
+   signa = signa >> 31;
+   int expa = __extractFloat64Exp(__a);
+   uint hi = __extractFloat64FracHi(__a);
+   uint lo = __extractFloat64FracLo(__a);
+   hi = (hi << 3) | (lo >> 29);
+   lo = (lo & 0x1FFFFFFFu);
+
    vec2 retval;
-
-   exp = mix(exp - 0x380, 0, exp == 0);
-   int shift = mix(-exp + 1, 0, exp >= 0);
-
-   frac32x = mix(frac32x | 0x100000u, frac32x, exp >= 0);
-   exp = max(0, exp);
-   __shift64Right(frac32x, frac32y, shift, frac32x, frac32y);
-
-   frac32x = (frac32x << 3) | (frac32y >> 29);
-   retval.x = __packFloat32(sign, exp, frac32x);
-
-   frac32y = (frac32y << 3);
-   shift = __countLeadingZeros32(frac32y);
-   exp = max(0, exp - shift - 24);
-   frac32y = mix((frac32y << (shift + 1)) >> 9, 0, exp == 0);
-   retval.y = __packFloat32(sign, exp, frac32y);
-   return retval;
+   retval.y = ldexp(1.0f, expa - 1023);
+   expa = 1 - 2 * int(signa);
+   signa = lo >> 28;
+   retval.x = expa * ((hi * 1.1920928955078125e-7 + 1.0) * retval.y + signa * 1.1920928955078125e-7 * retval.y);
+   retval.y = expa * ((1.0 - signa) * lo - signa * ((lo ^ 0x1FFFFFFFu) + 1.0)) * 2.2204460492503130808472633361816e-16 * retval.y;
+   return __packFloat64FromFloats(retval);
 }
 
 /* Returns the result of pack two the float-precision floating-point values
- * `se' to the double-precision floating-point values,
+ * `se' to the double-precision floating-point values.
  */
-uint64_t __packFloat64FromFloats(vec2 se)
+uint64_t __packFp32ToFp64(uint64_t __a)
 {
-   uvec2 xy = floatBitsToUint(se);
-   uint sign32x = xy.x & 0x80000000u;
-   uint frac32x = xy.x & 0x007FFFFFu;
-   uint frac32y = xy.y & 0x007FFFFFu;
-   uint frac32 = 0u;
-   int exp32x = int((xy.x >> 23) & 0xFF);
-   int shift = int((xy.y >> 23) & 0xFF);
-   bool signNeq = sign32x != (xy.y & 0x80000000u);
-   frac32x = mix((frac32x | 0x800000u) << 8, frac32x << 9, exp32x == 0);
-   frac32y = mix((frac32y | 0x800000u) << 8, frac32y << 9, shift == 0);
-   shift = exp32x - shift;
-   __shift64RightJamming(frac32y, frac32, shift, frac32y, frac32);
-   frac32x = mix(frac32x + frac32y, frac32x - frac32y - uint(frac32 > 0), signNeq);
-   frac32y = mix(0u + frac32, 0u - frac32, signNeq);
-   shift = __countLeadingZeros32(frac32x);
-   exp32x = mix(exp32x + 0x380 - shift, 0, shift == 32);
-   shift = mix(shift + 1, 0, exp32x == 0);
-   frac32x = mix(frac32x << shift | (frac32y >> ((-shift) & 31)), frac32x, shift == 0);
-   frac32y = frac32y << shift;
-   shift = 11 + int(shift > 0);
-   frac32y = frac32x << ((-shift) & 31) | (frac32y >> shift);
-   frac32x = frac32x >> shift;
-   return __packFloat64(sign32x, exp32x, frac32x, frac32y);
+   vec2 se = __splitFloat64ToFloats(__a);
+   uvec2 xy;
+   bool signNeq = (se.x * se.y < 0);
+   int exp32x = 0, exp32xOld = 0;
+   float frac32x = frexp(se.x, exp32xOld);
+   float frac32y = ldexp(sign(se.x), exp32xOld - 24);
+   se.x -= signNeq ? frac32y : 0.0;
+   frac32x = abs(frexp(se.x, exp32x));
+   int exp32y = 0;
+   frac32y = abs(frexp(se.y, exp32y));
+   frac32y = ldexp(frac32y, exp32y - exp32x + 53);
+   xy.x = uint((frac32x - 0.5 * sign(frac32x)) * 16777216.0);
+   xy.y = xy.x << 29;
+   xy.x = xy.x >> 3;
+   exp32xOld -= exp32x;
+   uint tmp = (0x20000000u << exp32xOld) - uint(frac32y);
+   xy.y += signNeq ? tmp : uint(frac32y);
+   xy.x += (se.x > 0) ? 0u : 0x80000000u;
+   tmp = (uint(exp32x + 1022) << 20);
+   xy.x += (se.x != 0) ? tmp : 0u;
+   return packUint2x32(uvec2(xy.y, xy.x));
 }
 
 vec2 __quickTwoSum(float a, float b)
 {
-   float s = a + b;
-   float e = b - (s - a);
+   precise float s = a + b;
+   precise float e = b - (s - a);
    return vec2(s, e);
 }
 
 vec4 __twoSumComp(vec2 a, vec2 b)
 {
-   vec2 s = a + b;
-   vec2 v = s - a;
-   vec2 e = (a - (s - v)) + (b - v);
+   precise vec2 s = a + b;
+   precise vec2 v = s - a;
+   precise vec2 e = (a - (s - v)) + (b - v);
    return vec4(s.x, e.x, s.y, e.y);
 }
 
@@ -788,27 +794,48 @@ __fadd64(uint64_t __a, uint64_t __b)
    return __packFloat64FromFloats(vec2(st.xy));
 }
 
+/* Returns the result of adding the double-precision floating-point values
+ * `a' and `b'.
+ */
+uint64_t
+__fadd64Packed(uint64_t __a, uint64_t __b)
+{
+   uint64_t a = __unpackFp64ToFp32(__a);
+   uint64_t b = __unpackFp64ToFp32(__b);
+   uint64_t s = __fadd64(a, b);
+   return __packFp32ToFp64(s);
+}
+
+uint64_t
+__fsub64(uint64_t __a, uint64_t __b)
+{
+   vec2 b = __splitFloat64ToFloats(__b);
+   b.x = -b.x;
+   b.y = -b.y;
+   return __fadd64(__a, __packFloat64FromFloats(b));
+}
+
 vec4 __splitComp(vec2 a)
 {
-   vec2 t = 4097 * a;
-   vec2 a_hi = t - (t - a);
-   vec2 a_lo = a - a_hi;
-   return vec4(a_hi.x, a_hi.y, a_lo.x, a_lo.y);
+   precise vec2 t = 4097 * a;
+   precise vec2 a_hi = t - (t - a);
+   precise vec2 a_lo = a - a_hi;
+   return vec4(a_hi.x, a_lo.x, a_hi.y, a_lo.y);
 }
 
 vec2 __split(float a)
 {
-   float t = a * 4097;
-   float a_hi = t - (t - a);
-   float a_lo = a - a_hi;
-   return vec2(a_hi, a_lo);
+  precise float t =  a * 4097;
+  precise float a_hi = t - (t - a);
+  precise float a_lo = a - a_hi;
+  return vec2(a_hi, a_lo);
 }
 
 vec2 __twoProd(float a, float b)
 {
-   float p = a * b;
-   vec4 s = vec4(__split(a), __split(b));
-   float e = (s.x * s.z - p) + s.x * s.w + s.y * s.z + s.y * s.w;
+   precise float p = a * b;
+   vec4 s = __splitComp(vec2(a, b));
+   precise float e = (s.x * s.z - p) + s.x * s.w + s.y * s.z + s.y * s.w;
    return vec2(p, e);
 }
 
@@ -825,6 +852,46 @@ __fmul64(uint64_t __a, uint64_t __b)
    p.y += a.y * b.x;
    p = __quickTwoSum(p.x, p.y);
    return __packFloat64FromFloats(p);
+}
+
+uint64_t
+__fdiv64(uint64_t __a, uint64_t __b)
+{
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 b = __splitFloat64ToFloats(__b);
+   vec2 t, z;
+   float e, r;
+   r = 1.0 / b.x;
+   t.x = a.x * r;
+   e = b.x * (-t.x) + a.x;
+   t.x = r * e + t.x;
+   t.y = b.x * (-t.x) + a.x;
+   t.y = a.y + t.y;
+   t.y = b.y * (-t.x) + t.y;
+   e = r * t.y;
+   t.y = b.x * (-e) + t.y;
+   t.y = r * t.y + e;
+   z = __quickTwoSum(t.x, t.y);
+   return __packFloat64FromFloats(z);
+}
+
+uint64_t
+__frcp64(uint64_t __a)
+{
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 t, z;
+   float e, r;
+   r = 1.0 / a.x;
+   t.x = r;
+   e = a.x * (-t.x) + 1.0;
+   t.x = r * e + t.x;
+   t.y = a.x * (-t.x) + 1.0;
+   t.y = a.y * (-t.x) + t.y;
+   e = r * t.y;
+   t.y = a.x * (-e) + t.y;
+   t.y = r * t.y + e;
+   z = __quickTwoSum(t.x, t.y);
+   return __packFloat64FromFloats(z);
 }
 
 /* Normalizes the subnormal double-precision floating-point value represented
@@ -1145,23 +1212,9 @@ __roundAndPackFloat32(uint zSign, int zExp, uint zFrac)
 float
 __fp64_to_fp32(uint64_t __a)
 {
-   uvec2 a = unpackUint2x32(__a);
-   uint zFrac = 0u;
-   uint allZero = 0u;
-
-   uint aFracLo = __extractFloat64FracLo(__a);
-   uint aFracHi = __extractFloat64FracHi(__a);
-   int aExp = __extractFloat64Exp(__a);
-   uint aSign = __extractFloat64Sign(__a);
-   if (aExp == 0x7FF) {
-      __shortShift64Left(a.y, a.x, 12, a.y, a.x);
-      float rval = uintBitsToFloat(aSign | 0x7FC00000u | (a.y>>9));
-      rval = mix(__packFloat32(aSign, 0xFF, 0u), rval, (aFracHi | aFracLo) != 0u);
-      return rval;
-   }
-   __shift64RightJamming(aFracHi, aFracLo, 22, allZero, zFrac);
-   zFrac = mix(zFrac, zFrac | 0x40000000u, aExp != 0);
-   return __roundAndPackFloat32(aSign, aExp - 0x381, zFrac);
+   vec2 a = __splitFloat64ToFloats(__a);
+   precise float b = a.x + a.y;
+   return b;
 }
 
 /* Returns the result of converting the single-precision floating-point value
@@ -1170,230 +1223,9 @@ __fp64_to_fp32(uint64_t __a)
 uint64_t
 __fp32_to_fp64(float f)
 {
-   uint a = floatBitsToUint(f);
-   uint aFrac = a & 0x007FFFFFu;
-   int aExp = int((a>>23) & 0xFFu);
-   uint aSign = a & 0x80000000u;
-   uint zFrac0 = 0u;
-   uint zFrac1 = 0u;
-
-   if (aExp == 0xFF) {
-      if (aFrac != 0u) {
-         uint nanLo = 0u;
-         uint nanHi = a<<9;
-         __shift64Right(nanHi, nanLo, 12, nanHi, nanLo);
-         nanHi |= aSign | 0x7FF80000u;
-         return packUint2x32(uvec2(nanLo, nanHi));
-      }
-      return __packFloat64(aSign, 0x7FF, 0u, 0u);
-    }
-
-   if (aExp == 0) {
-      if (aFrac == 0u)
-         return __packFloat64(aSign, 0, 0u, 0u);
-      /* Normalize subnormal */
-      int shiftCount = __countLeadingZeros32(aFrac) - 8;
-      aFrac <<= shiftCount;
-      aExp = 1 - shiftCount;
-      --aExp;
-   }
-
-   __shift64Right(aFrac, 0u, 3, zFrac0, zFrac1);
-   return __packFloat64(aSign, aExp + 0x380, zFrac0, zFrac1);
-}
-
-/* Adds the 96-bit value formed by concatenating `a0', `a1', and `a2' to the
- * 96-bit value formed by concatenating `b0', `b1', and `b2'.  Addition is
- * modulo 2^96, so any carry out is lost.  The result is broken into three
- * 32-bit pieces which are stored at the locations pointed to by `z0Ptr',
- * `z1Ptr', and `z2Ptr'.
- */
-void
-__add96(uint a0, uint a1, uint a2,
-        uint b0, uint b1, uint b2,
-        out uint z0Ptr,
-        out uint z1Ptr,
-        out uint z2Ptr)
-{
-   uint z2 = a2 + b2;
-   uint carry1 = uint(z2 < a2);
-   uint z1 = a1 + b1;
-   uint carry0 = uint(z1 < a1);
-   uint z0 = a0 + b0;
-   z1 += carry1;
-   z0 += uint(z1 < carry1);
-   z0 += carry0;
-   z2Ptr = z2;
-   z1Ptr = z1;
-   z0Ptr = z0;
-}
-
-/* Subtracts the 96-bit value formed by concatenating `b0', `b1', and `b2' from
- * the 96-bit value formed by concatenating `a0', `a1', and `a2'.  Subtraction
- * is modulo 2^96, so any borrow out (carry out) is lost.  The result is broken
- * into three 32-bit pieces which are stored at the locations pointed to by
- * `z0Ptr', `z1Ptr', and `z2Ptr'.
- */
-void
-__sub96(uint a0, uint a1, uint a2,
-        uint b0, uint b1, uint b2,
-        out uint z0Ptr,
-        out uint z1Ptr,
-        out uint z2Ptr)
-{
-   uint z2 = a2 - b2;
-   uint borrow1 = uint(a2 < b2);
-   uint z1 = a1 - b1;
-   uint borrow0 = uint(a1 < b1);
-   uint z0 = a0 - b0;
-   z0 -= uint(z1 < borrow1);
-   z1 -= borrow1;
-   z0 -= borrow0;
-   z2Ptr = z2;
-   z1Ptr = z1;
-   z0Ptr = z0;
-}
-
-/* Returns an approximation to the 32-bit integer quotient obtained by dividing
- * `b' into the 64-bit value formed by concatenating `a0' and `a1'.  The
- * divisor `b' must be at least 2^31.  If q is the exact quotient truncated
- * toward zero, the approximation returned lies between q and q + 2 inclusive.
- * If the exact quotient q is larger than 32 bits, the maximum positive 32-bit
- * unsigned integer is returned.
- */
-uint
-__estimateDiv64To32(uint a0, uint a1, uint b)
-{
-   uint b0;
-   uint b1;
-   uint rem0 = 0u;
-   uint rem1 = 0u;
-   uint term0 = 0u;
-   uint term1 = 0u;
-   uint z;
-
-   if (b <= a0)
-      return 0xFFFFFFFFu;
-   b0 = b>>16;
-   z = (b0<<16 <= a0) ? 0xFFFF0000u : (a0 / b0)<<16;
-   umulExtended(b, z, term0, term1);
-   __sub64(a0, a1, term0, term1, rem0, rem1);
-   while (int(rem0) < 0) {
-      z -= 0x10000u;
-      b1 = b<<16;
-      __add64(rem0, rem1, b0, b1, rem0, rem1);
-   }
-   rem0 = (rem0<<16) | (rem1>>16);
-   z |= (b0<<16 <= rem0) ? 0xFFFFu : rem0 / b0;
-   return z;
-}
-
-uint
-__sqrtOddAdjustments(int index)
-{
-   uint res = 0u;
-   if (index == 0)
-      res = 0x0004u;
-   if (index == 1)
-      res = 0x0022u;
-   if (index == 2)
-      res = 0x005Du;
-   if (index == 3)
-      res = 0x00B1u;
-   if (index == 4)
-      res = 0x011Du;
-   if (index == 5)
-      res = 0x019Fu;
-   if (index == 6)
-      res = 0x0236u;
-   if (index == 7)
-      res = 0x02E0u;
-   if (index == 8)
-      res = 0x039Cu;
-   if (index == 9)
-      res = 0x0468u;
-   if (index == 10)
-      res = 0x0545u;
-   if (index == 11)
-      res = 0x631u;
-   if (index == 12)
-      res = 0x072Bu;
-   if (index == 13)
-      res = 0x0832u;
-   if (index == 14)
-      res = 0x0946u;
-   if (index == 15)
-      res = 0x0A67u;
-
-   return res;
-}
-
-uint
-__sqrtEvenAdjustments(int index)
-{
-   uint res = 0u;
-   if (index == 0)
-      res = 0x0A2Du;
-   if (index == 1)
-      res = 0x08AFu;
-   if (index == 2)
-      res = 0x075Au;
-   if (index == 3)
-      res = 0x0629u;
-   if (index == 4)
-      res = 0x051Au;
-   if (index == 5)
-      res = 0x0429u;
-   if (index == 6)
-      res = 0x0356u;
-   if (index == 7)
-      res = 0x029Eu;
-   if (index == 8)
-      res = 0x0200u;
-   if (index == 9)
-      res = 0x0179u;
-   if (index == 10)
-      res = 0x0109u;
-   if (index == 11)
-      res = 0x00AFu;
-   if (index == 12)
-      res = 0x0068u;
-   if (index == 13)
-      res = 0x0034u;
-   if (index == 14)
-      res = 0x0012u;
-   if (index == 15)
-      res = 0x0002u;
-
-   return res;
-}
-
-/* Returns an approximation to the square root of the 32-bit significand given
- * by `a'.  Considered as an integer, `a' must be at least 2^31.  If bit 0 of
- * `aExp' (the least significant bit) is 1, the integer returned approximates
- * 2^31*sqrt(`a'/2^31), where `a' is considered an integer.  If bit 0 of `aExp'
- * is 0, the integer returned approximates 2^31*sqrt(`a'/2^30).  In either
- * case, the approximation returned lies strictly within +/-2 of the exact
- * value.
- */
-uint
-__estimateSqrt32(int aExp, uint a)
-{
-   uint z;
-
-   int index = int(a>>27 & 15u);
-   if ((aExp & 1) != 0) {
-      z = 0x4000u + (a>>17) - __sqrtOddAdjustments(index);
-      z = ((a / z)<<14) + (z<<15);
-      a >>= 1;
-   } else {
-      z = 0x8000u + (a>>17) - __sqrtEvenAdjustments(index);
-      z = a / z + z;
-      z = (0x20000u <= z) ? 0xFFFF8000u : (z<<15);
-      if (z <= a)
-         return uint(int(a)>>1);
-   }
-   return ((__estimateDiv64To32(a, 0u, z))>>1) + (z>>1);
+   vec2 z = vec2(0.0);
+   z.x = f;
+   return __packFloat64FromFloats(z);
 }
 
 /* Returns the square root of the double-precision floating-point value `a'.
@@ -1408,10 +1240,19 @@ __fsqrt64(uint64_t __a)
    vec2 z = vec2(0.0);
    vec2 t = vec2(0.0);
    float x, s, r;
-   r = mix(0.0f, inversesqrt(a.x), a.x != 0.0);
+   r = inversesqrt(a.x);
+   r = a.x != 0.0 ? r : 0.0;
    x = r * a.x;
-   s = x * (-x) + a.x;
+   vec2 p = __twoProd(x, -x);
+   vec2 p1 = vec2(a.x, 0);
+   vec4 st = __twoSumComp(p, p1);
+   st.y += st.z;
+   st.xy = __quickTwoSum(st.x, st.y);
+   st.y += st.w;
+   st.xy = __quickTwoSum(st.x, st.y);
+   s = st.x + st.y;
    r = 0.5f * r;
+
    z = __quickTwoSum(s, a.y);
    t.x = r * z.x;
    t.y = r * z.x - t.x;
@@ -1419,6 +1260,31 @@ __fsqrt64(uint64_t __a)
    r = x + t.x;
    s = x - r + t.x;
    s = s + t.y;
+   z = __quickTwoSum(r, s);
+   return __packFloat64FromFloats(z);
+}
+
+uint64_t
+__frsq64(uint64_t __a)
+{
+   vec2 a = __splitFloat64ToFloats(__a);
+   vec2 z = vec2(0.0);
+   float r, s, e;
+   r = inversesqrt(a.x);
+   e = a.x * r;
+   s = e * (-r) + 1.0;
+   e = a.x * r + (-e);
+   s = e * (-r) + s;
+   e = a.y * r;
+   s = e * (-r) + s;
+   e = 0.5 * r;
+
+   z.x = e * s;
+   z.y = e * s - z.x;
+   s = r + z.x;
+   r = r - s;
+   r = r + z.x;
+   r = r + z.y;
    z = __quickTwoSum(r, s);
    return __packFloat64FromFloats(z);
 }
@@ -1466,7 +1332,7 @@ __ffloor64(uint64_t a)
    if (is_positive || __feq64(tr, a)) {
       return tr;
    } else {
-      return __fadd64(tr, 0xbff0000000000000ul /* -1.0 */);
+      return __fadd64Packed(tr, 0xbff0000000000000ul /* -1.0 */);
    }
 }
 
@@ -1516,37 +1382,21 @@ __fround64(uint64_t __a)
 }
 
 uint64_t
-__fmin64(uint64_t a, uint64_t b)
+__fmin64(uint64_t __a, uint64_t __b)
 {
-   /* This weird layout matters.  Doing the "obvious" thing results in extra
-    * flow control being inserted to implement the short-circuit evaluation
-    * rules.  Flow control is bad!
-    */
-   bool b_nan = __is_nan(b);
-   bool a_lt_b = __flt64_nonnan_minmax(a, b);
-   bool a_nan = __is_nan(a);
-
-   return (b_nan || a_lt_b) && !a_nan ? a : b;
+   return __flt64(__a, __b) ? __a : __b;
 }
 
 uint64_t
-__fmax64(uint64_t a, uint64_t b)
+__fmax64(uint64_t __a, uint64_t __b)
 {
-   /* This weird layout matters.  Doing the "obvious" thing results in extra
-    * flow control being inserted to implement the short-circuit evaluation
-    * rules.  Flow control is bad!
-    */
-   bool b_nan = __is_nan(b);
-   bool a_lt_b = __flt64_nonnan_minmax(a, b);
-   bool a_nan = __is_nan(a);
-
-   return (b_nan || a_lt_b) && !a_nan ? b : a;
+   return __flt64(__a, __b) ? __b : __a;
 }
 
 uint64_t
 __ffract64(uint64_t a)
 {
-   return __fadd64(a, __fneg64(__ffloor64(a)));
+   return __fadd64Packed(a, __fneg64Packed(__ffloor64(a)));
 }
 
 bool
