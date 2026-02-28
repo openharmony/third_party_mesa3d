@@ -28,7 +28,8 @@
                 "graphic_surface",
                 "hilog",
                 "hitrace",
-                "init"
+                "init",
+                "qos_manager"
             ],
             "third_party": [
                 "zlib"

@@ -1,0 +1,9 @@
+ohos_project_dir=ohos_project_directory_stub
+libdir=${ohos_project_dir}/prebuilts/ohos-sdk/linux/23/native/sysroot/usr/lib/aarch64-linux-ohos/
+includedir=${ohos_project_dir}/foundation/resourceschedule/qos_manager/interfaces/kits/c
+ 
+Name: libqos
+Version: 1.0.0
+Description: libqos
+Libs: -L${libdir} -lqos
+Cflags: -I${includedir}
