@@ -62,6 +62,7 @@ action("mesa3d_action_build") {
     "hitrace:hitrace_meter",
     "init:libbegetutil",
     "graphic_surface:surface",
+    "qos_manager:qos",
     "zlib:libz",
   ]
   if (mesa3d_feature_upgrade_skia) {

@@ -40,6 +40,9 @@
 #include <sys/syscall.h>
 #endif
 
+#if DETECT_OS_OHOS
+#include <qos.h>
+#endif
 
 /* Define 256MB */
 #define S_256MB (256 * 1024 * 1024)
@@ -255,6 +258,12 @@ util_queue_thread_func(void *input)
    if (queue->flags & UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY) {
       /* The nice() function can only set a maximum of 19. */
       setpriority(PRIO_PROCESS, syscall(SYS_gettid), 19);
+   }
+#endif
+
+#if DETECT_OS_OHOS
+   if (queue->flags & UTIL_QUEUE_INIT_USE_USER_INTERACTIVE_PRIORITY) {
+      OH_QoS_SetThreadQoS(QOS_USER_INTERACTIVE);
    }
 #endif
 
