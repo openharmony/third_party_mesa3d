@@ -204,6 +204,12 @@ primconvert_init_draw(struct primconvert_context *pc,
                          new_info->primitive_restart ? PR_ENABLE : PR_DISABLE,
                          &mode, &index_size, &new_draw->count,
                          &trans_func);
+      if (num_direct_draws) {
+         new_draw->count = 0;
+         for (unsigned i = 0; i < num_direct_draws; i++) {
+            new_draw->count += u_index_count_converted_indices(pc->cfg.primtypes_mask, true, info->mode, direct_draws[i].count);
+         }
+      }
       assert(new_info->mode == mode);
       assert(new_info->index_size == index_size);
    }
@@ -253,7 +259,10 @@ primconvert_init_draw(struct primconvert_context *pc,
             dst_ptr += new_info->index_size * tmp_count;
          }
          /* step 7: set the final index count, which is the converted total index count from the original draw rewrite */
-         new_draw->count = u_index_count_converted_indices(pc->cfg.primtypes_mask, true, info->mode, total_index_count);
+         new_draw->count = 0;
+         for (unsigned i = 0; i < num_direct_draws; i++) {
+            new_draw->count += u_index_count_converted_indices(pc->cfg.primtypes_mask, true, info->mode, direct_draws[i].count);
+         }
       } else
          trans_func(src, draw.start, draw.count, new_draw->count, info->restart_index, dst);
 
