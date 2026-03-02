@@ -3451,7 +3451,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
    }
 
    setup_renderdoc(screen);
-   if (screen->threaded_submit && !util_queue_init(&screen->flush_queue, "zfq", 8, 1, UTIL_QUEUE_INIT_RESIZE_IF_FULL, screen)) {
+   if (screen->threaded_submit && !util_queue_init(&screen->flush_queue, "zfq", 8, 1, UTIL_QUEUE_INIT_RESIZE_IF_FULL | UTIL_QUEUE_INIT_USE_USER_INTERACTIVE_PRIORITY, screen)) {
       if (!screen->driver_name_is_inferred)
          mesa_loge("zink: Failed to create flush queue.\n");
       goto fail;

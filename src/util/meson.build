@@ -251,6 +251,7 @@ if with_platform_ohos
   deps_for_libmesa_util += dependency('libhilog')
   deps_for_libmesa_util += dependency('libhitrace')
   deps_for_libmesa_util += dependency('libbegetutil')
+  deps_for_libmesa_util += dependency('libqos')
 endif
 
 if with_platform_ohos

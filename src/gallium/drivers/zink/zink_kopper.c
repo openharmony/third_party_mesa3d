@@ -306,7 +306,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
       cswap->scci.clipped = VK_TRUE;
    }
    cswap->scci.presentMode = cdt->present_mode;
-   if (SWAP_BUFFER_COUNT >= cdt->caps.minImageCount && SWAP_BUFFER_COUNT <= cdt->caps.maxImageCount) {
+   if (cdt->caps.minImageCount <= SWAP_BUFFER_COUNT && cdt->caps.maxImageCount >= SWAP_BUFFER_COUNT) {
       cswap->scci.minImageCount = SWAP_BUFFER_COUNT;
    } else {
       cswap->scci.minImageCount = cdt->caps.minImageCount;
