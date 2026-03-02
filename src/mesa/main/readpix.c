@@ -44,6 +44,7 @@
 #include "format_utils.h"
 #include "pixeltransfer.h"
 #include "api_exec_decl.h"
+#include "util/perf/cpu_trace.h"
 
 #include "state_tracker/st_cb_readpixels.h"
 
@@ -1042,6 +1043,7 @@ static ALWAYS_INLINE void
 read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
             GLenum type, GLsizei bufSize, GLvoid *pixels, bool no_error)
 {
+   MESA_TRACE_FUNC();
    GLenum err = GL_NO_ERROR;
    struct gl_renderbuffer *rb;
    struct gl_pixelstore_attrib clippedPacking;
