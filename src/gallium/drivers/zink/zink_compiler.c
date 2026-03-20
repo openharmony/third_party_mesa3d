@@ -689,14 +689,32 @@ lower_line_stipple_fs(nir_shader *shader)
    nir_function_impl *entry = nir_shader_get_entrypoint(shader);
    b = nir_builder_at(nir_after_impl(entry));
 
+   int num_varying_slot = 0;
+   nir_foreach_shader_in_variable(var, shader) {
+      switch (var->data.location) {
+         case VARYING_SLOT_POS:
+         case VARYING_SLOT_LAYER:
+         case VARYING_SLOT_PRIMITIVE_ID:
+         case VARYING_SLOT_CLIP_DIST0:
+         case VARYING_SLOT_CULL_DIST0:
+         case VARYING_SLOT_VIEWPORT:
+         case VARYING_SLOT_FACE:
+            break;
+         default:
+            num_varying_slot++;
+            break;
+      }
+   }
+
    // create stipple counter
    nir_variable *stipple = nir_variable_create(shader, nir_var_shader_in,
                                                glsl_float_type(),
                                                "__stipple");
    stipple->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
-   stipple->data.driver_location = shader->num_inputs++;
+   stipple->data.driver_location = num_varying_slot;
    stipple->data.location = MAX2(util_last_bit64(shader->info.inputs_read), VARYING_SLOT_VAR0);
    shader->info.inputs_read |= BITFIELD64_BIT(stipple->data.location);
+   shader->num_inputs++;
 
    nir_variable *sample_mask_out =
       nir_find_variable_with_location(shader, nir_var_shader_out,
