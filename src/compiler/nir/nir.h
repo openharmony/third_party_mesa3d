@@ -4212,9 +4212,15 @@ typedef struct nir_shader_compiler_options {
     * fadd(x, fneg(y)). If true, driver should call nir_opt_algebraic_late(). */
    bool has_fsub;
 
+   /** Ignore fsub algebraic replace. */
+   bool ignore_fsub;
+
    /** Backend supports isub, if not set isub will automatically be lowered to
     * iadd(x, ineg(y)). If true, driver should call nir_opt_algebraic_late(). */
    bool has_isub;
+
+   /** Ignore isub algebraic replace. */
+   bool ignore_isub;
 
    /** Backend supports pack_32_4x8 or pack_32_4x8_split. */
    bool has_pack_32_4x8;
