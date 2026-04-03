@@ -1366,6 +1366,12 @@ zink_screen_init_compiler(struct zink_screen *screen)
        * stop Vulkan drivers from unrolling the loops.
        */
       screen->nir_options.max_unroll_iterations_fp64 = 32;
+
+      const char* fp64_method = os_get_option("FP64_METHOD");
+      if (fp64_method && !strcmp(fp64_method, "quick_soft")) {
+         screen->nir_options.ignore_fsub = true;
+         screen->nir_options.ignore_isub = true;
+      }
    }
 
    if (screen->driver_compiler_workarounds.io_opt) {

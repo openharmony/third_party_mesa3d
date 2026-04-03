@@ -939,6 +939,12 @@ nir_algebraic_impl(nir_function_impl *impl,
       if (instr->pass_flags)
          continue;
 
+      const nir_alu_instr *alu = nir_instr_as_alu(instr);
+      if (build.shader->options->ignore_fsub && alu->op == nir_op_fsub)
+         continue;
+      if (build.shader->options->ignore_isub && alu->op == nir_op_isub)
+         continue;
+
       progress |= nir_algebraic_instr(&build, instr,
                                       range_ht, condition_flags,
                                       table, &states, worklist, &dead_instrs);
