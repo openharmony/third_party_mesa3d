@@ -23,10 +23,51 @@
 
 #include "nir_builder.h"
 
+struct clip_halfz_state {
+   bool deferred;
+   nir_intrinsic_instr *z_intr;
+   nir_def *w;
+}
+
+static void
+reset_clip_halfz_state(struct clip_halfz_state *state)
+{
+   state->deferred = false;
+   state->z_intr = NULL;
+   state->w = NULL;
+}
+
+static bool
+lower_pos_write_instr(nir_builder *b, nir_intrinsic_instr *intr, 
+                      nir_def *w)
+{
+   b->cursor = nir_before_instr(&intr->instr);
+
+   nir_def *pos = intr->src[1].ssa;
+   w = w ? w : nir_channel(b, pos, 3);
+   nir_def *def = nir_vec4(b,
+                           nir_channel(b, pos, 0),
+                           nir_channel(b, pos, 1),
+                           nir_fmul_imm(b,
+                                        nir_fadd(b,
+                                                 nir_channel(b, pos, 2),
+                                                 w),
+                                        0.5),
+                           w);
+   nir_src_rewrite(intr->src + 1, def);
+   return true;
+}
+
 static bool
 lower_pos_write(nir_builder *b, nir_intrinsic_instr *intr,
-                UNUSED void *cb_data)
+                void *cb_data)
 {
+   struct clip_halfz_state *state = cb_data;
+   if (intr->intrinsic == nir_intrinsic_emit_vertex
+      || intr->intrinsic == nir_intrinsic_emit_vertex_with_counter
+      || intr->intrinsic == nir_intrinsic_emit_vertex_nv)
+      reset_clip_halfz_state(state);
+
    if (intr->intrinsic != nir_intrinsic_store_deref)
       return false;
 
@@ -35,19 +76,28 @@ lower_pos_write(nir_builder *b, nir_intrinsic_instr *intr,
        var->data.location != VARYING_SLOT_POS)
       return false;
 
-   b->cursor = nir_before_instr(&intr->instr);
+   unsigned wrmask = nir_intrinsic_write_mask(intr);
+   bool write_z = ((wrmask >> 2) & 1);
+   bool write_w = ((wrmask >> 3) & 1);
+   if (write_z && !write_w && !state->w) {
+      state->deferred = true;
+      state->z_intr = intr;
+      return true;
+   }
 
-   nir_def *pos = intr->src[1].ssa;
-   nir_def *def = nir_vec4(b,
-                           nir_channel(b, pos, 0),
-                           nir_channel(b, pos, 1),
-                           nir_fmul_imm(b,
-                                        nir_fadd(b,
-                                                 nir_channel(b, pos, 2),
-                                                 nir_channel(b, pos, 3)),
-                                        0.5),
-                           nir_channel(b, pos, 3));
-   nir_src_rewrite(intr->src + 1, def);
+   lower_pos_write_instr(b, intr, state->w);
+
+   if (write_w) {
+      nir_def *pos = intr->src[1].ssa;
+      nir_def *w = nir_channel(b, pos, 3);
+      if (state->deferred) {
+         nir_instr_move(nir_after_instr(&intr->instr), &state->z_intr->instr);
+         lower_pos_write_instr(b, state->z_intr, w);
+         reset_clip_halfz_state(state);
+      } else {
+         state->w = w;
+      }
+   }
    return true;
 }
 
@@ -59,7 +109,10 @@ nir_lower_clip_halfz(nir_shader *shader)
        shader->info.stage != MESA_SHADER_TESS_EVAL)
       return;
 
+   struct clip_halfz_state state;
+   reset_clip_halfz_state(&state);
+
    nir_shader_intrinsics_pass(shader, lower_pos_write,
                                 nir_metadata_control_flow,
-                                NULL);
+                                &state);
 }
