@@ -27,7 +27,7 @@ struct clip_halfz_state {
    bool deferred;
    nir_intrinsic_instr *z_intr;
    nir_def *w;
-}；
+};
 
 static void
 reset_clip_halfz_state(struct clip_halfz_state *state)
