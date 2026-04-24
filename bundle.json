@@ -32,6 +32,7 @@
                 "qos_manager"
             ],
             "third_party": [
+                "expat",
                 "zlib"
             ]
         },
