@@ -2855,6 +2855,8 @@ create_builtin_var(struct ntv_context *ctx, SpvId var_type,
       switch (builtin) {
       case SpvBuiltInSampleId:
       case SpvBuiltInSubgroupLocalInvocationId:
+      case SpvBuiltInViewIndex:
+      case SpvBuiltInSampleMask:
          spirv_builder_emit_decoration(&ctx->builder, var, SpvDecorationFlat);
          break;
       default:
@@ -5024,8 +5026,7 @@ nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *sinfo, const s
    }
 
    if (s->info.stage < MESA_SHADER_GEOMETRY) {
-      if (s->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_LAYER) ||
-          s->info.inputs_read & BITFIELD64_BIT(VARYING_SLOT_LAYER)) {
+      if (s->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_LAYER)) {
          if (spirv_version >= SPIRV_VERSION(1, 5))
             spirv_builder_emit_cap(&ctx.builder, SpvCapabilityShaderLayer);
          else {
