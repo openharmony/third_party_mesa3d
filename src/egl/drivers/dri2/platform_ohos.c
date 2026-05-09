@@ -175,6 +175,11 @@ ohos_drawable_info(struct dri_drawable *draw, int *x, int *y, int *w, int *h,
 {
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
 
+   if (dri2_surf->base.Type == EGL_WINDOW_BIT && dri2_surf->window) {
+      OH_NativeWindow_NativeWindowHandleOpt(dri2_surf->window, GET_BUFFER_GEOMETRY,
+          &dri2_surf->base.Height, &dri2_surf->base.Width);
+   }
+
    *x = *y = 0;
    *w = dri2_surf->base.Width;
    *h = dri2_surf->base.Height;
