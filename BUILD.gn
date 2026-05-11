@@ -64,12 +64,8 @@ action("mesa3d_action_build") {
     "graphic_surface:surface",
     "qos_manager:qos",
     "zlib:libz",
+    "expat:expat",
   ]
-  if (mesa3d_feature_upgrade_skia) {
-    external_deps += [ "skia:expatm133", ]
-  } else {
-    external_deps += [ "skia:expat", ]
-  }
 }
 
 ohos_copy("mesa3d_unstripped_copy") {

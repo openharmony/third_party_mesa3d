@@ -167,13 +167,6 @@ def generate_pc_file(file_raw, project_dir, product_name, skia_version):
             raw_content = raw_content.replace("ohos_project_directory_stub", project_dir)
             raw_content = raw_content.replace("ohos-arm-release", product_name)
             raw_content = raw_content.replace("ohos-arm", "ohos-arm64")
-            if shortfilename == "expat.pc":
-                if skia_version == "new_skia":
-                    raw_content = raw_content.replace("skia_folder_stub", "skia/m133")
-                    raw_content = raw_content.replace("expat_lib_stub", "expatm133")
-                else:
-                    raw_content = raw_content.replace("skia_folder_stub", "skia")
-                    raw_content = raw_content.replace("expat_lib_stub", "expat")
             pc_file.write(raw_content)
     print("generate_pc_file")
 
