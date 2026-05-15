@@ -306,11 +306,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
       cswap->scci.clipped = VK_TRUE;
    }
    cswap->scci.presentMode = cdt->present_mode;
-   if (cdt->caps.minImageCount <= SWAP_BUFFER_COUNT && cdt->caps.maxImageCount >= SWAP_BUFFER_COUNT) {
-      cswap->scci.minImageCount = SWAP_BUFFER_COUNT;
-   } else {
-      cswap->scci.minImageCount = cdt->caps.minImageCount;
-   }
+   cswap->scci.minImageCount = cdt->caps.minImageCount;
    cswap->scci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    if (cdt->formats[1])
       cswap->scci.pNext = &cdt->format_list;
@@ -347,6 +343,11 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
       cswap->scci.imageExtent.height = h;
       break;
    case KOPPER_OHOS:
+      /* In order to fix performance problem, we need to ensure the minImageCount is at least 5,
+       * because it is used to set window queue size on OHOS.
+       */
+      cswap->scci.minImageCount = MIN2(cdt->caps.maxImageCount,
+         MAX2(cdt->caps.minImageCount + 1, SWAP_BUFFER_COUNT));
       cswap->scci.imageExtent.width = w;
       cswap->scci.imageExtent.height = h;
       break;
@@ -380,8 +381,9 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
 }
 
 static VkResult
-kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *cswap)
+kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_displaytarget *cdt)
 {
+   struct kopper_swapchain *cswap = cdt->swapchain;
    VkResult error = VKSCR(GetSwapchainImagesKHR)(screen->dev, cswap->swapchain, &cswap->num_images, NULL);
    zink_screen_handle_vkresult(screen, error);
    if (error != VK_SUCCESS)
@@ -399,7 +401,11 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
       for (unsigned i = 0; i < cswap->num_images; i++)
          cswap->images[i].image = images[i];
    }
-   cswap->max_acquires = cswap->num_images - cswap->scci.minImageCount + 1;
+   /* The minImageCount equals to num_images on OHOS platform which will be 1 forever, so we should
+    * set max_acquires to num_images to avoid useless present fence wait (refer to 'kopper_acquire' routine).
+    */
+   cswap->max_acquires = (cdt->type == KOPPER_OHOS) ? cswap->num_images
+      : cswap->num_images - cswap->scci.minImageCount + 1;
    return error;
 }
 
@@ -427,7 +433,7 @@ update_swapchain(struct zink_screen *screen, struct kopper_displaytarget *cdt, u
    *pswap = cdt->swapchain;
    cdt->swapchain = cswap;
 
-   return kopper_GetSwapchainImages(screen, cdt->swapchain);
+   return kopper_GetSwapchainImages(screen, cdt);
 }
 
 struct kopper_displaytarget *
