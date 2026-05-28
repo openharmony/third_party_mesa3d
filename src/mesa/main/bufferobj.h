@@ -133,7 +133,6 @@ _mesa_check_disallowed_mapping(const struct gl_buffer_object *obj)
             GL_MAP_PERSISTENT_BIT);
 }
 
-
 extern void
 _mesa_init_buffer_objects(struct gl_context *ctx);
 
