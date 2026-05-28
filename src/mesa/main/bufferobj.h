@@ -133,6 +133,7 @@ _mesa_check_disallowed_mapping(const struct gl_buffer_object *obj)
             GL_MAP_PERSISTENT_BIT);
 }
 
+
 extern void
 _mesa_init_buffer_objects(struct gl_context *ctx);
 
@@ -242,7 +243,6 @@ static inline bool
 _mesa_is_same_buffer_object(struct gl_buffer_object *buf, GLuint name) {
    return buf && !buf->DeletePending && buf->Name == name;
 }
-
 
 extern void
 _mesa_buffer_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
