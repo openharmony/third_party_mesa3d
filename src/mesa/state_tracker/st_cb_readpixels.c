@@ -111,6 +111,13 @@ try_pbo_readpixels(struct st_context *st, struct gl_renderbuffer *rb,
    enum pipe_texture_target view_target;
    bool success = false;
 
+   /* Read pixels from GL_FRONT cannot use the PBO fast-path on some
+    * drivers, such as zink.
+    */
+   bool is_read_front = (st->ctx->ReadBuffer->ColorReadBuffer == GL_FRONT);
+   if (is_read_front && !screen->caps.can_pbo_read_front)
+      return false;
+
    /* Make sure we have stencil format in case of GL_STENCIL_INDEX to
     * create correct type of a sampler view.
     */
