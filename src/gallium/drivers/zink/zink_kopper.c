@@ -985,7 +985,7 @@ zink_kopper_acquire_readback(struct zink_context *ctx, struct zink_resource *res
    uint32_t last_dt_idx = res->obj->last_dt_idx;
    VkResult ret = VK_SUCCESS;
 
-   if (++cdt->readback_counter >= ZINK_READBACK_THRESHOLD) {
+   if (++cdt->readback_counter >= ZINK_READBACK_THRESHOLD && cdt->type != KOPPER_OHOS) {
       if (kopper_ensure_readback(screen, res) &&
           res->obj->dt_idx != UINT32_MAX && cswap->images[res->obj->dt_idx].readback_needs_update)
          zink_kopper_readback_update(ctx, res);

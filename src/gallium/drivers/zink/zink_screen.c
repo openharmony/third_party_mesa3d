@@ -863,6 +863,7 @@ zink_init_screen_caps(struct zink_screen *screen)
    caps->nir_samplers_as_deref = true;
    caps->call_finalize_nir_in_linker = true;
    caps->texture_shadow_lod = true;
+   caps->can_pbo_read_front = false;
 
    caps->draw_vertex_state = screen->info.have_EXT_vertex_input_dynamic_state;
 
