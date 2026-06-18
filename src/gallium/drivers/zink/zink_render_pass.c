@@ -714,7 +714,7 @@ begin_render_pass(struct zink_context *ctx)
    assert(ctx->gfx_pipeline_state.render_pass && ctx->framebuffer);
 
    VkRenderPassAttachmentBeginInfo infos;
-   VkImageView att[2 * (PIPE_MAX_COLOR_BUFS + 1)];
+   VkImageView att[2 * (PIPE_MAX_COLOR_BUFS + 1)] = {VK_NULL_HANDLE};
    infos.sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO;
    infos.pNext = NULL;
    infos.attachmentCount = ctx->framebuffer->state.num_attachments;
