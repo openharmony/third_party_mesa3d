@@ -611,6 +611,8 @@ get_layout_for_binding(const struct zink_context *ctx, struct zink_resource *res
 {
    if (res->obj->is_buffer)
       return 0;
+   if (zink_screen(ctx->base.screen)->driver_workarounds.general_layout)
+      return VK_IMAGE_LAYOUT_GENERAL;
    switch (type) {
    case ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW:
       return zink_descriptor_util_image_layout_eval(ctx, res, is_compute);
@@ -1779,13 +1781,14 @@ unbind_shader_image_counts(struct zink_context *ctx, struct zink_resource *res, 
       res->write_bind_count[is_compute]--;
    res->image_bind_count[is_compute]--;
    /* if this was the last image bind, the sampler bind layouts must be updated */
-   if (!res->obj->is_buffer && !res->image_bind_count[is_compute] && res->bind_count[is_compute])
+   if (!zink_screen(ctx->base.screen)->driver_workarounds.general_layout && !res->obj->is_buffer && !res->image_bind_count[is_compute] && res->bind_count[is_compute])
       update_binds_for_samplerviews(ctx, res, is_compute);
 }
 
 ALWAYS_INLINE static bool
 check_for_layout_update(struct zink_context *ctx, struct zink_resource *res, bool is_compute)
 {
+   assert(!zink_screen(ctx->base.screen)->driver_workarounds.general_layout);
    VkImageLayout layout = res->bind_count[is_compute] ? zink_descriptor_util_image_layout_eval(ctx, res, is_compute) : VK_IMAGE_LAYOUT_UNDEFINED;
    VkImageLayout other_layout = res->bind_count[!is_compute] ? zink_descriptor_util_image_layout_eval(ctx, res, !is_compute) : VK_IMAGE_LAYOUT_UNDEFINED;
    bool ret = false;
@@ -1824,7 +1827,7 @@ unbind_shader_image(struct zink_context *ctx, gl_shader_stage stage, unsigned sl
    } else {
       unbind_descriptor_stage(res, stage);
       unbind_descriptor_reads(res, stage == MESA_SHADER_COMPUTE);
-      if (!res->image_bind_count[is_compute])
+      if (!zink_screen(ctx->base.screen)->driver_workarounds.general_layout && !res->image_bind_count[is_compute])
          check_for_layout_update(ctx, res, is_compute);
       zink_surface_reference(zink_screen(ctx->base.screen), &image_view->surface, NULL);
    }
@@ -1846,20 +1849,27 @@ create_image_bufferview(struct zink_context *ctx, const struct pipe_image_view *
 }
 
 static void
-finalize_image_bind(struct zink_context *ctx, struct zink_resource *res, bool is_compute)
+finalize_image_bind(struct zink_context *ctx, struct zink_resource *res, bool is_compute, VkAccessFlags flags, VkPipelineStageFlags pipeline)
 {
-   /* if this is the first image bind and there are sampler binds, the image's sampler layout
-    * must be updated to GENERAL
-    */
-   if (res->image_bind_count[is_compute] == 1 &&
-       res->bind_count[is_compute] > 1)
-      update_binds_for_samplerviews(ctx, res, is_compute);
-   if (!check_for_layout_update(ctx, res, is_compute)) {
-      /* no deferred barrier: unset unordered usage immediately */
-      // TODO: figure out a way to link up layouts between unordered and main cmdbuf
-      // if (zink_resource_access_is_write(res->barrier_access[is_compute]))
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
+   bool general_layout = screen->driver_workarounds.general_layout;
+   if (general_layout) {
+      /* no need to check later */
+      screen->image_barrier(ctx, res, VK_IMAGE_LAYOUT_GENERAL, flags, pipeline);
       res->obj->unordered_write = false;
       res->obj->unordered_read = false;
+   } else {
+      /* if this is the first image bind and there are sampler binds, the image's sampler layout
+      * must be updated to GENERAL
+      */
+      if (res->image_bind_count[is_compute] == 1 &&
+         res->bind_count[is_compute] > 1)
+         update_binds_for_samplerviews(ctx, res, is_compute);
+      if (!check_for_layout_update(ctx, res, is_compute)) {
+         /* no deferred barrier: unset unordered usage immediately */
+         res->obj->unordered_write = false;
+         res->obj->unordered_read = false;
+      }
    }
 }
 
@@ -2017,7 +2027,7 @@ zink_set_shader_images(struct pipe_context *pctx,
                res->obj->unordered_write = false;
             res->obj->unordered_read = false;
          } else {
-            finalize_image_bind(ctx, res, is_compute);
+            finalize_image_bind(ctx, res, is_compute, access, res->gfx_barrier);
             zink_batch_resource_usage_set(ctx->bs, res,
                                           zink_resource_access_is_write(access), false);
          }
@@ -2079,6 +2089,7 @@ update_feedback_loop_state(struct zink_context *ctx, unsigned idx, unsigned feed
 ALWAYS_INLINE static void
 unbind_samplerview(struct zink_context *ctx, gl_shader_stage stage, unsigned slot)
 {
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    struct zink_sampler_view *sv = zink_sampler_view(ctx->sampler_views[stage][slot]);
    if (!sv || !sv->base.texture)
       return;
@@ -2086,7 +2097,7 @@ unbind_samplerview(struct zink_context *ctx, gl_shader_stage stage, unsigned slo
    res->sampler_bind_count[stage == MESA_SHADER_COMPUTE]--;
    if (stage != MESA_SHADER_COMPUTE && !res->sampler_bind_count[0] && res->fb_bind_count) {
       u_foreach_bit(idx, res->fb_binds) {
-         if (ctx->feedback_loops & BITFIELD_BIT(idx)) {
+         if (!general_layout && ctx->feedback_loops & BITFIELD_BIT(idx)) {
             ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             ctx->rp_layout_changed = true;
          }
@@ -2101,7 +2112,7 @@ unbind_samplerview(struct zink_context *ctx, gl_shader_stage stage, unsigned slo
    } else {
       unbind_descriptor_stage(res, stage);
       unbind_descriptor_reads(res, stage == MESA_SHADER_COMPUTE);
-      if (!res->sampler_bind_count[stage == MESA_SHADER_COMPUTE])
+      if (!general_layout && !res->sampler_bind_count[stage == MESA_SHADER_COMPUTE])
          check_for_layout_update(ctx, res, stage == MESA_SHADER_COMPUTE);
    }
    assert(slot < 32);
@@ -2118,7 +2129,7 @@ zink_set_sampler_views(struct pipe_context *pctx,
                        struct pipe_sampler_view **views)
 {
    struct zink_context *ctx = zink_context(pctx);
-
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    const uint32_t mask = BITFIELD_RANGE(start_slot, num_views);
    uint32_t shadow_mask = ctx->di.zs_swizzle[shader_type].mask;
    ctx->di.cubes[shader_type] &= ~mask;
@@ -2190,10 +2201,16 @@ zink_set_sampler_views(struct pipe_context *pctx,
                if (b->cube_array) {
                   ctx->di.cubes[shader_type] |= BITFIELD_BIT(start_slot + i);
                }
-               if (!check_for_layout_update(ctx, res, shader_type == MESA_SHADER_COMPUTE) && !ctx->unordered_blitting) {
+
+               if (general_layout) {
+                  if (!ctx->blitting)
+                     zink_screen(ctx->base.screen)->image_barrier(ctx, res, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, res->gfx_barrier);
+                  if (!ctx->unordered_blitting)
+                     /* no deferred barrier: unset unordered usage immediately */
+                     res->obj->unordered_read = false;
+               } else if (!check_for_layout_update(ctx, res, shader_type == MESA_SHADER_COMPUTE) && !ctx->unordered_blitting) {
                   /* no deferred barrier: unset unordered usage immediately */
                   res->obj->unordered_read = false;
-                  // TODO: figure out a way to link up layouts between unordered and main cmdbuf
                   res->obj->unordered_write = false;
                }
                if (!a)
@@ -2387,6 +2404,8 @@ unbind_bindless_descriptor(struct zink_context *ctx, struct zink_resource *res)
             unbind_descriptor_reads(res, i);
       }
    }
+   if (zink_screen(ctx->base.screen)->driver_workarounds.general_layout)
+      return;
    for (unsigned i = 0; i < 2; i++) {
       if (!res->image_bind_count[i])
          check_for_layout_update(ctx, res, i);
@@ -2397,6 +2416,7 @@ static void
 zink_make_texture_handle_resident(struct pipe_context *pctx, uint64_t handle, bool resident)
 {
    struct zink_context *ctx = zink_context(pctx);
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    bool is_buffer = ZINK_BINDLESS_IS_BUFFER(handle);
    struct hash_entry *he = _mesa_hash_table_search(&ctx->di.bindless[is_buffer].tex_handles, (void*)(uintptr_t)handle);
    assert(he);
@@ -2429,15 +2449,18 @@ zink_make_texture_handle_resident(struct pipe_context *pctx, uint64_t handle, bo
          ii->imageView = ds->surface->image_view;
          ii->imageLayout = zink_descriptor_util_image_layout_eval(ctx, res, false);
          flush_pending_clears(ctx, res);
-         if (!check_for_layout_update(ctx, res, false)) {
+         if (general_layout) {
             res->obj->unordered_read = false;
-            // TODO: figure out a way to link up layouts between unordered and main cmdbuf
-            res->obj->unordered_write = false;
-         }
-         if (!check_for_layout_update(ctx, res, true)) {
-            res->obj->unordered_read = false;
-            // TODO: figure out a way to link up layouts between unordered and main cmdbuf
-            res->obj->unordered_write = false;
+            zink_screen(ctx->base.screen)->image_barrier(ctx, res, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+         } else {
+            if (!check_for_layout_update(ctx, res, false)) {
+               res->obj->unordered_read = false;
+               res->obj->unordered_write = false;
+            }
+            if (!check_for_layout_update(ctx, res, true)) {
+               res->obj->unordered_read = false;
+               res->obj->unordered_write = false;
+            }
          }
          zink_batch_resource_usage_set(ctx->bs, res, false, false);
          res->obj->unordered_write = false;
@@ -2572,8 +2595,8 @@ zink_make_image_handle_resident(struct pipe_context *pctx, uint64_t handle, unsi
          ii->sampler = VK_NULL_HANDLE;
          ii->imageView = ds->surface->image_view;
          ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-         finalize_image_bind(ctx, res, false);
-         finalize_image_bind(ctx, res, true);
+         finalize_image_bind(ctx, res, false, access, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+         finalize_image_bind(ctx, res, true, access, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
          zink_batch_resource_usage_set(ctx->bs, res, zink_resource_access_is_write(access), false);
          res->obj->unordered_write = false;
       }
@@ -3277,12 +3300,14 @@ zink_prep_fb_attachment(struct zink_context *ctx, struct zink_surface *surf, uns
       }
    }
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   if (screen->driver_workarounds.general_layout)
+      layout = VK_IMAGE_LAYOUT_GENERAL;
    /*
       The image subresources for a storage image must be in the VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR or
       VK_IMAGE_LAYOUT_GENERAL layout in order to access its data in a shader.
       - 14.1.1. Storage Image
     */
-   if (res->image_bind_count[0])
+   else if (res->image_bind_count[0])
       layout = VK_IMAGE_LAYOUT_GENERAL;
    else if (!screen->info.have_EXT_attachment_feedback_loop_layout &&
             layout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
@@ -3618,6 +3643,7 @@ rebind_fb_state(struct zink_context *ctx, struct zink_resource *match_res, bool 
 static void
 unbind_fb_surface(struct zink_context *ctx, struct pipe_surface *surf, unsigned idx, bool changed)
 {
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    ctx->dynamic_fb.attachments[idx].imageView = VK_NULL_HANDLE;
    if (!surf)
       return;
@@ -3629,7 +3655,7 @@ unbind_fb_surface(struct zink_context *ctx, struct pipe_surface *surf, unsigned 
    if (!res->fb_bind_count && !res->bind_count[0])
       _mesa_set_remove_key(ctx->need_barriers[0], res);
    unsigned feedback_loops = ctx->feedback_loops;
-   if (ctx->feedback_loops & BITFIELD_BIT(idx)) {
+   if (!general_layout && ctx->feedback_loops & BITFIELD_BIT(idx)) {
       ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
       ctx->rp_layout_changed = true;
    }
@@ -3647,7 +3673,7 @@ unbind_fb_surface(struct zink_context *ctx, struct pipe_surface *surf, unsigned 
    }
    res->fb_binds &= ~BITFIELD_BIT(idx);
    /* this is called just before the resource loses a reference, so a refcount==1 means the resource will be destroyed */
-   if (!res->fb_bind_count && res->base.b.reference.count > 1) {
+   if (!general_layout && !res->fb_bind_count && res->base.b.reference.count > 1) {
       if (ctx->track_renderpasses && !ctx->blitting) {
          if (!(res->base.b.bind & PIPE_BIND_DISPLAY_TARGET) && util_format_is_depth_or_stencil(surf->format))
             /* assume that all depth buffers which are not swapchain images will be used for sampling to avoid splitting renderpasses */
@@ -5020,6 +5046,7 @@ rebind_image(struct zink_context *ctx, struct zink_resource *res)
       zink_rebind_framebuffer(ctx, res);
    if (!zink_resource_has_binds(res))
       return;
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       if (res->sampler_binds[i]) {
          for (unsigned j = 0; j < ctx->di.num_sampler_views[i]; j++) {
@@ -5039,7 +5066,8 @@ rebind_image(struct zink_context *ctx, struct zink_resource *res)
          if (zink_resource(ctx->image_views[i][j].base.resource) == res) {
             ctx->invalidate_descriptor_state(ctx, i, ZINK_DESCRIPTOR_TYPE_IMAGE, j, 1);
             update_descriptor_state_image(ctx, i, j, res);
-            _mesa_set_add(ctx->need_barriers[i == MESA_SHADER_COMPUTE], res);
+            if (!general_layout)
+               _mesa_set_add(ctx->need_barriers[i == MESA_SHADER_COMPUTE], res);
          }
       }
    }
@@ -5094,7 +5122,8 @@ zink_rebind_all_images(struct zink_context *ctx)
 {
    assert(!ctx->blitting);
    rebind_fb_state(ctx, NULL, false);
-    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       for (unsigned j = 0; j < ctx->di.num_sampler_views[i]; j++) {
          struct zink_sampler_view *sv = zink_sampler_view(ctx->sampler_views[i][j]);
          if (!sv || !sv->image_view || sv->image_view->base.texture->target == PIPE_BUFFER)
@@ -5118,7 +5147,8 @@ zink_rebind_all_images(struct zink_context *ctx)
             image_view->surface = create_image_surface(ctx, &image_view->base, i == MESA_SHADER_COMPUTE);
             ctx->invalidate_descriptor_state(ctx, i, ZINK_DESCRIPTOR_TYPE_IMAGE, j, 1);
             update_descriptor_state_image(ctx, i, j, res);
-            _mesa_set_add(ctx->need_barriers[i == MESA_SHADER_COMPUTE], res);
+            if (!general_layout)
+               _mesa_set_add(ctx->need_barriers[i == MESA_SHADER_COMPUTE], res);
          }
       }
    }
@@ -5428,11 +5458,13 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       _mesa_set_init(&ctx->rendering_state_cache[i], ctx, hash_rendering_state, equals_rendering_state);
    ctx->dynamic_fb.info.pColorAttachments = ctx->dynamic_fb.attachments;
    ctx->dynamic_fb.info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+
+   bool general_layout = screen->driver_workarounds.general_layout;
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->dynamic_fb.attachments); i++) {
       VkRenderingAttachmentInfo *att = &ctx->dynamic_fb.attachments[i];
       att->sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-      att->imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      att->resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      att->imageLayout = general_layout ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      att->resolveImageLayout = general_layout ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
       att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
    }
    ctx->gfx_pipeline_state.rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -5712,11 +5744,13 @@ add_implicit_feedback_loop(struct zink_context *ctx, struct zink_resource *res)
    }
    ctx->rp_layout_changed = true;
    ctx->feedback_loops |= res->fb_binds;
-   u_foreach_bit(idx, res->fb_binds) {
-      if (zink_screen(ctx->base.screen)->info.have_EXT_attachment_feedback_loop_layout)
-         ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
-      else
-         ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+   if (!zink_screen(ctx->base.screen)->driver_workarounds.general_layout) {
+      u_foreach_bit(idx, res->fb_binds) {
+         if (zink_screen(ctx->base.screen)->info.have_EXT_attachment_feedback_loop_layout)
+            ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+         else
+            ctx->dynamic_fb.attachments[idx].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      }
    }
    update_feedback_loop_dynamic_state(ctx);
    return true;
@@ -5732,14 +5766,18 @@ zink_update_barriers(struct zink_context *ctx, bool is_compute,
    struct set *need_barriers = ctx->need_barriers[is_compute];
    ctx->barrier_set_idx[is_compute] = !ctx->barrier_set_idx[is_compute];
    ctx->need_barriers[is_compute] = &ctx->update_barriers[is_compute][ctx->barrier_set_idx[is_compute]];
+   bool general_layout = zink_screen(ctx->base.screen)->driver_workarounds.general_layout;
    ASSERTED bool check_rp = ctx->in_rp && ctx->dynamic_fb.tc_info.zsbuf_invalidate;
    set_foreach(need_barriers, he) {
       struct zink_resource *res = (struct zink_resource *)he->key;
       if (res->bind_count[is_compute]) {
          VkPipelineStageFlagBits pipeline = is_compute ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : res->gfx_barrier;
-         if (res->base.b.target == PIPE_BUFFER)
+         if (res->base.b.target == PIPE_BUFFER) {
             zink_screen(ctx->base.screen)->buffer_barrier(ctx, res, res->barrier_access[is_compute], pipeline);
-         else {
+         } else if (general_layout) {
+            /* let sync figure this out */
+            zink_screen(ctx->base.screen)->image_barrier(ctx, res, VK_IMAGE_LAYOUT_GENERAL, res->barrier_access[is_compute], pipeline);
+         } else {
             bool is_feedback = is_compute ? false : add_implicit_feedback_loop(ctx, res);
             VkImageLayout layout = zink_descriptor_util_image_layout_eval(ctx, res, is_compute);
             /* GENERAL is only used for feedback loops and storage image binds */
