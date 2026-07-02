@@ -2424,7 +2424,7 @@ overwrite:
 
    /* Host visible buffer also need to check completion when set PIPE_MAP_UNSYNCHRONIZED flags */
    bool host_visible_completed = true;
-   if (usage & PIPE_MAP_UNSYNCHRONIZED && res->obj->host_visible)
+   if ((usage & PIPE_MAP_UNSYNCHRONIZED) && res->obj->host_visible)
       host_visible_completed = zink_resource_usage_check_completion(screen, res, ZINK_RESOURCE_ACCESS_RW);
 
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED) || !host_visible_completed) {
